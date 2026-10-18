@@ -21,7 +21,7 @@ GUI.
 | Microphone diagnostic | Working |
 | Desktop control (apps/YouTube/media/volume/brightness/screenshot/lock) | Working (see *Desktop control pass*) |
 | Confirmation-gated power actions | Working (ask "Are you sure?") |
-| Tests | `pytest` suite — 94 tests (1 opt-in WAV test skipped by default) |
+| Tests | `pytest` suite — 110 tests (1 opt-in WAV test skipped by default) |
 | Published | GitHub, tag `v1.0.0` (README + MIT LICENSE) |
 
 ## Repository & releases
@@ -101,7 +101,10 @@ Two front ends share the same brain:
   hand-written schema).
 - `memory.py` — rolling `deque` window of recent turns, rendered as a transcript.
 - `main.py` — terminal entry point and `handle()` dispatch (confirmation first,
-  then router, then agent).
+  then router, then agent). `--text` / `JARVIS_TEXT=1` reads typed commands and
+  `--check` prints the readiness report; `handle()` catches agent/network errors.
+- `doctor.py` — read-only readiness self-check (`main.py --check`): session type,
+  installed tools and what each missing one costs, apps indexed, API-key status.
 - `gui.py` — PyQt5 Arc Reactor widget (`QThread` worker); shares `main.handle()`
   so confirmations work in the GUI too.
 - `test_mic.py` — standalone mic diagnostic (arecord-based): lists capture
@@ -228,27 +231,17 @@ whitelisted commands.
 | `gnome-screenshot` | present |
 | `amixer` | present |
 | `loginctl`, `systemctl`, `gdbus` | present |
-| `xdotool` | **missing** |
-| `playerctl` | **missing** |
-| `brightnessctl` | **missing** |
-| `scrot`, ImageMagick `import`, `qdbus` | **missing** |
+| `xdotool` | present (installed since the first pass) |
+| `playerctl` | present |
+| `brightnessctl` | present |
+| `scrot`, ImageMagick `import` | present |
+| `qdbus` | **missing** (not needed; lock uses `cinnamon-screensaver-command`/`loginctl`) |
 
 Session is **X11 / Cinnamon** (`XDG_SESSION_TYPE=x11`, `XDG_CURRENT_DESKTOP=X-Cinnamon`),
-so `wmctrl` works and Wayland caveats do not apply.
-
-Install the missing pieces with:
-
-```bash
-sudo apt install xdotool playerctl brightnessctl scrot imagemagick
-```
-
-What still works without them: launching/closing apps and YouTube play/search
-(`gtk-launch`/`gio`/`yt-dlp`), volume (`pactl`), screenshot
-(`gnome-screenshot`), lock (`cinnamon-screensaver-command`/`loginctl`),
-system status/time/date/battery. What **does not** work until installed:
-media keys (`playerctl`), brightness (`brightnessctl`), closing a *focused*
-YouTube tab with Ctrl+W (`xdotool`), and the `scrot`/`import` screenshot
-fallbacks. `close youtube` therefore answers **"Which window?"** here.
+so `wmctrl` works and Wayland caveats do not apply. All the optional desktop
+tools are now installed, so media, brightness, screenshot and focused-tab
+(`xdotool`) control are live; run `./venv/bin/python doctor.py` for the current
+list.
 
 ### Voice commands
 
@@ -308,16 +301,19 @@ fallbacks. `close youtube` therefore answers **"Which window?"** here.
   and a recorded speech WAV, **not** the live microphone. Run
   `JARVIS_DEBUG=1 ./venv/bin/python main.py` and speak; the per-chunk lines show
   the calibrated `floor=` and whether the phrase was captured whole.
-- **Media, brightness and focused-tab closing were not exercised live** because
-  `playerctl`, `brightnessctl` and `xdotool` are not installed here. Their logic
-  is unit-tested with mocked subprocess calls only.
+- **Media, brightness and focused-tab closing** are unit-tested with mocked
+  subprocess calls; the read-only paths (`playerctl status`, `brightnessctl get`,
+  `xdotool getactivewindow`, `pactl get-sink-volume`) were verified live once
+  the tools were installed. A real media pause/resume and a real brightness
+  change were not run (no player was playing; changing brightness is intrusive).
 - **Power actions were deliberately not run** (they would power off / reboot the
   machine). Only the confirmation handshake is tested.
-- **Screenshot success** relies on `gnome-screenshot`; the fallbacks (`scrot`,
-  `import`) are absent, so a real screenshot was not captured in this pass.
-- App matching was checked against this machine's 125 `.desktop` entries
-  (`telegram`, `files`, `terminal`, `settings`, `calculator`, `browser` all
-  resolve correctly); other apps were not individually verified.
+- **Screenshot capture** was not run (it would drop a PNG in `~/Pictures`);
+  `gnome-screenshot`, `scrot` and `import` are now all installed.
+- App matching was checked against this machine's 126 `.desktop` entries
+  (`telegram`, `files`, `terminal`, `settings`, `system settings`,
+  `system monitor`, `calculator`, `browser` all resolve correctly); other apps
+  were not individually verified.
 
 ## Bug fixes: YouTube query extraction & capture hardening (2026-10-18)
 
@@ -387,6 +383,69 @@ a real utterance with speakers playing. `playerctl` and `pactl` behaviour on the
 user's actual PipeWire setup is untested (only the command construction is).
 The improved extraction was validated on the exact messy sentence reported plus
 hand-written variants; other obscure mishearings may still slip through.
+
+## Hardening pass: testability & real bug fixes (2026-10-18)
+
+Goal (user request): make the whole thing run smoothly out of the box and stop
+the "another bug every time" cycle. Approach: audit the router against a battery
+of realistic phrases with the desktop actions stubbed, fix everything that
+misrouted, and add tools that let you *see* what works.
+
+### Real bugs found and fixed
+
+1. **`yt-dlp` silently failed → "play on YouTube" opened a results page.** The
+   installed `yt-dlp` (2024.04.09) errors with *"Requested format is not
+   available"* on `--get-id`, so even a clean query fell back to search.
+   `play_youtube()` now uses
+   `yt-dlp "ytsearch1:<q>" --flat-playlist --print id --no-warnings`, which
+   resolves the search hit's id without any format selection. Verified live:
+   `udi udi` → `rC-kbRanJQ0`, `despacito` → `kJQP7kiw5Fk`.
+2. **"open system settings" / "open system monitor" ran the status command.**
+   `SYS_STATUS` matched the bare word "system". It now only matches
+   `cpu|ram|memory|disk|resources|system status`.
+3. **"close the browser" did nothing.** "browser" was stripped from the target,
+   leaving an empty string, so it deferred. It is no longer stripped.
+4. **"open lock screen settings" locked the screen.** The lock branch is now
+   skipped when the utterance is an open command.
+5. **A TTS/network failure killed the whole session** (`speak()` raised before
+   printing, and `main` didn't catch it). `speak()` now never raises: it logs
+   the TTS error and always prints the reply. Added `JARVIS_MUTE=1` to skip TTS.
+6. **An agent/network error crashed the loop.** `main.handle()` now catches it
+   and returns a spoken apology instead.
+7. **Natural phrasings missed:** "make it louder/quieter" (volume),
+   "make it brighter"/"darker" (brightness — `brighter` is a separate word from
+   `bright`), and "show me the files" (the stray "me" is now stripped).
+
+### New: test everything without a microphone
+
+- **Text mode** — `JARVIS_TEXT=1 ./venv/bin/python main.py` (or `main.py --text`)
+  reads typed commands through the exact same `handle()` path (router +
+  confirmation + agent). `JARVIS_MUTE=1` silences TTS for fast testing.
+- **Readiness doctor** — `./venv/bin/python doctor.py` (or `main.py --check`)
+  prints the session type, every tool (ok / REQ / missing) with what it powers,
+  the number of apps indexed, API-key status, and the exact `apt install` line
+  for whatever is missing.
+- **Better agent instructions** — the system prompt now tells the model to call
+  the tools and confirm briefly instead of describing the action.
+
+### Verification
+
+- `pytest`: **110 passed, 1 skipped** (skip = opt-in `JARVIS_TEST_WAV`).
+- Live on this machine: `doctor.py` reports all optional tools present (126 apps
+  indexed, `GROQ_API_KEY` set); the read-only `playerctl status`,
+  `brightnessctl get`, `xdotool getactivewindow`, `pactl get-sink-volume` paths
+  all respond; a real `run_agent` call answered (`reply='ok'`, 723 tokens); the
+  text-mode loop ran `shut down → Are you sure? → no → Cancelled.`,
+  `open system settings → Opening System Settings.` (the app really opened, then
+  was closed), and `bye → Shutting down. Session: …`.
+- Router audit over ~70 phrases (`/tmp/opencode/route_audit.py`) confirms the
+  fixes and no new misroutes.
+
+**Not verified live (honest).** A real media pause/resume and a real brightness
+change (no player was playing; changing brightness is intrusive), a real
+screenshot (would write a PNG), the power actions (would reboot), and the live
+microphone capture. The GUI was not launched (no display in this session); text
+mode exercises the identical dispatch path the GUI worker uses.
 
 ## Verification (2026-10-18)
 
@@ -524,8 +583,8 @@ by compiling `gui.py`; the PyQt GUI itself was not launched here.
 - The response cache is in-memory only and keyed by lowercased query, so it is
   lost on restart and ignores conversation context.
 - The agent path needs network access; the router fast-path works offline.
-- `MAX_OUTPUT_TOKENS = 220` may truncate long answers from the reasoning model —
-  raise it if replies are cut off.
+- `MAX_OUTPUT_TOKENS = 400` keeps the assistant brief while leaving reasoning
+  headroom; raise it if long answers are ever cut off.
 - The arecord rewrite was verified against a *recorded* speech WAV and the local
   device's ambient noise, not the real voice: run `main.py` once on the actual
   machine to confirm the 76/6172 RMS separation at 40 % gain.
@@ -544,6 +603,9 @@ python -m venv venv
 echo "GROQ_API_KEY=your-key" > .env   # Groq key, starts with gsk_
 
 ./venv/bin/python main.py       # terminal voice loop
+./venv/bin/python main.py --text    # type commands instead of speaking
+./venv/bin/python main.py --check   # readiness report (tools, apps, config)
+./venv/bin/python doctor.py     # readiness report
 ./venv/bin/python gui.py        # floating reactor widget
 ./venv/bin/python test_mic.py   # mic diagnostic (add --list to only list devices)
 ./venv/bin/python -m pytest     # test suite
@@ -560,4 +622,5 @@ amixer -c 1 sset Capture 40%                       # 100% clips; 40% keeps the f
 JARVIS_MIC_DEVICE=plughw:1,0 ./venv/bin/python main.py  # force an arecord -L device (default: "default")
 JARVIS_DEBUG=1 ./venv/bin/python main.py           # print per-chunk RMS / capture diagnostics
 JARVIS_PTT=1 ./venv/bin/python main.py             # push-to-talk: Enter to start, Enter to stop
+JARVIS_TEXT=1 JARVIS_MUTE=1 ./venv/bin/python main.py  # type commands, no mic / no TTS
 ```

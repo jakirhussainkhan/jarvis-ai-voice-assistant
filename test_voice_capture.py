@@ -316,6 +316,34 @@ def test_ptt_stop_event_ends_the_phrase():
 
 
 # --------------------------------------------------------------------------- #
+# speak(): must never crash the session and always show the reply
+# --------------------------------------------------------------------------- #
+
+def test_speak_prints_reply_and_survives_tts_failure(monkeypatch, capsys):
+    monkeypatch.setattr(voice, "_MUTE", False)
+
+    def boom(text):
+        raise RuntimeError("offline")
+
+    monkeypatch.setattr(voice, "_play_tts", boom)
+
+    voice.speak("hello there")                 # must not raise
+    out = capsys.readouterr().out
+    assert "🤖 hello there" in out
+    assert "TTS failed" in out
+
+
+def test_speak_muted_skips_tts(monkeypatch, capsys):
+    monkeypatch.setattr(voice, "_MUTE", True)
+    called = []
+    monkeypatch.setattr(voice, "_play_tts", lambda text: called.append(text))
+
+    voice.speak("hi")
+    assert called == []
+    assert "🤖 hi" in capsys.readouterr().out
+
+
+# --------------------------------------------------------------------------- #
 # recorded speech WAV (opt-in)
 # --------------------------------------------------------------------------- #
 

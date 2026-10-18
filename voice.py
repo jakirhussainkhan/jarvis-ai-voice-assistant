@@ -83,8 +83,20 @@ _DEBUG = os.getenv("JARVIS_DEBUG", "").strip().lower() not in ("", "0", "false",
 # RMS above the silence floor so the automatic gate never closes.
 _PTT = os.getenv("JARVIS_PTT", "").strip().lower() not in ("", "0", "false", "no")
 
+# Set JARVIS_MUTE=1 to skip text-to-speech entirely (replies are still printed).
+# Handy with JARVIS_TEXT=1 for fast, silent testing.
+_MUTE = os.getenv("JARVIS_MUTE", "").strip().lower() not in ("", "0", "false", "no")
+
 # A background median above this suggests speakers/music are leaking into the mic.
 _LOUD_BACKGROUND = 200
+
+
+def _ptt_active():
+    """Push-to-talk only makes sense on an interactive terminal."""
+    try:
+        return _PTT and sys.stdin is not None and sys.stdin.isatty()
+    except (ValueError, OSError):
+        return False
 
 
 def _dbg(*parts):
@@ -405,10 +417,11 @@ def listen():
     rec.operation_timeout = _RECOGNIZE_TIMEOUT
 
     device = _mic_device()
+    ptt = _ptt_active()
     _dbg(f"device={device} gate={_ENERGY_THRESHOLD} chunk={_CHUNK_SECONDS}s "
-         f"wait={_LISTEN_TIMEOUT}s phrase_max={_PHRASE_TIME_LIMIT}s ptt={_PTT}")
+         f"wait={_LISTEN_TIMEOUT}s phrase_max={_PHRASE_TIME_LIMIT}s ptt={ptt}")
 
-    if _PTT and not _ptt_wait_for_enter():
+    if ptt and not _ptt_wait_for_enter():
         return ""
 
     # Best effort: pause any playing media so it neither leaks into the mic nor
@@ -427,13 +440,13 @@ def listen():
         desktop.resume_media(pause_token)
         return ""
 
-    stop_event = threading.Event() if _PTT else None
-    if _PTT:
+    stop_event = threading.Event() if ptt else None
+    if ptt:
         _ptt_stop_reader(stop_event)
 
     try:
         try:
-            data = _capture_from_stream(proc.stdout, ptt=_PTT, stop_event=stop_event)
+            data = _capture_from_stream(proc.stdout, ptt=ptt, stop_event=stop_event)
         except Exception as exc:
             _dbg(f"capture error: {type(exc).__name__}: {exc}")
             return ""
@@ -475,22 +488,41 @@ def listen():
     return text.lower()
 
 
-def speak(text):
-    """Synthesise `text` with edge-tts and play it through pygame."""
+def _play_tts(text):
+    """Synthesise `text` with edge-tts and play it through pygame (may raise)."""
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3").name
     try:
         asyncio.run(edge_tts.Communicate(text, voice=TTS_VOICE).save(tmp))
 
         pygame.mixer.init()
-        pygame.mixer.music.load(tmp)
-        pygame.mixer.music.play()
-        clock = pygame.time.Clock()
-        while pygame.mixer.music.get_busy():
-            clock.tick(10)
-        pygame.mixer.music.unload()
-        pygame.mixer.quit()
+        try:
+            pygame.mixer.music.load(tmp)
+            pygame.mixer.music.play()
+            clock = pygame.time.Clock()
+            while pygame.mixer.music.get_busy():
+                clock.tick(10)
+        finally:
+            with contextlib.suppress(Exception):
+                pygame.mixer.music.unload()
+            with contextlib.suppress(Exception):
+                pygame.mixer.quit()
     finally:
         with contextlib.suppress(OSError):
             os.remove(tmp)
 
+
+def speak(text):
+    """Say `text` out loud. Never raises, and always prints the reply.
+
+    Text-to-speech needs the network, so a failure there (offline, no audio
+    device, edge-tts error) falls back to printing only -- it must never kill
+    the session or hide the answer.
+    """
+    text = "" if text is None else str(text)
+    if not _MUTE:
+        try:
+            _play_tts(text)
+        except Exception as exc:
+            print(f"[voice] TTS failed ({type(exc).__name__}: {exc}); "
+                  "showing the reply only", flush=True)
     print(f"🤖 {text}", flush=True)

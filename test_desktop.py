@@ -260,6 +260,11 @@ def test_extract_media_query_empty_when_only_filler():
     assert desktop.extract_media_query("") == ""
 
 
+def test_extract_media_query_keeps_a_word_like_mean():
+    """Only the phrase 'what do you mean'/'i mean' is filler, not the word."""
+    assert desktop.extract_media_query("play mean on youtube") == "mean"
+
+
 def test_play_youtube_asks_when_query_is_empty(monkeypatch):
     monkeypatch.setattr(desktop, "has", lambda tool: True)
     assert desktop.play_youtube("play the song on youtube") == "What should I play?"
@@ -267,12 +272,22 @@ def test_play_youtube_asks_when_query_is_empty(monkeypatch):
 
 def test_play_youtube_uses_top_ytdlp_result(monkeypatch):
     monkeypatch.setattr(desktop, "has", lambda tool: tool == "yt-dlp")
-    monkeypatch.setattr(desktop, "_run", lambda args, timeout=25: (0, "dQw4w9WgXcQ"))
+    seen = {}
+
+    def fake_run(args, timeout=25):
+        seen["args"] = args
+        return 0, "dQw4w9WgXcQ"
+
+    monkeypatch.setattr(desktop, "_run", fake_run)
     opened = []
     monkeypatch.setattr(desktop, "_open_url", lambda url: opened.append(url) or True)
 
     assert desktop.play_youtube("despacito") == "Playing despacito on YouTube."
     assert opened == ["https://www.youtube.com/watch?v=dQw4w9WgXcQ"]
+    # Must resolve the search hit's id without a format selection (which fails
+    # on YouTube with older yt-dlp builds).
+    assert "--flat-playlist" in seen["args"]
+    assert "--get-id" not in seen["args"]
 
 
 def test_play_youtube_without_ytdlp_opens_search(monkeypatch):

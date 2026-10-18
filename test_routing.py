@@ -77,6 +77,24 @@ def test_bare_app_name_is_local(monkeypatch):
     assert router.try_local("chrome") == "Opening Chrome."
 
 
+def test_open_system_settings_is_an_app_not_a_status_query(monkeypatch):
+    """Regression: bare 'system' used to be swallowed by the status branch."""
+    calls = _spy(monkeypatch, "open_app", "Opening System Settings.")
+    assert router.try_local("open system settings") == "Opening System Settings."
+    assert calls == [(("system settings",), {})]
+
+
+def test_open_system_monitor_is_an_app(monkeypatch):
+    calls = _spy(monkeypatch, "open_app", "Opening System Monitor.")
+    assert router.try_local("open system monitor") == "Opening System Monitor."
+    assert calls == [(("system monitor",), {})]
+
+
+def test_system_status_still_works(monkeypatch):
+    reply = router.try_local("system status")
+    assert reply.startswith("CPU ")
+
+
 # --------------------------------------------------------------------------- #
 # closing apps
 # --------------------------------------------------------------------------- #
@@ -111,6 +129,14 @@ def test_weak_match_asks_before_closing(monkeypatch):
 def test_close_unknown_target_defers(monkeypatch):
     monkeypatch.setattr(desktop, "match_app", lambda name: (None, 0.1))
     assert router.try_local("close the door") is None
+
+
+def test_close_browser_targets_the_browser_app(monkeypatch):
+    """Regression: 'browser' was stripped, so 'close browser' did nothing."""
+    monkeypatch.setattr(desktop, "match_app", lambda name: (APP, 0.95))
+    calls = _spy(monkeypatch, "close_app", "Closed Chrome.")
+    assert router.try_local("close the browser") == "Closed Chrome."
+    assert calls == [((APP,), {})]
 
 
 def test_close_youtube_is_not_a_search(monkeypatch):
@@ -195,6 +221,23 @@ def test_volume_mute_and_unmute(monkeypatch):
     assert calls[1] == (("unmute", None), {})
 
 
+def test_volume_by_adjective(monkeypatch):
+    """"make it louder" is a volume request even without the word "volume"."""
+    calls = _spy(monkeypatch, "volume_control", "ok")
+    assert router.try_local("make it louder") == "ok"
+    assert router.try_local("a bit quieter") == "ok"
+    assert calls[0] == (("up", None), {})
+    assert calls[1] == (("down", None), {})
+
+
+def test_brighter_and_darker(monkeypatch):
+    calls = _spy(monkeypatch, "brightness_control", "ok")
+    assert router.try_local("make it brighter") == "ok"
+    assert router.try_local("make the screen darker") == "ok"
+    assert calls[0] == (("up", None), {})
+    assert calls[1] == (("down", None), {})
+
+
 def test_brightness_up_and_set(monkeypatch):
     calls = _spy(monkeypatch, "brightness_control", "Brightness up.")
     assert router.try_local("brightness up") == "Brightness up."
@@ -208,6 +251,14 @@ def test_screenshot_and_lock(monkeypatch):
     _spy(monkeypatch, "lock_screen", "Locking the screen.")
     assert router.try_local("take a screenshot") == "Screenshot saved as x.png."
     assert router.try_local("lock the screen") == "Locking the screen."
+
+
+def test_open_lock_screen_settings_does_not_lock(monkeypatch):
+    lock = _spy(monkeypatch, "lock_screen", "Locking the screen.")
+    opened = _spy(monkeypatch, "open_app", "Opening Settings.")
+    assert router.try_local("open lock screen settings") == "Opening Settings."
+    assert lock == []
+    assert opened == [(("lock screen settings",), {})]
 
 
 # --------------------------------------------------------------------------- #

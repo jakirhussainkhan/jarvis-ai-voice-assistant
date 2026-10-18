@@ -16,5 +16,7 @@ MODEL_NAME = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
 STT_LANG = "en-US"  # English-only by design.
 TTS_VOICE = "en-US-AriaNeural"
 MAX_HISTORY_MSGS = 6
-MAX_OUTPUT_TOKENS = 220
+# Headroom so a reasoning model's thinking tokens never crowd out the answer
+# (too low a cap makes it return empty and Jarvis says "I couldn't finish that").
+MAX_OUTPUT_TOKENS = 400
 MAX_TOOL_ROUNDS = 3

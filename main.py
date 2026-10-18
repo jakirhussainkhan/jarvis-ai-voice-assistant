@@ -1,6 +1,8 @@
 """Entry point that starts the Jarvis assistant."""
 
+import os
 import re
+import sys
 
 import confirm
 from voice import listen, speak
@@ -19,6 +21,11 @@ _EXIT_FILLER = re.compile(
     r"|session)\b",
     re.I,
 )
+
+# Type commands instead of speaking (JARVIS_TEXT=1 or `main.py --text`). Useful
+# for trying every command when the microphone is unavailable or noisy. Combine
+# with JARVIS_MUTE=1 for fast, silent testing.
+_TEXT = os.getenv("JARVIS_TEXT", "").strip().lower() not in ("", "0", "false", "no")
 
 total_tokens = 0
 local_count = 0
@@ -40,6 +47,17 @@ def is_exit(text: str) -> bool:
     return not rest
 
 
+def read_input():
+    """Return one user turn: typed in text mode, otherwise spoken."""
+    if _TEXT:
+        try:
+            return input("👤 ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print(flush=True)
+            return "exit"
+    return listen()
+
+
 def handle(text, memory):
     """Dispatch one utterance through the real path.
 
@@ -55,17 +73,32 @@ def handle(text, memory):
     local = try_local(text)
     if local is not None:
         return local, "local", 0
-    reply, tokens = run_agent(text, memory)
+    try:
+        reply, tokens = run_agent(text, memory)
+    except Exception as exc:                     # never let a network error kill us
+        return f"Sorry, I couldn't reach the assistant: {exc}", "local", 0
     return reply, ("cache" if tokens == 0 else "agent"), tokens
 
 
 def main():
-    global total_tokens, local_count, agent_count
+    global total_tokens, local_count, agent_count, _TEXT
+
+    args = sys.argv[1:]
+    if "--check" in args:
+        from doctor import report
+        print(report())
+        return
+    if "--text" in args or "-t" in args:
+        _TEXT = True
+
     mem = Memory()
+    if _TEXT:
+        print("Text mode: type a command and press Enter ('exit' to quit).",
+              flush=True)
     speak("Jarvis online.")
 
     while True:
-        user = listen()
+        user = read_input()
         if not user:
             continue
 
@@ -92,3 +125,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

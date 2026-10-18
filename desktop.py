@@ -23,6 +23,14 @@ import psutil
 
 _DEVNULL = subprocess.DEVNULL
 
+# Set JARVIS_DEBUG=1 to print desktop-action diagnostics.
+_DEBUG = os.getenv("JARVIS_DEBUG", "").strip().lower() not in ("", "0", "false", "no")
+
+
+def _dbg(*parts):
+    if _DEBUG:
+        print("[desktop]", *parts, flush=True)
+
 # --------------------------------------------------------------------------- #
 # environment / process helpers
 # --------------------------------------------------------------------------- #
@@ -452,8 +460,9 @@ def list_running():
 # "play X on YouTube"; only the song/video name should reach yt-dlp.
 _PLAY_VERB = re.compile(r"\b(play|watch|listen to)\b", re.I)
 _MEDIA_FILLER = re.compile(
-    r"\b(what do you mean|you know the song|you know|"
-    r"please|just|meant|mean|i am|i'm|im|"
+    r"\b(what do you mean|i mean|i meant|you know the song|you know|"
+    r"please|just|"
+    r"i am|i'm|im|"
     r"on youtube|youtube|"
     r"song|songs|music|video|videos|track|tracks|tune|tunes|player|media|clip|"
     r"the|a|an|some|any|on|like|jarvis|now|hey|okay|ok)\b",
@@ -505,13 +514,18 @@ def play_youtube(query):
     """Play the top yt-dlp result for a song/video name; else open the results.
 
     The argument may be a raw spoken sentence; only the song/video name is used.
+
+    Uses ``--flat-playlist --print id`` so yt-dlp only resolves the search hit's
+    id -- it never tries to pick a video format (which fails on YouTube with
+    older yt-dlp builds and would silently downgrade us to a results page).
     """
     query = extract_media_query(query)
     if not query:
         return "What should I play?"
     if has("yt-dlp"):
         rc, out = _run(
-            ["yt-dlp", f"ytsearch1:{query}", "--get-id", "--no-warnings", "-q"],
+            ["yt-dlp", f"ytsearch1:{query}", "--flat-playlist",
+             "--print", "id", "--no-warnings"],
             timeout=25,
         )
         vid = ""
@@ -519,9 +533,13 @@ def play_youtube(query):
             line = line.strip()
             if _YT_ID.match(line):
                 vid = line
+                break
         if rc == 0 and vid:
             if _open_url(f"https://www.youtube.com/watch?v={vid}"):
                 return f"Playing {query} on YouTube."
+        elif rc != 0:
+            # Surface yt-dlp's own error instead of failing silently.
+            _dbg(f"yt-dlp failed (rc={rc}): {out}")
     # yt-dlp missing or failed: open the results page and say so.
     reason = "yt-dlp is not installed" if not has("yt-dlp") else "I couldn't find a video"
     _open_url(_yt_url_search(query))

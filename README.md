@@ -37,6 +37,11 @@ server, the session manager, systemd and the desktop shell safe from being close
   always-on-top reactor widget (`gui.py`) with live state colours
   (Idle / Listening / Thinking / Speaking). Both share `main.handle()`, so the
   confirmation flow works identically in each.
+- **Usable without a microphone** — `JARVIS_TEXT=1 ./venv/bin/python main.py`
+  (or `main.py --text`) takes *typed* commands through the exact same
+  router/agent path, and `./venv/bin/python doctor.py` (or `main.py --check`)
+  prints a readiness report: which tools are installed, what each missing one
+  costs, and how many apps were indexed.
 - **Robust audio capture** — capture runs through `arecord -D default -f S16_LE
   -r 16000 -c 1` (PyAudio/PortAudio never saw this machine's mic), read in 0.1 s
   chunks and RMS-gated. The stream-open spike is discarded, the stop floor is
@@ -46,10 +51,11 @@ server, the session manager, systemd and the desktop shell safe from being close
   listens and resumed afterwards (best effort), and `JARVIS_PTT=1` switches to
   push-to-talk (press Enter, speak, press Enter again) for noisy rooms. All
   bounded so a misbehaving mic can never stall the loop.
-- **Tests** — a `pytest` suite covering routing, app matching, the protected
-  list, the confirmation flow, volume limits and the YouTube play path (all with
-  mocked subprocess calls), plus exit detection, memory, the response cache, the
-  capture gate, and the real router→agent dispatch path.
+- **Tests** — a `pytest` suite (110 tests) covering routing, app matching, the
+  protected list, the confirmation flow, volume/brightness limits and phrasing,
+  the YouTube search/play path (mocked subprocess calls), push-to-talk, the
+  text mode, the readiness doctor, exit detection, memory, the response cache,
+  the capture gate, and the real router→agent dispatch path.
 
 ## Requirements
 
@@ -106,6 +112,8 @@ All configuration lives in `config.py` and can be overridden from `.env`:
 | `JARVIS_MIC_DEVICE` | `default` | ALSA PCM name for `arecord -D` (any name from `arecord -L`) |
 | `JARVIS_DEBUG` | *(unset)* | Set to `1` to print per-chunk RMS / capture diagnostics (including the calibrated background median and floor) |
 | `JARVIS_PTT` | *(unset)* | Set to `1` for push-to-talk: press Enter to record, press Enter again (or stop talking) to end the phrase |
+| `JARVIS_TEXT` | *(unset)* | Set to `1` (or run `main.py --text`) to type commands instead of speaking |
+| `JARVIS_MUTE` | *(unset)* | Set to `1` to skip text-to-speech entirely (replies are still printed) |
 
 STT language (`en-US`), TTS voice (`en-US-AriaNeural`), history window, output
 token cap and tool-round limit are constants in `config.py`.
@@ -114,6 +122,9 @@ token cap and tool-round limit are constants in `config.py`.
 
 ```bash
 ./venv/bin/python main.py       # terminal voice loop
+./venv/bin/python main.py --text    # type commands instead of speaking
+./venv/bin/python main.py --check   # readiness report (same as doctor.py)
+./venv/bin/python doctor.py     # readiness report: tools, apps, config
 ./venv/bin/python gui.py        # floating Arc Reactor widget
 ./venv/bin/python test_mic.py   # microphone diagnostic (--list to list devices)
 ./venv/bin/python -m pytest     # run the test suite
@@ -190,12 +201,21 @@ confirmation first, then tries the router and only sends a miss to the agent.
 | `agent.py` | Groq chat orchestration: md5 response cache, token accounting, tool schemas built from function signatures, English-only system instruction, bounded tool loop. |
 | `tools.py` | Tool functions: open/close/list apps, YouTube, media, volume, brightness, screenshot, lock, system status, web search, save note, read file. |
 | `memory.py` | Rolling `deque` window of recent turns, rendered as a transcript. |
-| `main.py` | Terminal entry point and `handle()` dispatch. |
+| `main.py` | Terminal entry point and `handle()` dispatch (`--text`, `--check`). |
 | `gui.py` | PyQt5 Arc Reactor widget; the listen/think/speak cycle runs on a `QThread` and shares `main.handle()`. |
+| `doctor.py` | Readiness self-check: session type, installed tools and what each missing one costs, apps indexed, and API-key status. |
 | `test_mic.py` | Standalone mic diagnostic (arecord-based): lists capture devices via `arecord -l`/`-L`, records a WAV with the same command as `listen()`, reports RMS/peak, plays it back with `aplay`, and recognises it. |
 
 ## Troubleshooting
 
+- **Microphone problem / want to try commands instantly.** Type them instead of
+  speaking (no mic needed):
+
+  ```bash
+  JARVIS_TEXT=1 ./venv/bin/python main.py     # add JARVIS_MUTE=1 to skip TTS
+  ```
+
+  and print a readiness report first with `./venv/bin/python doctor.py`.
 - **`Listening…` repeats and nothing is recognised.** Run with diagnostics on:
 
   ```bash

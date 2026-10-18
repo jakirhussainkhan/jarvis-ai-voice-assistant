@@ -66,3 +66,32 @@ def test_agent_cache_hit_reports_cache(monkeypatch):
     assert main.handle("tell me something unique", Memory()) == (
         "cached reply", "cache", 0,
     )
+
+
+def test_agent_failure_is_caught_not_raised(monkeypatch):
+    """A network error in the agent must not kill the session."""
+    def boom(text, memory):
+        raise RuntimeError("network down")
+
+    monkeypatch.setattr(main, "run_agent", boom)
+    reply, kind, tokens = main.handle("tell me a joke", Memory())
+    assert "network down" in reply
+    assert kind == "local" and tokens == 0
+
+
+def test_text_mode_reads_a_typed_line(monkeypatch):
+    monkeypatch.setattr(main, "_TEXT", True)
+    monkeypatch.setattr("builtins.input", lambda prompt="": "open youtube")
+    assert main.read_input() == "open youtube"
+
+
+def test_text_mode_eof_is_an_exit(monkeypatch):
+    monkeypatch.setattr(main, "_TEXT", True)
+
+    def eof(prompt=""):
+        raise EOFError
+
+    monkeypatch.setattr("builtins.input", eof)
+    assert main.read_input() == "exit"
+
+

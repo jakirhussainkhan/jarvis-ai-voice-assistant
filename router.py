@@ -56,14 +56,19 @@ MEDIA_NOUN = re.compile(r"\b(song|track|music|video|media|playback|audio)\b", re
 VOL_WORD = re.compile(r"\b(volume|vol|sound|audio)\b", re.I)
 VOL_MUTE = re.compile(r"\bmute\b", re.I)
 VOL_UNMUTE = re.compile(r"\bunmute\b", re.I)
+# "make it louder/quieter" is a volume request even without the word "volume".
+VOL_ADJ = re.compile(r"\b(louder|louden|quieter|softer)\b", re.I)
 VOL_UP = re.compile(r"\b(up|increase|raise|louder|louden)\b", re.I)
-VOL_DOWN = re.compile(r"\b(down|decrease|lower|quieter|soften)\b", re.I)
+VOL_DOWN = re.compile(r"\b(down|decrease|lower|quieter|softer|soften)\b", re.I)
 VOL_SET = re.compile(r"\b(?:to|at)\s+(\d{1,3})\b")
 VOL_SET2 = re.compile(r"\b(?:volume|vol)\b[^0-9]{0,12}(\d{1,3})\b", re.I)
 
-BRIGHT_WORD = re.compile(r"\b(brightness|bright|brighten|dim|dimmer)\b", re.I)
+# "brighter"/"darker" are separate words (a bare "bright" does not match them).
+BRIGHT_WORD = re.compile(
+    r"\b(brightness|bright|brighten|brighter|dim|dimmer|darker)\b", re.I
+)
 BRIGHT_UP = re.compile(r"\b(up|increase|raise|brighter|brighten)\b", re.I)
-BRIGHT_DOWN = re.compile(r"\b(down|decrease|lower|dimmer|dim)\b", re.I)
+BRIGHT_DOWN = re.compile(r"\b(down|decrease|lower|dimmer|dim|darker)\b", re.I)
 
 # --- screenshot / lock ------------------------------------------------------ #
 SCREENSHOT_WORD = re.compile(
@@ -73,7 +78,9 @@ LOCK_WORD = re.compile(r"\block\b", re.I)
 
 # --- system / time / date --------------------------------------------------- #
 BATTERY_WORD = re.compile(r"\b(battery|charge|charging)\b", re.I)
-SYS_STATUS = re.compile(r"\b(cpu|ram|memory|status|disk|system)\b", re.I)
+# Only real status words match, so "open system settings"/"open system monitor"
+# are not mistaken for a status request (bare "system" used to match here).
+SYS_STATUS = re.compile(r"\b(cpu|ram|memory|disk|resources?|system status)\b", re.I)
 TIME_WORD = re.compile(r"\btime\b", re.I)
 DATE_WORD = re.compile(r"\bdate\b|\btoday'?s date\b", re.I)
 
@@ -84,13 +91,16 @@ YT_PLAY = re.compile(r"\b(play|watch|listen to|listen)\b", re.I)
 # --- open / close ----------------------------------------------------------- #
 OPEN_VERB = re.compile(r"\b(open|launch|start|run|show)\b", re.I)
 OPEN_STRIP = re.compile(
-    r"\b(open|launch|start|run|show|the|a|an|my|please|jarvis|app|application)\b",
+    r"\b(open|launch|start|run|show|the|a|an|my|our|me|us|please|jarvis"
+    r"|app|application)\b",
     re.I,
 )
 
 CLOSE_WORD = re.compile(r"\b(close|quit|kill|stop|exit)\b", re.I)
+# "browser" is deliberately NOT stripped, so "close the browser" targets the
+# browser app instead of leaving nothing.
 CLOSE_STRIP = re.compile(
-    r"\b(close|quit|kill|stop|exit|the|a|an|app|application|window|tab|browser"
+    r"\b(close|quit|kill|stop|exit|the|a|an|app|application|window|tab"
     r"|please|jarvis)\b",
     re.I,
 )
@@ -210,7 +220,8 @@ def try_local(text):
     # --- volume ------------------------------------------------------------ #
     # A bare "sound"/"audio" with no action (e.g. "open sound settings") is not
     # a volume command, so fall through instead of swallowing it.
-    if VOL_WORD.search(t) or VOL_MUTE.search(t) or VOL_UNMUTE.search(t):
+    if (VOL_WORD.search(t) or VOL_MUTE.search(t) or VOL_UNMUTE.search(t)
+            or VOL_ADJ.search(t)):
         result = _volume_action(t)
         if result:
             return desktop.volume_control(*result)
@@ -228,7 +239,9 @@ def try_local(text):
     # --- screenshot / lock ------------------------------------------------- #
     if SCREENSHOT_WORD.search(t):
         return desktop.screenshot()
-    if LOCK_WORD.search(t):
+    # Guard lock with the open verb so "open lock screen settings" opens the app
+    # instead of instantly locking the session.
+    if LOCK_WORD.search(t) and not OPEN_VERB.search(t):
         return desktop.lock_screen()
 
     # --- system status / battery / time / date ----------------------------- #
