@@ -26,13 +26,32 @@ import speech_recognition as sr
 import desktop
 from config import STT_LANG, TTS_VOICE
 
+def _env_int(name, default, minimum):
+    """Read an int from the environment, clamped and never raising."""
+    try:
+        return max(minimum, int(os.getenv(name, "").strip() or default))
+    except ValueError:
+        return max(minimum, default)
+
+
+def _env_float(name, default, minimum):
+    """Read a float from the environment, clamped and never raising."""
+    try:
+        return max(minimum, float(os.getenv(name, "").strip() or default))
+    except ValueError:
+        return max(minimum, default)
+
+
 # Hard bounds so a silent, missing, busy or blocked microphone can never stall
-# the caller (and therefore the worker loop) indefinitely.
-_LISTEN_TIMEOUT = max(5, int(os.getenv("JARVIS_LISTEN_TIMEOUT", "30").strip() or 30))
+# the caller (and therefore the worker loop) indefinitely. All of them are tunable
+# because the right values depend on how you speak and how noisy the room is.
+_LISTEN_TIMEOUT = _env_int("JARVIS_LISTEN_TIMEOUT", 30, 5)
 # ^ max seconds to wait for speech to *start* after you trigger Jarvis. Generous
 #   by default (30 s) so you can think, or say a long name, without it giving up.
-_PHRASE_TIME_LIMIT = 6     # max seconds of a single utterance
-_RECOGNIZE_TIMEOUT = 8     # max seconds for the speech-to-text HTTP round-trip
+_PHRASE_TIME_LIMIT = _env_int("JARVIS_PHRASE_LIMIT", 15, 3)
+# ^ max seconds of a single utterance (was 6 s): long enough for a whole sentence
+#   so a wordy request is never truncated mid-way.
+_RECOGNIZE_TIMEOUT = 15    # max seconds for the speech-to-text HTTP round-trip
 
 # Fixed RMS gate: no ambient auto-calibration and no dynamic threshold.
 # Measured on this machine's onboard mic (ALC245): idle ambient RMS is ~40-80,
@@ -57,12 +76,14 @@ _CHUNK_BYTES = _CHUNK_FRAMES * _SAMPLE_WIDTH         # 3200
 # background noise first and set the stop floor to 1.5x its median, clamped to
 # [_SILENCE_THRESHOLD, _MAX_SILENCE_THRESHOLD] (150..300). Hysteresis then keeps
 # recording through brief dips between words; the phrase only ends after
-# ~_SILENCE_SECONDS (1.2 s) below that floor.
+# _SILENCE_SECONDS (2 s) below that floor.
 _SILENCE_THRESHOLD = 150        # minimum floor (also the fallback)
 _MAX_SILENCE_THRESHOLD = 300    # maximum floor
 _SILENCE_FACTOR = 1.5
-_SILENCE_SECONDS = 1.2
-_SILENCE_CHUNKS_TO_STOP = max(1, round(_SILENCE_SECONDS / _CHUNK_SECONDS))  # 12
+_SILENCE_SECONDS = _env_float("JARVIS_SILENCE_END", 2.0, 0.5)
+# ^ how long a pause may last before the phrase is treated as finished (was 1.2 s).
+#   Longer by default so a thinking pause mid-sentence does not cut you off. The
+#   chunk count is derived at capture time, so a changed value always applies.
 
 # Warm-up: the very first chunk after the stream opens is a spike (it reads
 # ~6000 and decays). We keep it out of the background estimate and skip its
@@ -347,6 +368,7 @@ def _capture_from_stream(stream, fd=None, ptt=False, stop_event=None):
     # Cap by chunk count as well as wall-clock, so a stream that delivers faster
     # than realtime (e.g. a file) still honours the phrase limit.
     max_phrase_chunks = max(1, round(_PHRASE_TIME_LIMIT / _CHUNK_SECONDS))
+    silence_chunks_to_stop = max(1, round(_SILENCE_SECONDS / _CHUNK_SECONDS))
 
     def report_calibration():
         nonlocal reported
@@ -448,9 +470,9 @@ def _capture_from_stream(stream, fd=None, ptt=False, stop_event=None):
         if _DEBUG:
             _dbg(f"chunk rms={rms:.0f} gate={_ENERGY_THRESHOLD} "
                  f"state=recording floor={stop_threshold} "
-                 f"silence={silent_run}/{_SILENCE_CHUNKS_TO_STOP}")
+                 f"silence={silent_run}/{silence_chunks_to_stop}")
 
-        if silent_run >= _SILENCE_CHUNKS_TO_STOP:
+        if silent_run >= silence_chunks_to_stop:
             reason = "silence"
             break
         if len(chunks) >= max_phrase_chunks:

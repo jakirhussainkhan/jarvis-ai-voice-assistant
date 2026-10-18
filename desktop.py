@@ -899,9 +899,11 @@ def brightness_control(action, value=None):
 def capture_screenshot(path):
     """Capture the whole screen to ``path``. Returns the Path on success, else None.
 
-    Tries the desktop-native tools first, then scrot, then ImageMagick's import.
-    Never raises. Used by :func:`screenshot` and by :mod:`vision` to feed the
-    screen to the vision model.
+    Tries the *silent* tools first -- ``scrot``, then ImageMagick's ``import`` --
+    and only falls back to ``gnome-screenshot``, which plays a bright shutter
+    animation on Cinnamon and has no flag to disable it. That matters because
+    :func:`vision.act` captures the screen once per step. Never raises. Used by
+    :func:`screenshot` and by :mod:`vision` to feed the screen to the vision model.
     """
     path = Path(path)
     try:
@@ -909,9 +911,9 @@ def capture_screenshot(path):
     except OSError:
         pass
     attempts = (
-        ["gnome-screenshot", "-f", str(path)],
         ["scrot", str(path)],
         ["import", "-window", "root", str(path)],
+        ["gnome-screenshot", "-f", str(path)],      # last resort: it flashes
     )
     for cmd in attempts:
         if not has(cmd[0]):
@@ -933,7 +935,7 @@ def screenshot():
     path = folder / f"jarvis-screenshot-{stamp}.png"
     if capture_screenshot(path) is not None:
         return f"Screenshot saved as {path.name}."
-    return "I couldn't take a screenshot; install gnome-screenshot or scrot."
+    return "I couldn't take a screenshot; install scrot or ImageMagick."
 
 
 def lock_screen():

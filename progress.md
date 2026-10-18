@@ -26,8 +26,8 @@ GUI.
 | Desktop control (apps/YouTube/media/volume/brightness/screenshot/lock) | Working |
 | Confirmation-gated actions | Working (power, risky terminal, risky screen goals) |
 | Timers / reminders | Working |
-| Tests | `pytest` suite — **282 passed, 1 skipped** |
-| Published | GitHub, tags **`v1.0.1`**, **`v1.0.2`**, **`v1.0.3`** (README + MIT LICENSE) |
+| Tests | `pytest` suite — **286 passed, 1 skipped** |
+| Published | GitHub, tags **`v1.0.1`**, **`v1.0.2`**, **`v1.0.3`**, **`v1.0.4`** (README + MIT LICENSE) |
 
 ## Repository & releases
 
@@ -35,10 +35,46 @@ GUI.
 - Default branch: `main`
 - Release tags: **`v1.0.0`** (initial), **`v1.0.1`** (screen vision, live
   internet, guarded terminal, offline-first, terminal hardening),
-  **`v1.0.2`** (voice-chat widget: mic mute/unmute, Stop, live reactive orb) and
+  **`v1.0.2`** (voice-chat widget: mic mute/unmute, Stop, live reactive orb),
   **`v1.0.3`** (play a song by name / pick one off the screen; 30 s listen window;
-  Stop cancels a wait; copy-paste install hints).
+  Stop cancels a wait; copy-paste install hints) and **`v1.0.4`** (no more
+  mid-sentence cut-offs; silent screen reading, no flash).
 - Secrets are **not** committed (see *Security* below).
+
+## No more cut-offs, and silent screen reading (2026-10-18, v1.0.4)
+
+Two things the user hit while actually using it.
+
+- **It answered before the sentence was finished.** Two hard limits were too
+  tight: the phrase ended after **1.2 s** below the calibrated floor, and the whole
+  utterance was **capped at 6 s**. A natural thinking pause (e.g. between "play …"
+  and the song name) therefore truncated the request. Both are now generous and
+  tunable: `JARVIS_SILENCE_END` (default **2.0 s**) and `JARVIS_PHRASE_LIMIT`
+  (default **15 s**). The silence chunk count is derived at capture time (as the
+  phrase cap already was), so an env change always applies. `_RECOGNIZE_TIMEOUT`
+  went 8 s → 15 s to match the longer audio, and env parsing moved into small
+  `_env_int` / `_env_float` helpers that clamp and never raise on bad input.
+- **Reading the screen made the screen flash.** `desktop.capture_screenshot()`
+  tried `gnome-screenshot` **first**, and on Cinnamon it plays a bright shutter
+  animation — worse, `vision.act()` captures once per step (up to 6 times). That
+  version has no flag to disable the flash, so the order is now **silent first**:
+  `scrot`, then ImageMagick `import`, and `gnome-screenshot` only as a last resort.
+  The failure message and `doctor.py` now say so too.
+
+Verified live: `vision.capture_png()` runs `scrot` → `convert` in **0.37 s** and
+invokes `gnome-screenshot` **not at all**; new tests assert a silent tool is used
+whenever one is present, and that `gnome-screenshot` is only reached when nothing
+else exists.
+
+Also fixed while here: the synthetic capture tests fed 1.5 s of trailing silence and
+relied on the old 1.2 s window to end the phrase; with a 2 s window they ran to the
+stream deadline instead (the suite went 11 s → 69 s). The test pipe now **closes its
+write end** once the writer is done, so the reader gets a real EOF and finishes
+promptly — the suite is back to **2.3 s** — and the `_capture` helper pins the
+windows so the tests stay deterministic.
+
+**Files:** `voice.py`, `desktop.py`, `doctor.py`, `config.py`
+(`__version__ = "1.0.4"`), `test_voice_capture.py`, `test_screen.py`, `README.md`.
 
 ## YouTube flow, a 30 s listening window & install hints (2026-10-18, v1.0.3)
 
@@ -58,7 +94,7 @@ only **4 s**, which felt far too fast.
   search branch.
 - **30 s to start speaking.** `_LISTEN_TIMEOUT` went from **4 s → 30 s**
   (`JARVIS_LISTEN_TIMEOUT` overrides it). This is the window to *begin* speaking;
-  a single phrase is still capped at 6 s.
+  a single phrase is still capped at 6 s (**15 s** since v1.0.4).
 - **Stop cancels the wait.** New `voice.stop_listening()` sets an event checked
   every 0.1 s chunk, so the GUI **Stop** button (or `Space`) abandons a listen
   that is still waiting for you instead of making you wait out the window. The
@@ -339,7 +375,8 @@ Two front ends share the same brain:
   is then **auto-calibrated** to `1.5 × median(background)` clamped to
   **150–300**. Speech starts on RMS > **300**, a ~0.3 s **pre-roll** keeps quiet
   onsets, **hysteresis** keeps recording while RMS stays above the calibrated
-  floor, the phrase ends after ~**1.2 s** below it, caps phrases at **6 s**, and
+  floor, the phrase ends after ~**2 s** below it (`JARVIS_SILENCE_END`, was 1.2 s),
+  caps phrases at **15 s** (`JARVIS_PHRASE_LIMIT`, was 6 s), and
   waits at most **30 s** (`JARVIS_LISTEN_TIMEOUT`, was 4 s) for speech to start.
   Playing media is paused before the mic
   opens and resumed after capture (best effort, `playerctl` then `pactl`), and
@@ -567,7 +604,9 @@ list.
   bounded at 0.5 s) without cutting a phrase that starts immediately.
 - The stop floor is auto-calibrated per listen: `1.5 × median(background)`
   clamped to **150–300**, replacing the fixed 150.
-- Phrases are capped at **6 s** (was 8 s).
+- Phrases are capped at **15 s** (was 6 s, originally 8 s); a pause of **2 s**
+  (`JARVIS_SILENCE_END`) now ends the phrase instead of 1.2 s, so a thinking pause
+  mid-sentence is no longer treated as the end. Both are env-tunable (v1.0.4).
 - Jarvis waits up to **30 s** for you to start speaking (was 4 s); set
   `JARVIS_LISTEN_TIMEOUT` to tune it, and the GUI **Stop** button abandons a
   pending wait.
@@ -933,5 +972,6 @@ JARVIS_MIC_DEVICE=plughw:1,0 ./venv/bin/python main.py  # force an arecord -L de
 JARVIS_DEBUG=1 ./venv/bin/python main.py           # print per-chunk RMS / capture diagnostics
 JARVIS_PTT=1 ./venv/bin/python main.py             # push-to-talk: Enter to start, Enter to stop
 JARVIS_LISTEN_TIMEOUT=60 ./venv/bin/python main.py # wait longer for you to start speaking (default 30)
+JARVIS_SILENCE_END=3 JARVIS_PHRASE_LIMIT=30 ./venv/bin/python main.py  # don't cut a long sentence
 JARVIS_TEXT=1 JARVIS_MUTE=1 ./venv/bin/python main.py  # type commands, no mic / no TTS
 ```

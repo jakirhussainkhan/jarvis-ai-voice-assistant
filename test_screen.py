@@ -264,5 +264,44 @@ def test_capture_screenshot_falls_back_to_scrot(monkeypatch, tmp_path):
     assert desktop.capture_screenshot(out) == out
 
 
+def test_capture_screenshot_prefers_a_silent_tool(monkeypatch, tmp_path):
+    """gnome-screenshot flashes the screen, so it must never be tried first.
+
+    Reading the screen (and every step of vision.act) uses this, and the flash is
+    painful to look at.
+    """
+    out = tmp_path / "s.png"
+    called = []
+
+    def fake_run(args, timeout=15):
+        called.append(args[0])
+        if args[0] == "scrot":
+            out.write_bytes(b"png-bytes")
+            return 0, ""
+        return 127, "no"
+
+    monkeypatch.setattr(desktop, "has", lambda t: True)   # everything installed
+    monkeypatch.setattr(desktop, "_run", fake_run)
+
+    assert desktop.capture_screenshot(out) == out
+    assert called == ["scrot"], "a silent capture must be used, never a flash"
+    assert "gnome-screenshot" not in called
+
+
+def test_capture_screenshot_uses_gnome_only_as_a_last_resort(monkeypatch, tmp_path):
+    out = tmp_path / "s.png"
+    called = []
+
+    def fake_run(args, timeout=15):
+        called.append(args[0])
+        desktop.Path(args[-1]).write_bytes(b"png-bytes")
+        return 0, ""
+
+    monkeypatch.setattr(desktop, "has", lambda t: t == "gnome-screenshot")
+    monkeypatch.setattr(desktop, "_run", fake_run)
+    assert desktop.capture_screenshot(out) == out
+    assert called == ["gnome-screenshot"]
+
+
 def test_matching_process_pids_empty_query():
     assert desktop.matching_process_pids("") == []

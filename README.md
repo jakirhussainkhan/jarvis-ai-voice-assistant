@@ -1,6 +1,6 @@
 # Jarvis — Voice Assistant for Linux
 
-**Version 1.0.3**
+**Version 1.0.4**
 
 A voice-controlled desktop assistant for Linux that can *see* your screen, use the
 internet, and operate the terminal. You speak a command; Jarvis either handles it
@@ -16,6 +16,17 @@ confirmation-gated everywhere. When a tool is missing it will *print* a
 copy-paste install command for you to run yourself, but it never executes one.
 
 ---
+
+## What's new in 1.0.4
+
+- **It no longer cuts you off mid-sentence.** A pause while you think (or between
+  "play …" and the song name) used to end the phrase after just **1.2 s**, and the
+  whole utterance was **capped at 6 s**. It now tolerates a **2 s** pause and fits
+  up to **15 s** of speech. Tune with `JARVIS_SILENCE_END` / `JARVIS_PHRASE_LIMIT`.
+- **Silent screen reading — no more flash.** `gnome-screenshot` plays a bright
+  shutter animation (and `vision.act` captures once per step), which is painful to
+  look at. Screenshots now use **`scrot`**, then ImageMagick **`import`**, and
+  `gnome-screenshot` only as a last resort.
 
 ## What's new in 1.0.3
 
@@ -79,7 +90,8 @@ copy-paste install command for you to run yourself, but it never executes one.
 - **Real-time screen vision** — reads the screen ("what does this error say?",
   "summarise this page") and operates it ("click Save", "type my name in the box",
   or pick something you are pointing at: "play the second song", "play that one")
-  through whitelisted mouse/keyboard actions only.
+  through whitelisted mouse/keyboard actions only. Screenshots are taken
+  **silently** (`scrot`, then `import`) — never with `gnome-screenshot`'s flash.
 - **Internet intelligence** — `fn_web_lookup` (live search), `fn_fetch_page`,
   `fn_wikipedia`, `fn_weather`. No API keys required for any of them.
 - **Guarded terminal** — `fn_run_command` (hidden, output returned) and
@@ -113,12 +125,13 @@ copy-paste install command for you to run yourself, but it never executes one.
   -r 16000 -c 1` (PyAudio/PortAudio never saw this machine's mic), read in 0.1 s
   chunks and RMS-gated. The stream-open spike is discarded, the stop floor is
   auto-calibrated from the room noise (`1.5 × median`, clamped to 150–300), a
-  ~0.3 s pre-roll keeps quiet onsets, and hysteresis ends the phrase after ~1.2 s
-  of silence. Phrases are capped at 6 s, and Jarvis waits up to **30 s**
-  (`JARVIS_LISTEN_TIMEOUT`) for you to start speaking — Stop abandons a pending
-  wait. Playing media is paused while Jarvis listens and resumed afterwards (best
-  effort), and `JARVIS_PTT=1` switches to push-to-talk for noisy rooms.
-- **Tests** — a `pytest` suite of **282 tests** (1 skipped) covering routing, app
+  ~0.3 s pre-roll keeps quiet onsets, and hysteresis ends the phrase after ~2 s
+  of silence. Phrases are capped at 15 s (`JARVIS_PHRASE_LIMIT`), and Jarvis waits
+  up to **30 s** (`JARVIS_LISTEN_TIMEOUT`) for you to start speaking — Stop
+  abandons a pending wait. Playing media is paused while Jarvis listens and
+  resumed afterwards (best effort), and `JARVIS_PTT=1` switches to push-to-talk
+  for noisy rooms.
+- **Tests** — a `pytest` suite of **286 tests** (1 skipped) covering routing, app
   matching, the protected list, the confirmation flow, the terminal guardrails,
   screen routing, clipboard fallbacks, offline behaviour, the internet tools,
   vision parsing, timers, the YouTube path (play-by-name and on-screen picks),
@@ -153,7 +166,7 @@ notify-send  xdg-utils  yt-dlp  xclip (or xsel, optional — Qt is the fallback)
 | `yt-dlp` | playing the top YouTube result instead of opening search |
 | `playerctl` | pause / resume / next / previous / stop / seek |
 | `brightnessctl` | screen brightness |
-| `gnome-screenshot` / `scrot` / ImageMagick `import` | screenshots |
+| `gnome-screenshot` / `scrot` / ImageMagick `import` | screenshots (`scrot`/`import` preferred — `gnome-screenshot` flashes the screen) |
 | `convert` / `ffmpeg` | shrinking screenshots for the vision model |
 | `notify-send` | desktop notifications |
 | `xdg-open` | opening files, folders and URLs |
@@ -196,6 +209,8 @@ All configuration lives in `config.py` and can be overridden from `.env`:
 | `JARVIS_OFFLINE` | *(unset)* | `1` disables the agent (router only) |
 | `JARVIS_MIC_DEVICE` | `default` | ALSA PCM name for `arecord -D` |
 | `JARVIS_LISTEN_TIMEOUT` | `30` | Seconds to wait for you to start speaking |
+| `JARVIS_SILENCE_END` | `2.0` | Seconds of a pause that ends the phrase |
+| `JARVIS_PHRASE_LIMIT` | `15` | Max seconds of a single utterance |
 | `JARVIS_DEBUG` | *(unset)* | `1` prints per-chunk RMS / capture diagnostics |
 | `JARVIS_PTT` | *(unset)* | `1` for push-to-talk (Enter to start/stop) |
 | `JARVIS_TEXT` | *(unset)* | `1` to type commands instead of speaking |
@@ -389,6 +404,18 @@ Notes & timers: `fn_save_note`, `fn_read_file`, `fn_set_timer`, `fn_set_reminder
   timeout, an unrecognised capture, or a network (`RequestError`) failure.
 - **Input is clipping** (debug prints `peak at full scale (32768)`): lower the
   microphone gain in your system mixer.
+- **Jarvis answers before you finish your sentence.** It thought you had stopped:
+  a pause ended the phrase. Give yourself more room:
+
+  ```bash
+  JARVIS_SILENCE_END=3 JARVIS_PHRASE_LIMIT=30 ./venv/bin/python main.py
+  ```
+
+  and run with `JARVIS_DEBUG=1` to see the exact `state=ended reason=…`
+  (`silence` = it thought you finished; `max_time`/`max_length` = the cap).
+- **The screen flashes when Jarvis looks at it.** It shouldn't — capture uses
+  `scrot`/`import`, never `gnome-screenshot`. If `scrot` and ImageMagick's
+  `import` are both missing, install one of them.
 - **Phrases never end / music keeps the gate open:** move the mic away from the
   speakers, or set `JARVIS_PTT=1` and end phrases by hand with Enter.
 - **"playerctl/brightnessctl is not installed"**: the message (and

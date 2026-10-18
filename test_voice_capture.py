@@ -55,6 +55,13 @@ class _Pipe:
                 os.write(self.w, data)
             except OSError:
                 pass
+            finally:
+                # Signal a real EOF once the writer is done, so the reader finishes
+                # promptly instead of waiting out a timeout.
+                try:
+                    os.close(self.w)
+                except OSError:
+                    pass
 
         threading.Thread(target=run, daemon=True).start()
 
@@ -66,9 +73,12 @@ class _Pipe:
                 pass
 
 
-def _capture(pipe, monkeypatch, *, wait=2.0, phrase=5.0):
+def _capture(pipe, monkeypatch, *, wait=2.0, phrase=5.0, silence=0.5):
+    # Override the (generous) production windows so synthetic runs end promptly;
+    # the real defaults are asserted by test_phrase_windows_are_generous_by_default.
     monkeypatch.setattr(voice, "_LISTEN_TIMEOUT", wait)
     monkeypatch.setattr(voice, "_PHRASE_TIME_LIMIT", phrase)
+    monkeypatch.setattr(voice, "_SILENCE_SECONDS", silence)
     return voice._capture_from_stream(pipe.reader)
 
 
@@ -249,6 +259,37 @@ def test_listen_timeout_is_generous_by_default():
     if os.getenv("JARVIS_LISTEN_TIMEOUT"):
         pytest.skip("JARVIS_LISTEN_TIMEOUT is set in this environment")
     assert voice._LISTEN_TIMEOUT >= 25
+
+
+def test_phrase_windows_are_generous_by_default():
+    """A whole sentence must fit, and a thinking pause must not cut it."""
+    if os.getenv("JARVIS_PHRASE_LIMIT") or os.getenv("JARVIS_SILENCE_END"):
+        pytest.skip("the tuning env vars are set in this environment")
+    assert voice._PHRASE_TIME_LIMIT >= 12, "a full sentence must not be truncated"
+    assert voice._SILENCE_SECONDS >= 1.5, "a pause mid-sentence must not end it"
+
+
+def test_a_pause_between_words_is_not_a_full_stop(monkeypatch):
+    """Regression: "play ... kesariya" was cut off during the thinking pause.
+
+    With the old 1.2 s end-of-phrase window an 0.8 s pause survived, but any pause
+    past it truncated the sentence; the window is now 2 s by default.
+    """
+    eager, patient = _Pipe(), _Pipe()
+    try:
+        utterance = (_tone(0.4, 3000) + _silence(0.8) + _tone(0.4, 3000)
+                     + _silence(3.0))
+        eager.feed(utterance)
+        patient.feed(utterance)
+
+        cut = _capture(eager, monkeypatch, silence=0.5)      # a too-eager window
+        kept = _capture(patient, monkeypatch, silence=2.0)   # the new default
+
+        assert len(cut) < len(kept), "a 0.8 s pause must not truncate the phrase"
+        assert len(kept) >= int(1.4 * voice._SAMPLE_RATE) * voice._SAMPLE_WIDTH
+    finally:
+        eager.close()
+        patient.close()
 
 
 def test_stop_listening_abandons_the_wait(monkeypatch):
