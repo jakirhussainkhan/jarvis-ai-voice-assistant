@@ -61,10 +61,11 @@ Two front ends share the same brain:
   `STT_LANG` (`en-US`), `TTS_VOICE` (`en-US-AriaNeural`), and the
   history/output/tool limits.
 - `voice.py` — `listen()` (SpeechRecognition + Google STT, `en-US`) and `speak()`
-  (edge-tts + pygame, `en-US-AriaNeural`). Suppresses ALSA/JACK spam, picks the
-  onboard mic (`ALC245` / `hw:1,0`), uses a **fixed** energy threshold with a
-  **warm-up flush**, and bounds every call with timeouts so a dead mic can never
-  stall the loop.
+  (edge-tts + pygame, `en-US-AriaNeural`). Suppresses ALSA/JACK spam, selects the
+  **system default input** (PipeWire / `default`, with a `JARVIS_MIC_INDEX`
+  override and `ALC245` / `hw:1,0` only as a last resort), uses a **fixed** energy
+  threshold with a **warm-up flush**, and bounds every call with timeouts so a
+  dead mic can never stall the loop.
 - `router.py` — `try_local()`: offline regex handling for volume, system status,
   time, date, YouTube (open/play only) and app launching. Any command containing
   a search verb (`search`, `look up`, `find`) returns `None` so it reaches the
@@ -97,8 +98,9 @@ Two front ends share the same brain:
 - Offline fast-path for common commands; API only used on a miss.
 - Local tools for app control, system stats, search, notes, and file reading.
 - Response cache to avoid repeat API calls for identical queries.
-- **Microphone capture fixed** (see below): the mic's stream-open transient used
-  to poison the dynamic energy threshold and make `listen()` always time out.
+- **Microphone capture fixed** (see below): the wrong input device (direct ALSA
+  `hw:1,0`) plus a clipping 100 % capture gain made `listen()` always time out /
+  return `""`; it now uses the system default input with a sane gain.
 - Floating, transparent, always-on-top reactor widget with live state colours
   (Idle / Listening / Thinking / Speaking).
 - pytest suite covering routing, `is_exit`, memory, the response cache, and the
@@ -108,28 +110,43 @@ Two front ends share the same brain:
 ### Microphone fix (2026-10-18)
 
 Symptom: `main.py` printed `Listening…` forever and never recognised speech, even
-when clearly spoken. Measured on the real mic (`ALC245`, device 4):
+when clearly spoken. There were **two** causes:
 
-- Idle ambient is quiet — RMS ≈ 40.
-- Every time the capture stream opens after a few seconds idle, the mic emits a
-  loud, **clipped** transient: peak **32768** (full scale, ~2700 clipped samples),
-  RMS 32768 for the first ~7 buffers (~150 ms), decaying below the gate only
-  after ~0.8 s. This re-appears after TTS/agent gaps.
-- With the old `energy_threshold = 300` + `dynamic_energy_threshold = True`, that
-  transient tripped the gate, produced a too-short "phrase" that was discarded,
-  and ratcheted the threshold from 300 up to ~14000 — after which ambient (≈40)
-  never tripped it, so `listen()` raised `WaitTimeoutError` and returned `""`.
+**1. Wrong input device.** `voice.py` used the onboard codec directly
+(`ALC245` / `hw:1,0`, index 4). While PipeWire owns the device, that direct-ALSA
+path returns a loud, **clipped** signal (peak 32768) — or fails to open at all
+(`AttributeError: 'NoneType' object has no attribute 'close'`) — so `listen()`
+always timed out after discarding 23–40 warm-up buffers. `arecord -D default`
+recorded the voice fine, proving the mic works through the **system default /
+PipeWire** device.
 
-Fix (`voice.py`):
+Fix: `_pick_input_device()` now prefers the system default input (device named
+`default`, then `pipewire` / `pulse`), with `ALC245` / `hw:1,0` only as a last
+resort. `JARVIS_MIC_INDEX=<n>` overrides the choice.
 
-- `energy_threshold = 300`, **fixed**; `dynamic_energy_threshold = False`; no
-  `adjust_for_ambient_noise()`.
-- `_flush_warmup(src)` discards the stream-open transient right after the mic
-  opens (until input settles, bounded at 1.5 s) — on the real mic it drops
-  34–45 buffers (~0.73–0.96 s) per call.
-- `RequestError` (network/STT) is now printed loudly instead of being swallowed;
-  `WaitTimeoutError` / `UnknownValueError` / capture errors log distinct messages.
-- Debug output is gated behind `JARVIS_DEBUG=1`.
+**2. Capture gain too high.** The ALSA `Capture` control was at **100 % (30 dB)**,
+which clipped (peak 32768) and pushed the noise floor to ~3000–14500 RMS — far
+above the 300 gate — so `listen()` grabbed noise and returned `""`.
+
+Capture-floor vs gain (`arecord -D default`, RMS):
+
+| Capture | floor RMS | peak |
+| --- | --- | --- |
+| 100 % | 14559 | 32768 (clip) |
+| 70 % | 492 | 4708 |
+| 50 % | 158 (p95 1445) | 1131 |
+| 40 % | 84 (p50), 165 max | — |
+| 35 % | 66 | — |
+
+At 50 % the floor still spikes past 300, so **40 %** is the recommended setting
+(`amixer -c 1 sset Capture 40%`); 100 % clips badly.
+
+Also kept (from the earlier threshold fix): `energy_threshold = 300` fixed,
+`dynamic_energy_threshold = False`, no `adjust_for_ambient_noise()`, and
+`_flush_warmup(src)` which discards the stream-open transient (bounded at 1.5 s).
+`RequestError` is printed loudly instead of being swallowed; `WaitTimeoutError` /
+`UnknownValueError` / capture errors log distinct messages; debug output is gated
+behind `JARVIS_DEBUG=1`.
 
 ## Verification (2026-10-18)
 
@@ -137,12 +154,20 @@ Fix (`voice.py`):
 - Real dispatch via `main.handle()`: `"what time is it"` → local, no API call.
 - Real dispatch via `main.handle()` with a live Groq call: `"open YouTube and
   search for lo-fi music"` reaches the agent and triggers the `fn_youtube` tool.
-- Mic fix, end-to-end through the real `listen()` path (system-output loopback):
-  captured `157696` bytes, `rms=3040 peak=17347` → recognised `'open YouTube'`.
-  With no speech it now correctly returns a timeout instead of grabbing garbage.
-- Manual chunk scan confirms the transient: first buffers at RMS `32768 …` decaying
-  to `~40`; idle ambient `~40`.
-- `test_mic.py` on device 4 (ALC245): capture 286 KB, peak 32768, playback OK.
+- Device selection: `voice._pick_input_device()` → **7 (`default`)**;
+  `test_mic.py` now tests the same device that `voice.py` picks and prints the
+  index.
+- `JARVIS_MIC_INDEX` override verified (`=6` → device 6).
+- `listen()` on the chosen device, capture + recognition via the system-output
+  loopback (**not** the real voice): captured `157696` bytes,
+  `rms=3040 peak=17163` → recognised `'open YouTube'`.
+- `listen()` with no speech at 40 % capture gain: clean `WaitTimeoutError`
+  ("no speech above threshold") — no false captures.
+- `JARVIS_DEBUG=1 ./venv/bin/python main.py`: device `7`, threshold `300`,
+  warm-up discards the TTS-gap transient (18 buffers, ~0.42 s), then timeouts
+  while silent.
+- `test_mic.py` device selection prints: system default `7 (default)`,
+  `voice.py would pick 7 (default)`, chosen index `7`.
 - Project source has no `gemini` / `GEMINI_API_KEY` / `google.genai` references;
   the unused `google-genai` SDK was uninstalled from `venv/`.
 
@@ -190,3 +215,11 @@ echo "GROQ_API_KEY=your-key" > .env   # Groq key, starts with gsk_
 Requires a working microphone and, for the agent path, network access plus a
 valid Groq `GROQ_API_KEY`. `.env`, `venv/`, caches, `TOKEN.txt` and audio
 artifacts are gitignored.
+
+Microphone tips (this machine):
+
+```bash
+amixer -c 1 sset Capture 40%                    # 100% clips; 40% keeps the floor under the 300 gate
+JARVIS_MIC_INDEX=7 ./venv/bin/python main.py    # force an input device index
+JARVIS_DEBUG=1 ./venv/bin/python main.py        # print capture / recognition diagnostics
+```

@@ -81,7 +81,7 @@ def default_input_index():
 
 
 def preferred_input_index():
-    """Whatever voice._pick_input_device() would choose (PipeWire/Pulse)."""
+    """Whatever voice._pick_input_device() would choose (system default/PipeWire)."""
     try:
         from voice import _pick_input_device
         return _pick_input_device()
@@ -103,13 +103,14 @@ def record_wav(index, seconds):
     """Requirement 3: capture `seconds` of audio to test_mic.wav."""
     rec = sr.Recognizer()
     rec.energy_threshold = 300
-    rec.dynamic_energy_threshold = True
+    rec.dynamic_energy_threshold = False
 
     print(f"\n🔴 Recording {seconds}s from device {device_name(index)} ...")
     with sr.Microphone(device_index=index) as src:
         # Deliberately NO adjust_for_ambient_noise() here: on this hardware it
-        # pushed energy_threshold to ~30000 and blocked normal speech. We keep
-        # a low fixed floor + dynamic adaptation instead.
+        # pushed energy_threshold to ~30000 and blocked normal speech. We keep a
+        # low fixed floor instead (matching voice.py). rec.record() ignores the
+        # threshold anyway, but the settings stay in sync with voice.py.
         audio = rec.record(src, duration=seconds)
 
     with open(WAV_PATH, "wb") as fh:
@@ -188,7 +189,8 @@ def check_energy_threshold():
         print(f"   could not read voice.py: {exc}")
         return
 
-    match = re.search(r"energy_threshold\s*=\s*([0-9.]+)", src)
+    match = (re.search(r"_ENERGY_THRESHOLD\s*=\s*([0-9.]+)", src)
+             or re.search(r"energy_threshold\s*=\s*([0-9.]+)", src))
     dynamic = re.search(r"dynamic_energy_threshold\s*=\s*(True|False)", src)
     if not match:
         print("   no static energy_threshold found in voice.py")
@@ -207,14 +209,19 @@ def check_energy_threshold():
         "\n   Recommended capture settings (NO ambient calibration):\n"
         "     rec = sr.Recognizer()\n"
         "     rec.energy_threshold = 300            # low fixed floor\n"
-        "     rec.dynamic_energy_threshold = True   # adapts while listening\n"
+        "     rec.dynamic_energy_threshold = False  # fixed gate, no drift\n"
         "     with sr.Microphone(device_index=idx) as src:\n"
+        "         <discard the stream-open warm-up transient>\n"
         "         audio = rec.listen(src, timeout=4, phrase_time_limit=8)\n"
         "\n   Notes:\n"
         "   - Do NOT call adjust_for_ambient_noise() on this machine: it pushed\n"
         "     the threshold to ~30000 and ignored normal speech.\n"
-        "   - Prefer the onboard analog input (ALC245 / hw:1,0, index 4) over\n"
-        "     the PipeWire/Pulse gateways."
+        "   - Use the system default input (\"default\" / PipeWire). Direct ALSA\n"
+        "     access to the onboard codec (hw:1,0) returns a loud clipped signal\n"
+        "     and makes every listen() time out.\n"
+        "   - If the noise floor is high / audio clips, lower the capture gain\n"
+        "     (e.g. `amixer -c 1 sset Capture 50%`); 100% (30 dB) clips here.\n"
+        "   - Override the device with JARVIS_MIC_INDEX=<n> in the environment."
     )
 
 
@@ -225,7 +232,7 @@ def check_energy_threshold():
 def main():
     parser = argparse.ArgumentParser(description="Jarvis microphone diagnostic")
     parser.add_argument("--device", type=int, default=None,
-                        help="force a device index (default: system default)")
+                        help="force a device index (default: the device voice.py picks)")
     parser.add_argument("--seconds", type=float, default=3.0,
                         help="seconds to record (default: 3)")
     parser.add_argument("--list", action="store_true",
@@ -246,21 +253,25 @@ def main():
 
     default_idx = default_input_index()
     preferred_idx = preferred_input_index()
-    chosen = args.device if args.device is not None else default_idx
+    # Test the SAME device voice.py would pick (falling back to the system
+    # default if voice.py couldn't choose one).
+    chosen = args.device if args.device is not None else (
+        preferred_idx if preferred_idx is not None else default_idx)
 
     print("\nDevice selection:")
     print(f"  system default input : {device_name(default_idx)}")
     print(f"  voice.py would pick   : {device_name(preferred_idx)}")
     print(f"  using for this test   : {device_name(chosen)}")
+    print(f"  chosen device index   : {chosen}")
 
     if args.list:
         check_energy_threshold()
         return 0
 
     try:
-        rec, audio = record_wav(args.device, args.seconds)
+        rec, audio = record_wav(chosen, args.seconds)
     except Exception as exc:
-        print(f"\n❌ Recording failed on device {device_name(args.device)}: "
+        print(f"\n❌ Recording failed on device {device_name(chosen)}: "
               f"{type(exc).__name__}: {exc}")
         print("   Try another index with --device N (list printed above).")
         check_energy_threshold()

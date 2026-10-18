@@ -91,13 +91,29 @@ except OSError:
 
 
 def _pick_input_device():
-    """Index of a usable input device, preferring the onboard analog capture.
+    """Index of the input device Jarvis should capture from.
 
-    On this machine the real microphone is "HD-Audio Generic: ALC245 Analog
-    (hw:1,0)" (index 4). The PipeWire/Pulse gateways were being picked first and
-    never delivered usable audio. Priority order is: onboard analog capture,
-    then PipeWire/Pulse, then the system default (None).
+    Priority order:
+
+    1. ``JARVIS_MIC_INDEX`` env var (explicit index override), if set.
+    2. The system default input device (named ``default``).
+    3. The PipeWire/Pulse gateway (named ``pipewire`` / ``pulse``).
+    4. Onboard analog capture (``ALC245`` / ``hw:1,0``) as a last resort.
+
+    Direct ALSA access to the onboard codec (``hw:1,0``) returns a loud, clipped
+    signal while PipeWire owns the device, which trips the energy gate and makes
+    every ``listen()`` time out. The system default / PipeWire device captures
+    the voice correctly, so it is preferred.
     """
+    override = os.getenv("JARVIS_MIC_INDEX", "").strip()
+    if override:
+        try:
+            index = int(override)
+            _dbg(f"JARVIS_MIC_INDEX override -> device {index}")
+            return index
+        except ValueError:
+            _dbg(f"JARVIS_MIC_INDEX={override!r} is not an integer; ignoring it")
+
     try:
         import pyaudio
     except ImportError:
@@ -116,7 +132,7 @@ def _pick_input_device():
                 info.get("maxInputChannels", 0),
             ))
         # Highest priority first; first input channel matching wins.
-        for hint in ("alc245", "hw:1,0", "analog", "pipewire", "pulse"):
+        for hint in ("default", "pipewire", "pulse", "alc245", "hw:1,0"):
             for i, name, channels in devices:
                 if channels > 0 and hint in name:
                     return i
