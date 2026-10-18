@@ -26,17 +26,116 @@ GUI.
 | Desktop control (apps/YouTube/media/volume/brightness/screenshot/lock) | Working |
 | Confirmation-gated actions | Working (power, risky terminal, risky screen goals) |
 | Timers / reminders | Working |
-| Tests | `pytest` suite — **264 passed, 1 skipped** |
-| Published | GitHub, tags **`v1.0.1`**, **`v1.0.2`** (README + MIT LICENSE) |
+| Tests | `pytest` suite — **282 passed, 1 skipped** |
+| Published | GitHub, tags **`v1.0.1`**, **`v1.0.2`**, **`v1.0.3`** (README + MIT LICENSE) |
 
 ## Repository & releases
 
 - Remote: <https://github.com/jakirhussainkhan/jarvis-voice-assistant>
 - Default branch: `main`
 - Release tags: **`v1.0.0`** (initial), **`v1.0.1`** (screen vision, live
-  internet, guarded terminal, offline-first, terminal hardening) and
-  **`v1.0.2`** (voice-chat widget: mic mute/unmute, Stop, live reactive orb).
+  internet, guarded terminal, offline-first, terminal hardening),
+  **`v1.0.2`** (voice-chat widget: mic mute/unmute, Stop, live reactive orb) and
+  **`v1.0.3`** (play a song by name / pick one off the screen; 30 s listen window;
+  Stop cancels a wait; copy-paste install hints).
 - Secrets are **not** committed (see *Security* below).
+
+## YouTube flow, a 30 s listening window & install hints (2026-10-18, v1.0.3)
+
+The user's YouTube feed shows songs; asking Jarvis to play one by name had to
+work, and pause/next had to work on it. Also: Jarvis gave up on listening after
+only **4 s**, which felt far too fast.
+
+- **Play a song by name.** A bare `play <name>` (no "youtube" word) now plays the
+  top `yt-dlp` result: `"play kesariya"` and `"play the song kesariya"` both call
+  `desktop.play_youtube("kesariya")`. A filler-only "play a song" / "play the
+  song" still asks **"What should I play?"**.
+- **Pick a video off the screen.** Reference phrases — `"play the second song"`,
+  `"play this song"`, `"play that one"`, `"play it"`, `"play the video on my
+  screen"` — route to the vision screen-action path (`tools.screen_do`), so Jarvis
+  looks at your screen and clicks the thing you mean. A *named* play never does
+  (it goes straight to `yt-dlp`), and `close/quit/kill X` still never reaches the
+  search branch.
+- **30 s to start speaking.** `_LISTEN_TIMEOUT` went from **4 s → 30 s**
+  (`JARVIS_LISTEN_TIMEOUT` overrides it). This is the window to *begin* speaking;
+  a single phrase is still capped at 6 s.
+- **Stop cancels the wait.** New `voice.stop_listening()` sets an event checked
+  every 0.1 s chunk, so the GUI **Stop** button (or `Space`) abandons a listen
+  that is still waiting for you instead of making you wait out the window. The
+  Stop button is now live for both `LISTENING` and `SPEAKING`.
+- **Copy-paste install hints (policy change).** The user asked: if Jarvis cannot
+  install something without `sudo`, print a pure copy-paste command for them to
+  run in their own terminal. So `media_control` / `brightness_control` and
+  `doctor.py` now print the exact `sudo apt install …` line (doctor de-duplicates
+  the packages of everything missing). **Jarvis itself still never runs `sudo`** —
+  it only prints the command. (This reverses the earlier v1.0.1 decision to keep
+  the doctor sudo-free; the user asked for it explicitly.)
+- `desktop.py` `playerctl`/`brightnessctl` messages were also brought back from
+  "isn't installed, so I can't…" to the informative form with the install command
+  (which is what the existing tests assert).
+
+Verified live: the default wait prints **30 s**; with `JARVIS_LISTEN_TIMEOUT=6` a
+silent `listen()` returned in ~6.2 s (a cold first run took ~9.6 s while ALSA
+opened the device); a `stop_listening()` fired 1.5 s into a 30 s wait returned in
+**1.7 s**; `yt-dlp` resolves `kesariya` → `BddP6PYo2gs | Kesariya - Brahmāstra…`;
+and the whole YouTube flow was run end-to-end in **Brave** (see below).
+
+### Live end-to-end test found two real bugs (and they are fixed)
+
+Running `desktop.play_youtube("kesariya")` on the real machine exposed problems
+that no unit test would have caught:
+
+1. **The video opened but never played, and then nothing could control it.**
+   Browsers refuse unmuted autoplay until the *site* has seen a user gesture, and
+   a spoken command is not one — so the tab sat paused. Worse, a paused tab
+   publishes **no MPRIS session at all** (`playerctl -l` → *No players found*),
+   so "pause" answered *"There is no media player to control."*
+   **Fix:** `desktop.ensure_browser_playing()` — after opening the watch URL,
+   `play_youtube` starts a daemon thread that polls `playerctl -l` for a browser
+   media session and, if none appears, finds the YouTube window and sends it the
+   page's own play/pause key (`k`) once. It runs off-thread so the spoken reply is
+   never delayed, and it never touches a video that autoplayed on its own (a
+   second `k` would *pause* it). Verified live: MPRIS appeared ~4 s after
+   `play_youtube("kesariya")` and the status was `Playing`.
+2. **`next` could never work through playerctl.** Brave's MPRIS advertises
+   **`CanGoNext = false`**, so `playerctl next` fails with *"No player could
+   handle this command"* (rc 1) and Jarvis said "There is no media player to
+   control."
+   **Fix:** `media_control` now falls back to the page's own shortcut in the
+   YouTube window (`shift+n` / `shift+p`) when playerctl refuses — activating the
+   window first (Chromium ignores synthetic keys sent to an unfocused window) and
+   restoring the previous focus afterwards. Only `next`/`previous` use the
+   fallback: `k` is a *toggle*, so using it for "pause" could start a stopped
+   video instead of pausing it — that case stays honest instead.
+
+Verified live in Brave, from a clean state (no MPRIS player, no YouTube tab):
+
+| Step | Result |
+| --- | --- |
+| `play_youtube("kesariya")` | *"Playing kesariya on YouTube."*, MPRIS appeared ~4 s later |
+| status | `Playing` — *Kesariya - Brahmāstra…* |
+| `media_control("pause")` | *"Media pause."* → status `Paused` |
+| `media_control("next")` | *"Media next."* → the new video loaded and played (*Gerua…*) |
+| `media_control("resume")` | *"Media resume."* → status `Playing` |
+| `now_playing()` | the live title, read from MPRIS |
+
+The new tests (`test_desktop.py`): the `shift+n`/`shift+p` fallback, the honest
+failure when there is no YouTube window, "pause never toggles a stopped video",
+`ensure_browser_playing` pressing `k` exactly once, leaving autoplay alone, and
+requiring X11 + the tools; plus one asserting `play_youtube` runs the nudge in the
+background.
+
+**Remaining honest limits.** The autoplay tap needs `xdotool` and X11 (on Wayland
+it is skipped, so a video may stay paused until you click it once). If you opened
+the YouTube tab yourself, Jarvis still fixes "next" but cannot start a video it
+did not open. `vision.act` for the on-screen picks ("play the second song") was
+still **not run against the real UI** — it moves the real mouse — though its
+routing, whitelist and risky-goal confirmation are tested.
+
+**Files:** `voice.py`, `gui.py`, `router.py`, `tools.py`, `agent.py`, `desktop.py`,
+`doctor.py`, `config.py` (`__version__ = "1.0.3"`), `test_routing.py`,
+`test_screen_routing.py`, `test_voice_capture.py`, `test_voice_speech.py`,
+`test_gui.py`, `test_doctor.py`, `test_desktop.py`, `README.md`.
 
 ## Voice-chat widget: mic mute, Stop & a live reactive orb (2026-10-18, v1.0.2)
 
@@ -128,8 +227,9 @@ internet** for everything that does not need it.
 - **`main.py` flags:** `--text`, `--offline`, `--screen "<question>"`, `--gui`,
   `--check`, `--version`.
 - **`doctor.py` updates:** shows the vision model, the offline/terminal
-  guarantees, a PyQt5 + clipboard-read check, and how to try every mode. It no
-  longer suggests `sudo` anywhere (the user asked for a sudo-free assistant).
+  guarantees, a PyQt5 + clipboard-read check, and how to try every mode. (In
+  v1.0.3, at the user's request, it gained a copy-paste `sudo apt install` line
+  for missing tools. Jarvis never runs it — it only prints it.)
 
 ### Terminal hardening (the safety-critical part)
 
@@ -240,7 +340,8 @@ Two front ends share the same brain:
   **150–300**. Speech starts on RMS > **300**, a ~0.3 s **pre-roll** keeps quiet
   onsets, **hysteresis** keeps recording while RMS stays above the calibrated
   floor, the phrase ends after ~**1.2 s** below it, caps phrases at **6 s**, and
-  waits at most 4 s for speech to start. Playing media is paused before the mic
+  waits at most **30 s** (`JARVIS_LISTEN_TIMEOUT`, was 4 s) for speech to start.
+  Playing media is paused before the mic
   opens and resumed after capture (best effort, `playerctl` then `pactl`), and
   `JARVIS_PTT=1` switches to push-to-talk (Enter to start, Enter/silence to
   stop). Bytes are wrapped in `sr.AudioData(data, 16000, 2)` and sent to Google
@@ -259,7 +360,9 @@ Two front ends share the same brain:
   (`yt-dlp` top result / search / homepage / tab close), media, volume,
   brightness, screenshot, lock, and confirmed power actions. Holds the protected
   list (Jarvis + ancestors, display server, session manager, systemd, shell).
-  X11/Cinnamon here; on Wayland window ops degrade to "Which window?".
+  Media control uses `playerctl`, with a browser-tab fallback (`k` to start a
+  freshly opened video, `shift+n`/`shift+p` for next/previous) when a page's MPRIS
+  cannot do it. X11/Cinnamon here; on Wayland window ops degrade to "Which window?".
 - `vision.py` — screen vision: `capture_png`, `look(question)` (ask about the
   screen) and `act(goal)` (bounded perceive→act loop). Only whitelisted
   move/click/type/key/scroll/wait actions; no shell.
@@ -375,9 +478,9 @@ Fix: `listen()` no longer uses `sr.Microphone`/PyAudio at all. It spawns
 (1600 frames / 3200 bytes), computes RMS per chunk with the existing helpers,
 starts recording when RMS > **300**, stops after ~**1 s** (10 chunks) below 300,
 and caps a phrase at **8 s** (by wall-clock *and* chunk count, so a
-faster-than-realtime stream still obeys the cap). The 4 s wait-to-start timeout is
-kept, and `select()` bounds each read so a stalled `arecord` can never block past
-it. Captured bytes are wrapped in `sr.AudioData(data, 16000, 2)` and passed to
+faster-than-realtime stream still obeys the cap). The wait-to-start timeout is
+kept (4 s then; **30 s** since v1.0.3), and `select()` bounds each read so a
+stalled `arecord` can never block past it. Captured bytes are wrapped in `sr.AudioData(data, 16000, 2)` and passed to
 `recognize_google(..., language="en-US")` exactly as before. `RequestError` /
 `UnknownValueError` handling is unchanged; `JARVIS_DEBUG=1` now prints the RMS of
 every 0.1 s chunk.
@@ -465,6 +568,9 @@ list.
 - The stop floor is auto-calibrated per listen: `1.5 × median(background)`
   clamped to **150–300**, replacing the fixed 150.
 - Phrases are capped at **6 s** (was 8 s).
+- Jarvis waits up to **30 s** for you to start speaking (was 4 s); set
+  `JARVIS_LISTEN_TIMEOUT` to tune it, and the GUI **Stop** button abandons a
+  pending wait.
 - Playing media is paused before the mic opens and resumed after capture (best
   effort via `playerctl`, falling back to `pactl`), so music does not leak in.
 - `JARVIS_PTT=1` enables push-to-talk: press Enter to start, press Enter again
@@ -768,6 +874,15 @@ by compiling `gui.py`; the PyQt GUI itself was not launched here.
   unavailable offscreen); the widget buttons, the `M`/`Space` keys and the shared
   `voice` state they drive are all tested.
 - The mic mute is per-session (not persisted across restarts) by design.
+- **Pause / next** were exercised live against real Brave playback (see the
+  v1.0.3 section): `pause`, `resume` and `next` all work. `next`/`previous` need
+  `xdotool` + X11 because they are delivered to the YouTube page (`shift+n`) —
+  a browser's MPRIS cannot skip tracks.
+- The **autoplay tap** after `play_youtube` needs `xdotool` + X11; on Wayland it
+  is skipped and the video may stay paused until you click it once.
+- The **on-screen picks** ("play the second song", "play that one") route to
+  `vision.act`, which was **not run against the real UI** (it moves the real
+  mouse). The routing, the whitelist and the risky-goal confirmation are tested.
 - `MAX_OUTPUT_TOKENS = 600` keeps the assistant brief while leaving reasoning
   headroom; raise it if long answers are ever cut off.
 - The arecord rewrite was verified against a *recorded* speech WAV and the local
@@ -803,7 +918,7 @@ echo "GROQ_API_KEY=your-key" > .env   # Groq key, starts with gsk_
 
 The GUI is a small voice-chat console: click the orb to talk, the **Mic** button
 (or `M`) mutes/unmutes the microphone instantly, **Stop** (or `Space`) cuts a reply
-short, the orb reacts to your voice while listening and moves with its own speech
+short or abandons a listen that is still waiting, the orb reacts to your voice while listening and moves with its own speech
 while talking, and only **Quit** in the tray menu exits.
 
 Requires a working microphone and, for the agent path, network access plus a
@@ -817,5 +932,6 @@ amixer -c 1 sset Capture 40%                       # 100% clips; 40% keeps the f
 JARVIS_MIC_DEVICE=plughw:1,0 ./venv/bin/python main.py  # force an arecord -L device (default: "default")
 JARVIS_DEBUG=1 ./venv/bin/python main.py           # print per-chunk RMS / capture diagnostics
 JARVIS_PTT=1 ./venv/bin/python main.py             # push-to-talk: Enter to start, Enter to stop
+JARVIS_LISTEN_TIMEOUT=60 ./venv/bin/python main.py # wait longer for you to start speaking (default 30)
 JARVIS_TEXT=1 JARVIS_MUTE=1 ./venv/bin/python main.py  # type commands, no mic / no TTS
 ```

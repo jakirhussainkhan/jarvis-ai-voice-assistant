@@ -15,29 +15,29 @@ import shutil
 import desktop
 from config import API_KEY, BASE_URL, MODEL_NAME, VISION_MODEL
 
-# (tool, required?, what it powers)
+# (tool, required?, what it powers, Debian/Ubuntu package to install it)
 _TOOLS = [
-    ("arecord", True, "microphone capture (voice mode)"),
-    ("aplay", False, "audio playback used by the mic diagnostic"),
-    ("wmctrl", False, "focus/minimise/maximise/close windows (X11)"),
-    ("xdotool", False, "screen automation: click, type, scroll, keys (X11)"),
-    ("pactl", False, "volume up/down/set/mute"),
-    ("playerctl", False, "media pause / resume / next / seek"),
-    ("brightnessctl", False, "screen brightness"),
-    ("yt-dlp", False, "playing the top YouTube result"),
-    ("gtk-launch", False, "launching .desktop apps"),
-    ("gio", False, "launching .desktop apps (fallback)"),
-    ("gnome-screenshot", False, "screenshots"),
-    ("scrot", False, "screenshots (fallback)"),
-    ("import", False, "screenshots (ImageMagick fallback)"),
-    ("convert", False, "shrinking screenshots for the vision model"),
-    ("ffmpeg", False, "image conversion / media"),
-    ("notify-send", False, "desktop notifications"),
-    ("xdg-open", False, "opening files, folders and URLs"),
-    ("xclip", False, "reading the clipboard"),
-    ("xsel", False, "reading the clipboard (fallback)"),
-    ("systemctl", False, "shutdown / restart / suspend"),
-    ("loginctl", False, "lock screen / log out"),
+    ("arecord", True, "microphone capture (voice mode)", "alsa-utils"),
+    ("aplay", False, "audio playback used by the mic diagnostic", "alsa-utils"),
+    ("wmctrl", False, "focus/minimise/maximise/close windows (X11)", "wmctrl"),
+    ("xdotool", False, "screen automation: click, type, scroll, keys (X11)", "xdotool"),
+    ("pactl", False, "volume up/down/set/mute", "pulseaudio-utils"),
+    ("playerctl", False, "media pause / resume / next / seek", "playerctl"),
+    ("brightnessctl", False, "screen brightness", "brightnessctl"),
+    ("yt-dlp", False, "playing the top YouTube result", "yt-dlp"),
+    ("gtk-launch", False, "launching .desktop apps", "libgtk-3-bin"),
+    ("gio", False, "launching .desktop apps (fallback)", "libglib2.0-bin"),
+    ("gnome-screenshot", False, "screenshots", "gnome-screenshot"),
+    ("scrot", False, "screenshots (fallback)", "scrot"),
+    ("import", False, "screenshots (ImageMagick fallback)", "imagemagick"),
+    ("convert", False, "shrinking screenshots for the vision model", "imagemagick"),
+    ("ffmpeg", False, "image conversion / media", "ffmpeg"),
+    ("notify-send", False, "desktop notifications", "libnotify-bin"),
+    ("xdg-open", False, "opening files, folders and URLs", "xdg-utils"),
+    ("xclip", False, "reading the clipboard", "xclip"),
+    ("xsel", False, "reading the clipboard (fallback)", "xsel"),
+    ("systemctl", False, "shutdown / restart / suspend", "systemd"),
+    ("loginctl", False, "lock screen / log out", "systemd"),
 ]
 
 
@@ -79,14 +79,14 @@ def report():
 
     out.append("Tools:")
     missing = []
-    for tool, required, why in _TOOLS:
+    for tool, required, why, package in _TOOLS:
         present = shutil.which(tool) is not None
         if present:
             tag = "ok "
         else:
             tag = "REQ" if required else " --"
             if not required:
-                missing.append(tool)
+                missing.append(package)
         out.append(f"  [{tag}] {tool:18s} {why}")
     out.append("")
 
@@ -105,8 +105,9 @@ def report():
     out.append("")
 
     if missing:
-        out.append("Optional extras (install them with your package manager):")
-        out.append("  " + " ".join(missing))
+        out.append("Missing optional tools. Copy-paste to install them yourself")
+        out.append("(Jarvis never runs this for you -- it only prints it):")
+        out.append("  sudo apt install " + " ".join(sorted(set(missing))))
         out.append("")
 
     out.append("Try every command without a microphone:")
@@ -117,8 +118,9 @@ def report():
     out.append("  ./venv/bin/python main.py --screen \"what is on my screen?\"")
     out.append("Floating widget + system tray:")
     out.append("  ./venv/bin/python main.py --gui   # click the orb to talk;")
-    out.append("       mic button mutes/unmutes, Stop cuts a reply, the orb")
-    out.append("       reacts to your voice and to Jarvis's own speech")
+    out.append("       mic button mutes/unmutes, Stop cuts a reply or a")
+    out.append("       pending listen, and the orb reacts to your voice and")
+    out.append("       to Jarvis's own speech")
     return "\n".join(out)
 
 

@@ -22,10 +22,12 @@ def _reset_voice_globals():
     voice.set_level_sink(None)
     voice.set_mic_muted(False)
     voice._stop_speaking.clear()
+    voice._stop_listening.clear()
     yield
     voice.set_level_sink(None)
     voice.set_mic_muted(False)
     voice._stop_speaking.clear()
+    voice._stop_listening.clear()
 
 
 # --------------------------------------------------------------------------- #

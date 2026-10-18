@@ -33,9 +33,11 @@ def app():
 def _reset_voice_state():
     voice.set_level_sink(None)
     voice.set_mic_muted(False)
+    voice._stop_listening.clear()
     yield
     voice.set_level_sink(None)
     voice.set_mic_muted(False)
+    voice._stop_listening.clear()
 
 
 def test_make_icon_paints_something(app):
@@ -97,18 +99,21 @@ def test_trigger_refuses_to_listen_while_muted(app):
     assert "muted" in widget.transcript.text().lower()
 
 
-def test_stop_button_is_enabled_only_while_speaking(app, monkeypatch):
+def test_stop_button_is_live_whenever_jarvis_is_busy(app, monkeypatch):
     widget = gui.JarvisWidget()
     assert widget.stop_button.isEnabled() is False
-    widget.set_state(gui.SPEAKING)
+    widget.set_state(gui.LISTENING)          # waiting for you to speak
+    assert widget.stop_button.isEnabled() is True
+    widget.set_state(gui.SPEAKING)           # talking
     assert widget.stop_button.isEnabled() is True
     widget.set_state(gui.IDLE)
     assert widget.stop_button.isEnabled() is False
 
-    called = []
-    monkeypatch.setattr(voice, "stop_speaking", lambda: called.append(1))
-    widget._stop_speaking()
-    assert called == [1]
+    listened, spoken = [], []
+    monkeypatch.setattr(voice, "stop_listening", lambda: listened.append(1))
+    monkeypatch.setattr(voice, "stop_speaking", lambda: spoken.append(1))
+    widget._stop()
+    assert listened == [1] and spoken == [1]
 
 
 def test_reactor_paints_with_any_energy(app):

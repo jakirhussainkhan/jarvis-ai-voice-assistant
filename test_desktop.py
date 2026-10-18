@@ -4,6 +4,9 @@ Nothing here touches a real app, player, mixer or the network.
 """
 
 from pathlib import Path
+import threading
+
+import pytest
 
 import desktop
 
@@ -191,6 +194,107 @@ def test_media_reports_missing_playerctl(monkeypatch):
     assert "playerctl is not installed" in desktop.media_control("pause")
 
 
+def test_media_next_falls_back_to_the_page_shortcut(monkeypatch):
+    """Chromium/Brave report CanGoNext = false, so use YouTube's own shortcut."""
+    monkeypatch.setattr(desktop, "has", lambda tool: tool in ("playerctl", "xdotool"))
+    monkeypatch.setattr(desktop, "_run",
+                        lambda args, timeout=6: (1, "No player could handle this command"))
+    monkeypatch.setattr(desktop, "_youtube_window", lambda: "123")
+    pressed = []
+    monkeypatch.setattr(desktop, "_press_in_window",
+                        lambda wid, key, restore=True: pressed.append((wid, key)) or True)
+
+    assert desktop.media_control("next") == "Media next."
+    assert desktop.media_control("previous") == "Media previous."
+    assert pressed == [("123", "shift+n"), ("123", "shift+p")]
+
+
+def test_media_next_without_a_page_is_honest(monkeypatch):
+    monkeypatch.setattr(desktop, "has", lambda tool: tool == "playerctl")
+    monkeypatch.setattr(desktop, "_run",
+                        lambda args, timeout=6: (1, "No player could handle this command"))
+    monkeypatch.setattr(desktop, "_youtube_window", lambda: None)
+    assert desktop.media_control("next") == "That player can't skip tracks."
+
+
+def test_media_reports_no_player(monkeypatch):
+    monkeypatch.setattr(desktop, "has", lambda tool: tool == "playerctl")
+    monkeypatch.setattr(desktop, "_run", lambda args, timeout=6: (1, ""))
+    monkeypatch.setattr(desktop, "_youtube_window", lambda: None)
+    assert desktop.media_control("pause") == "There is no media player to control."
+
+
+def test_media_resume_does_not_claim_it_cannot_skip(monkeypatch):
+    """The "no player could handle this command" wording only fits next/prev."""
+    monkeypatch.setattr(desktop, "has", lambda tool: tool == "playerctl")
+    monkeypatch.setattr(desktop, "_run",
+                        lambda args, timeout=6: (1, "No player could handle this command"))
+    monkeypatch.setattr(desktop, "_youtube_window", lambda: None)
+    assert desktop.media_control("resume") == "There is no media player to control."
+
+
+def test_media_pause_never_toggles_a_stopped_video(monkeypatch):
+    """`k` is a play/pause *toggle*: it must never be used to pause silence."""
+    monkeypatch.setattr(desktop, "has", lambda tool: tool in ("playerctl", "xdotool"))
+    monkeypatch.setattr(desktop, "_run", lambda args, timeout=6: (1, ""))
+    monkeypatch.setattr(desktop, "_youtube_window", lambda: "123")
+    pressed = []
+    monkeypatch.setattr(desktop, "_press_in_window",
+                        lambda wid, key, restore=True: pressed.append(key) or True)
+
+    assert desktop.media_control("pause") == "There is no media player to control."
+    assert pressed == []
+
+
+class _FakeClock:
+    """A monotonic clock that only advances when something sleeps."""
+
+    def __init__(self):
+        self.now = 0.0
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+
+
+def test_ensure_browser_playing_presses_k_once(monkeypatch):
+    """A freshly opened tab does not autoplay; press its own play key once."""
+    monkeypatch.setattr(desktop, "has", lambda tool: True)
+    monkeypatch.setattr(desktop, "is_wayland", lambda: False)
+    monkeypatch.setattr(desktop, "time", _FakeClock())
+    monkeypatch.setattr(desktop, "_browser_media_player", lambda: False)
+    monkeypatch.setattr(desktop, "_youtube_window", lambda: "123")
+    pressed = []
+    monkeypatch.setattr(desktop, "_press_in_window",
+                        lambda wid, key, restore=False: pressed.append(key) or True)
+
+    assert desktop.ensure_browser_playing(timeout=1.0) is False
+    assert pressed == ["k"]                 # once, not once per poll
+
+
+def test_ensure_browser_playing_leaves_autoplay_alone(monkeypatch):
+    """If the video already started, do not touch it (a key would pause it)."""
+    monkeypatch.setattr(desktop, "has", lambda tool: True)
+    monkeypatch.setattr(desktop, "is_wayland", lambda: False)
+    monkeypatch.setattr(desktop, "time", _FakeClock())
+    monkeypatch.setattr(desktop, "_browser_media_player", lambda: True)
+    pressed = []
+    monkeypatch.setattr(desktop, "_press_in_window",
+                        lambda wid, key, restore=False: pressed.append(key) or True)
+
+    assert desktop.ensure_browser_playing(timeout=9.0) is True
+    assert pressed == []
+
+
+def test_ensure_browser_playing_needs_x11_and_the_tools(monkeypatch):
+    monkeypatch.setattr(desktop, "has", lambda tool: False)      # no xdotool/playerctl
+    monkeypatch.setattr(desktop, "_press_in_window",
+                        lambda *a, **k: pytest.fail("must not press anything"))
+    assert desktop.ensure_browser_playing() is False
+
+
 def test_pause_media_if_playing_uses_playerctl(monkeypatch):
     monkeypatch.setattr(desktop, "has", lambda tool: tool == "playerctl")
     calls = []
@@ -319,6 +423,21 @@ def test_play_youtube_uses_top_ytdlp_result(monkeypatch):
     # on YouTube with older yt-dlp builds).
     assert "--flat-playlist" in seen["args"]
     assert "--get-id" not in seen["args"]
+
+
+def test_play_youtube_nudges_playback_in_the_background(monkeypatch):
+    """Autoplay is usually blocked, so start the video ourselves -- off-thread,
+    so the spoken reply is never delayed."""
+    monkeypatch.setattr(desktop, "has",
+                        lambda tool: tool in ("yt-dlp", "xdotool", "playerctl"))
+    monkeypatch.setattr(desktop, "_run", lambda args, timeout=25: (0, "dQw4w9WgXcQ"))
+    monkeypatch.setattr(desktop, "_open_url", lambda url: True)
+    started = threading.Event()
+    monkeypatch.setattr(desktop, "ensure_browser_playing",
+                        lambda timeout=9.0: started.set() or True)
+
+    assert desktop.play_youtube("despacito") == "Playing despacito on YouTube."
+    assert started.wait(3.0), "the playback nudge should run in the background"
 
 
 def test_play_youtube_without_ytdlp_opens_search(monkeypatch):

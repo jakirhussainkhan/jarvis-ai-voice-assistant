@@ -1,8 +1,17 @@
 """Router tests for screen-reading phrases (vision) and their guards."""
 
+import confirm
 import desktop
 import router
 import vision
+
+
+def setup_function(_fn):
+    confirm.clear()
+
+
+def teardown_function(_fn):
+    confirm.clear()
 
 
 def test_screen_phrases_go_to_vision(monkeypatch):
@@ -53,3 +62,44 @@ def test_run_an_app_is_left_to_the_agent(monkeypatch):
     monkeypatch.setattr(desktop, "open_app",
                         lambda name: (_ for _ in ()).throw(AssertionError("local")))
     assert router.try_local("run firefox") is None
+
+
+# --------------------------------------------------------------------------- #
+# screen actions (vision.act)
+# --------------------------------------------------------------------------- #
+
+def test_on_screen_actions_go_to_vision_act(monkeypatch):
+    monkeypatch.setattr(vision, "act", lambda goal, **k: f"act:{goal}")
+    phrases = (
+        "play the video on my screen",
+        "play that video on the screen",
+        "click the play button on the screen",
+        "open the first result on my display",
+        "close that popup on the screen",
+        "play the second song",
+        "play this video",
+    )
+    for phrase in phrases:
+        assert router.try_local(phrase) == f"act:{phrase}", phrase
+
+
+def test_named_play_is_never_a_screen_action(monkeypatch):
+    """A named song goes to yt-dlp -- it must not become a screen click."""
+    monkeypatch.setattr(vision, "act",
+                        lambda goal, **k: (_ for _ in ()).throw(AssertionError("screen")))
+    calls = []
+    monkeypatch.setattr(desktop, "play_youtube",
+                        lambda q: calls.append(q) or f"play:{q}")
+    assert router.try_local("play kesariya") == "play:kesariya"
+    assert router.try_local("play lo-fi on youtube") == "play:lo-fi"
+    assert calls == ["kesariya", "lo-fi"]
+
+
+def test_risky_screen_goal_asks_first(monkeypatch):
+    """A destructive on-screen goal is confirmed before it runs."""
+    monkeypatch.setattr(vision, "act", lambda goal, **k: "acted")
+    out = router.try_local("click the delete button on the screen")
+    assert confirm.is_pending()
+    assert "click the delete button on the screen" in out
+    handled, reply = confirm.resolve("yes")
+    assert handled and reply == "acted"

@@ -184,6 +184,58 @@ DATE_WORD = re.compile(r"\bdate\b|\btoday'?s date\b", re.I)
 YT_WORD = re.compile(r"\byoutube\b", re.I)
 YT_PLAY = re.compile(r"\b(play|watch|listen to|listen)\b", re.I)
 
+# --- screen actions (vision) ------------------------------------------------ #
+# On-screen commands ("play the video on my screen", "click the play button on
+# screen", "play the second video") are routed to vision.act() -- behind the
+# same destructive-goal confirmation as fn_screen_do -- instead of becoming a
+# YouTube search for a literal phrase. A screen *reference* (or a bare deictic /
+# ordinal video) is required, so "play lo-fi on youtube" is left untouched.
+SCREEN_ACT_VERB = re.compile(
+    r"\b(play|watch|click|press|tap|hit|select|choose|open|close|pause|resume|"
+    r"toggle|enable|disable|fill|type|enter|search|skip|next|previous|start|"
+    r"stop|mute|unmute|scroll|switch)\b",
+    re.I,
+)
+SCREEN_REF = re.compile(
+    r"\b(?:on|in|at|from|across)\s+(?:my\s+|the\s+|this\s+|that\s+)?"
+    r"(?:screen|display|monitor|desktop)\b",
+    re.I,
+)
+# The whole utterance is just a *deictic* or *ordinal* reference to something
+# already visible ("play the second song", "play this video", "play that one",
+# "play it") -- never a named song to search for. Bare "the song" (no ordinal,
+# no this/that) is left to the play-by-name branch below so it can ask.
+_SCREEN_ORD = (r"first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|"
+               r"tenth|eleventh|twelfth|last|next|top|bottom|main|biggest|"
+               r"1st|2nd|3rd|4th|5th|6th|7th|8th|9th|10th|\d+")
+_SCREEN_NOUN = (r"video|videos|song|songs|track|tracks|tune|tunes|clip|clips|"
+                r"result|results|item|items|one|ones")
+_ADDRESS = r"(?:please\s+|jarvis\s+|hey\s+jarvis\s+|can you\s+|could you\s+)*"
+_SCREEN_VERB = r"(?:play|watch|open|start|click|select|choose|hit|tap|press)"
+_SCREEN_TAIL = (r"(?:\s+(?:on|in)\s+(?:the\s+|my\s+|this\s+)?"
+                r"(?:screen|display|monitor))?\s*[.!?]?\s*$")
+
+SCREEN_ORDINAL_MEDIA = re.compile(
+    rf"^\s*{_ADDRESS}{_SCREEN_VERB}\s+(?:the\s+|this\s+|that\s+|my\s+)?"
+    rf"(?:{_SCREEN_ORD})\s+(?:{_SCREEN_NOUN}){_SCREEN_TAIL}",
+    re.I,
+)
+SCREEN_DEICTIC_MEDIA = re.compile(
+    rf"^\s*{_ADDRESS}{_SCREEN_VERB}\s+(?:(?:this|that)\s+(?:{_SCREEN_NOUN})|it)"
+    rf"{_SCREEN_TAIL}",
+    re.I,
+)
+
+# A play/watch command addressed straight at a song or video name (no "youtube"
+# needed): "play kesariya", "watch lofi beats". Deliberately anchored to the
+# start so it is a command, and used only after the screen branches, so
+# "play the second song" is an on-screen action and not a search for those words.
+PLAY_START = re.compile(
+    r"^\s*(?:please\s+|jarvis\s+|hey\s+jarvis\s+|can you\s+|could you\s+)*"
+    r"(?:play|watch|listen to|listen)\b",
+    re.I,
+)
+
 # --- open / close ----------------------------------------------------------- #
 OPEN_VERB = re.compile(r"\b(open|launch|start|run|show)\b", re.I)
 OPEN_STRIP = re.compile(
@@ -391,6 +443,16 @@ def try_local(text):
     if SCREEN_READ.search(t):
         return vision.look(t)
 
+    # --- screen actions (vision) ------------------------------------------- #
+    # After screen reading and before clipboard/close/YouTube: an on-screen
+    # action ("play the video on my screen") is a UI action, not a search. The
+    # goal goes through tools.screen_do so destructive goals still ask first.
+    if (not YT_WORD.search(t) and SCREEN_ACT_VERB.search(t)
+            and (SCREEN_REF.search(t) or SCREEN_ORDINAL_MEDIA.match(t)
+                 or SCREEN_DEICTIC_MEDIA.match(t))):
+        from tools import screen_do                 # imported lazily (heavy deps)
+        return screen_do(t)
+
     # --- clipboard ---------------------------------------------------------- #
     if CLIP_READ.search(t):
         return desktop.clipboard("read")
@@ -423,6 +485,16 @@ def try_local(text):
         if OPEN_VERB.search(t):
             return desktop.open_youtube()
         return None  # bare "youtube" -> agent
+
+    # --- play a song/video by name (no "youtube" needed) ------------------- #
+    # "play kesariya", "watch lofi beats", "play the song kesariya". The screen
+    # branches ran first, so "play the second song" never lands here as a search
+    # for the literal words; a filler-only request ("play a song") asks instead.
+    if PLAY_START.search(t):
+        query = desktop.extract_media_query(t)
+        if not query:
+            return "What should I play?"
+        return desktop.play_youtube(query)
 
     # --- open an application, folder, file or path ------------------------- #
     if OPEN_VERB.search(t):

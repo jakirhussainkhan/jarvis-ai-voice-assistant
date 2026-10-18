@@ -23,6 +23,7 @@ def _no_media_pause(monkeypatch):
     monkeypatch.setattr(voice.desktop, "resume_media", lambda token: None)
     monkeypatch.setattr(voice, "_level_sink", None)
     monkeypatch.setattr(voice, "_mic_muted", False)
+    monkeypatch.setattr(voice, "_stop_listening", threading.Event())
 
 
 # --------------------------------------------------------------------------- #
@@ -241,6 +242,32 @@ def test_muting_mid_capture_discards_the_phrase(monkeypatch):
         pipe.close()
 
     assert data == b"", "a phrase captured after Mute must be discarded"
+
+
+def test_listen_timeout_is_generous_by_default():
+    """Jarvis should wait a long time for you to start speaking (not 4 s)."""
+    if os.getenv("JARVIS_LISTEN_TIMEOUT"):
+        pytest.skip("JARVIS_LISTEN_TIMEOUT is set in this environment")
+    assert voice._LISTEN_TIMEOUT >= 25
+
+
+def test_stop_listening_abandons_the_wait(monkeypatch):
+    """Stop (from the GUI) must end a listen that is still waiting for speech."""
+    pipe = _Pipe()
+    try:
+        pipe.feed(_silence(4.0))
+        # The level sink fires on every chunk; the first one presses Stop.
+        voice.set_level_sink(lambda _v: voice.stop_listening())
+
+        started = time.monotonic()
+        data = _capture(pipe, monkeypatch, wait=15.0)
+        elapsed = time.monotonic() - started
+    finally:
+        voice.set_level_sink(None)
+        pipe.close()
+
+    assert data == b""
+    assert elapsed < 1.5, "Stop should end the wait almost immediately"
 
 
 def test_capture_feeds_the_live_level_sink(monkeypatch):

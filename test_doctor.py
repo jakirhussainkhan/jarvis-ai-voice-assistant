@@ -10,8 +10,10 @@ def test_report_lists_tools_and_text_mode(monkeypatch):
     assert "JARVIS_TEXT" in text                 # how to test without a mic
     assert "arecord" in text                     # required tool shown
     assert "xclip" in text                       # missing optional tools listed
-    # Never suggests running sudo: the user asked for a sudo-free assistant.
-    assert "sudo apt" not in text and "sudo install" not in text
+    # It prints a copy-paste install command for the user to run themselves...
+    assert "sudo apt install" in text
+    # ...and says plainly that Jarvis never runs it for you.
+    assert "never runs this" in text
     assert "--offline" in text and "--gui" in text
 
 

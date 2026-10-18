@@ -1,6 +1,6 @@
 # Jarvis — Voice Assistant for Linux
 
-**Version 1.0.2**
+**Version 1.0.3**
 
 A voice-controlled desktop assistant for Linux that can *see* your screen, use the
 internet, and operate the terminal. You speak a command; Jarvis either handles it
@@ -9,12 +9,35 @@ internet, and operate the terminal. You speak a command; Jarvis either handles i
 Speech recognition and replies are **English-only by design**. A PyQt5 "Arc
 Reactor" widget lives in the system tray and talks when you click it.
 
-Jarvis never uses `sudo` and never runs arbitrary shell from speech — except
+Jarvis **never runs `sudo`** and never runs arbitrary shell from speech — except
 through a guarded terminal tool that refuses anything that could power the device
 off and asks before anything risky. Power actions and other sensitive steps are
-confirmation-gated everywhere.
+confirmation-gated everywhere. When a tool is missing it will *print* a
+copy-paste install command for you to run yourself, but it never executes one.
 
 ---
+
+## What's new in 1.0.3
+
+- **Play a song by name** — "play kesariya" (or "play the song kesariya") searches
+  and plays it directly, and pause/resume/next work on it as usual.
+- **Point at the screen** — "play the second song", "play this song", "play that
+  one" and "play it" are read off your screen and acted on, so you can pick a
+  video out of the feed you are looking at.
+- **A 30-second listening window** — after you trigger Jarvis it now waits up to
+  **30 s** for you to start speaking (was 4 s), so you have time to think or say a
+  long name. Tune it with `JARVIS_LISTEN_TIMEOUT`.
+- **Stop cancels a wait too** — pressing Stop (or `Space`) now abandons a listen
+  that is still waiting for you, as well as cutting off a reply mid-sentence.
+- **Playback that actually starts, and `next` that works** — a freshly opened
+  video usually sits paused (browsers block autoplay without a real click), and a
+  paused tab publishes no MPRIS session at all, so nothing could control it.
+  Jarvis now gives the new tab a background play tap, and **`next`/`previous`
+  work on a YouTube tab** by driving the page's own shortcuts — Brave's MPRIS
+  reports `CanGoNext = false`, so `playerctl` alone can never skip tracks there.
+- **Copy-paste install hints** — a missing tool and the readiness report now print
+  the exact command (e.g. `sudo apt install playerctl`) for *you* to run. Jarvis
+  still never runs `sudo` or installs anything itself.
 
 ## What's new in 1.0.2
 
@@ -50,10 +73,12 @@ confirmation-gated everywhere.
   text-to-speech via `edge-tts` (`en-US-AriaNeural`) played through `pygame`.
 - **Local fast-path router** — offline handling for power, media (incl. seeking by
   seconds and "what's playing"), volume, brightness, screenshot, lock, battery,
-  system status, time, date, windows, clipboard, folders, YouTube, dictated
-  terminal commands, and opening/closing apps. The API is only used on a miss.
+  system status, time, date, windows, clipboard, folders, YouTube (including
+  **playing a song by name**, and a plain "play <name>"), dictated terminal
+  commands, and opening/closing apps. The API is only used on a miss.
 - **Real-time screen vision** — reads the screen ("what does this error say?",
-  "summarise this page") and operates it ("click Save", "type my name in the box")
+  "summarise this page") and operates it ("click Save", "type my name in the box",
+  or pick something you are pointing at: "play the second song", "play that one")
   through whitelisted mouse/keyboard actions only.
 - **Internet intelligence** — `fn_web_lookup` (live search), `fn_fetch_page`,
   `fn_wikipedia`, `fn_weather`. No API keys required for any of them.
@@ -62,7 +87,8 @@ confirmation-gated everywhere.
   power/session command; confirms anything that mutates state.
 - **Desktop control** — open any installed app (fuzzy match over `.desktop`
   files), graceful close, list/focus/minimise/maximise windows, click/type/scroll,
-  YouTube play/search, media (`playerctl`), volume (`pactl`), brightness
+  YouTube play/search, media (`playerctl`, with a browser-tab fallback so
+  play/pause/next work on YouTube itself), volume (`pactl`), brightness
   (`brightnessctl`), screenshots, clipboard, notifications, file search, notes,
   timers and reminders.
 - **Safety everywhere** — protected-process list, "Did you mean <app>?" on weak
@@ -80,21 +106,24 @@ confirmation-gated everywhere.
   router/agent path.
 - **Readiness report** — `./venv/bin/python doctor.py` (or `main.py --check`)
   prints the session type, which tools are installed and what each missing one
-  costs, the model and vision model, the app count, and how to try every command.
+  costs, the model and vision model, the app count, how to try every command, and
+  a **copy-paste `sudo apt install …` line** for whatever is missing (for you to
+  run — Jarvis never runs it).
 - **Robust audio capture** — capture runs through `arecord -D default -f S16_LE
   -r 16000 -c 1` (PyAudio/PortAudio never saw this machine's mic), read in 0.1 s
   chunks and RMS-gated. The stream-open spike is discarded, the stop floor is
   auto-calibrated from the room noise (`1.5 × median`, clamped to 150–300), a
   ~0.3 s pre-roll keeps quiet onsets, and hysteresis ends the phrase after ~1.2 s
-  of silence. Phrases are capped at 6 s. Playing media is paused while Jarvis
-  listens and resumed afterwards (best effort), and `JARVIS_PTT=1` switches to
-  push-to-talk for noisy rooms.
-- **Tests** — a `pytest` suite of **264 tests** (1 skipped) covering routing, app
+  of silence. Phrases are capped at 6 s, and Jarvis waits up to **30 s**
+  (`JARVIS_LISTEN_TIMEOUT`) for you to start speaking — Stop abandons a pending
+  wait. Playing media is paused while Jarvis listens and resumed afterwards (best
+  effort), and `JARVIS_PTT=1` switches to push-to-talk for noisy rooms.
+- **Tests** — a `pytest` suite of **282 tests** (1 skipped) covering routing, app
   matching, the protected list, the confirmation flow, the terminal guardrails,
   screen routing, clipboard fallbacks, offline behaviour, the internet tools,
-  vision parsing, timers, the YouTube path, text mode, the doctor, the GUI
-  (offscreen), the live mic-level/TTS-envelope hooks and the real router→agent
-  dispatch path.
+  vision parsing, timers, the YouTube path (play-by-name and on-screen picks),
+  text mode, the doctor, the GUI (offscreen), the live mic-level/TTS-envelope
+  hooks and the real router→agent dispatch path.
 
 ---
 
@@ -107,7 +136,8 @@ confirmation-gated everywhere.
 
 Optional desktop tools — Jarvis degrades gracefully when these are missing, but
 these features need them. Install them with your system package manager
-(for example, `apt`):
+(for example, `apt`); `./venv/bin/python doctor.py` prints the exact
+`sudo apt install …` line for whatever is missing (Jarvis never runs it):
 
 ```text
 playerctl  brightnessctl  wmctrl  xdotool  scrot  imagemagick  ffmpeg
@@ -165,6 +195,7 @@ All configuration lives in `config.py` and can be overridden from `.env`:
 | `JARVIS_SHELL_MAX_OUTPUT` | `4000` | Output characters returned to the model |
 | `JARVIS_OFFLINE` | *(unset)* | `1` disables the agent (router only) |
 | `JARVIS_MIC_DEVICE` | `default` | ALSA PCM name for `arecord -D` |
+| `JARVIS_LISTEN_TIMEOUT` | `30` | Seconds to wait for you to start speaking |
 | `JARVIS_DEBUG` | *(unset)* | `1` prints per-chunk RMS / capture diagnostics |
 | `JARVIS_PTT` | *(unset)* | `1` for push-to-talk (Enter to start/stop) |
 | `JARVIS_TEXT` | *(unset)* | `1` to type commands instead of speaking |
@@ -199,7 +230,7 @@ right-click for the menu, `Esc` or closing the window hides it to the tray, and
 only **Quit** in the tray menu really exits. The orb **reacts to your voice** while
 it listens and **moves while it speaks**; the **Mic** button mutes/unmutes the
 microphone instantly (also `M` or the tray's *Mute mic*), and **Stop** (or `Space`)
-cuts a reply off mid-sentence.
+cuts a reply off mid-sentence — or abandons a listen that is still waiting for you.
 
 ### Voice commands
 
@@ -211,8 +242,10 @@ cuts a reply off mid-sentence.
 | "what windows are open" / "list windows" | local router (`wmctrl`) |
 | "open youtube" | local router |
 | "play lo-fi on youtube" | local router (`yt-dlp`; only the song name is used) |
+| "play kesariya" / "play the song kesariya" | local router (`yt-dlp`; plays it) |
+| "play the second song" / "play this video" / "play that one" / "play it" | local router → **vision** (finds it on your screen) |
 | "search cats on youtube" | Groq agent → YouTube search |
-| "pause" / "resume" / "next song" / "stop the music" | local router (`playerctl`) |
+| "pause" / "resume" / "next song" / "stop the music" | local router (`playerctl`; `next`/`previous` fall back to the YouTube page) |
 | "go back 10 seconds" / "skip forward 30 seconds" / "what's playing" | local router (`playerctl`) |
 | "volume up" / "set volume to 40" / "mute" / "unmute" | local router (`pactl`) |
 | "brightness up" / "set brightness to 40" | local router (`brightnessctl`) |
@@ -302,9 +335,9 @@ confirmation first, then tries the router, and only sends a miss to the agent.
 | File | Role |
 | --- | --- |
 | `config.py` | Loads `.env`; holds `__version__`, models, and the screen/shell/history limits. |
-| `voice.py` | `listen()` (arecord + SpeechRecognition, `en-US`) and `speak()` (edge-tts + pygame). Also the runtime mic mute (`set_mic_muted`), the live level sink the GUI animates from, the TTS loudness envelope, and `stop_speaking()`. |
+| `voice.py` | `listen()` (arecord + SpeechRecognition, `en-US`) and `speak()` (edge-tts + pygame). Also the runtime mic mute (`set_mic_muted`), the live level sink the GUI animates from, the TTS loudness envelope, and `stop_speaking()` / `stop_listening()` (the 30 s wait for speech is `JARVIS_LISTEN_TIMEOUT`). |
 | `router.py` | `try_local()` — the offline fast path: power, media, volume, brightness, screenshot, lock, windows, clipboard, battery/status/time/date, screen reading, folders, YouTube, dictated commands and app open/close. Search verbs return `None` for the agent. Also holds the spoken `CAPABILITIES` list. |
-| `desktop.py` | Whitelisted desktop actions plus the protected-process list. |
+| `desktop.py` | Whitelisted desktop actions plus the protected-process list. Media control falls back to the browser tab's own keys when a page's MPRIS cannot skip tracks. |
 | `vision.py` | Screen capture, `look()` (ask about the screen) and `act()` (bounded perceive→act loop). |
 | `net.py` | Keyless internet: DuckDuckGo search, page fetch, Wikipedia, weather. |
 | `shell.py` | The guarded terminal (`run`, `explain_refusal`, `_is_risky`). |
@@ -315,7 +348,7 @@ confirmation first, then tries the router, and only sends a miss to the agent.
 | `memory.py` | Rolling `deque` window of recent turns. |
 | `main.py` | Entry point and `handle()` dispatch (`--text`, `--offline`, `--screen`, `--gui`, `--check`, `--version`). |
 | `gui.py` | PyQt5 Arc Reactor widget + system tray; the listen/think/speak cycle runs on a `QThread`. The orb is fed live mic levels (listening) and the TTS loudness envelope (speaking); the widget adds a mic mute/unmute button and a Stop button. |
-| `doctor.py` | Readiness self-check. |
+| `doctor.py` | Readiness self-check. Prints a copy-paste install line for missing tools (never runs it). |
 | `test_mic.py` | Standalone mic diagnostic. |
 
 ### Tools (40)
@@ -358,9 +391,17 @@ Notes & timers: `fn_save_note`, `fn_read_file`, `fn_set_timer`, `fn_set_reminder
   microphone gain in your system mixer.
 - **Phrases never end / music keeps the gate open:** move the mic away from the
   speakers, or set `JARVIS_PTT=1` and end phrases by hand with Enter.
-- **"playerctl/brightnessctl is not installed"**: install them with your package
-  manager.
+- **"playerctl/brightnessctl is not installed"**: the message (and
+  `doctor.py`) prints the exact install command for you to copy-paste; Jarvis
+  never runs it.
 - **Screen control says it needs X11 / "not supported":** you are on Wayland.
+- **"play …" opens YouTube but nothing starts, or "pause" says nothing is
+  playing.** Browsers block autoplay until you interact with the site, and a
+  paused tab publishes no media session at all. Jarvis taps play on the new tab
+  itself (needs `xdotool` + X11); if you opened the tab by hand, click the video
+  once and pause/next will work from then on. A browser's MPRIS cannot skip
+  tracks (`CanGoNext = false` in Chromium/Brave), so `next`/`previous` are sent
+  to the YouTube page as its own keyboard shortcuts instead.
 - **A command was refused:** that is the terminal guard. It refuses `sudo`, every
   power/session command, and destructive operations by design; risky ones only run
   after you answer "yes".
@@ -373,8 +414,9 @@ Notes & timers: `fn_save_note`, `fn_read_file`, `fn_set_timer`, `fn_set_reminder
 ## Security notes
 
 - The router and agent only call fixed functions in `desktop.py`, `vision.py`,
-  `net.py`, `shell.py` and `timers.py`. There is no `sudo`, and the only shell
-  access is the guarded terminal described above.
+  `net.py`, `shell.py` and `timers.py`. Jarvis **never runs `sudo`** (it may only
+  *print* an install command for you to run yourself), and the only shell access
+  is the guarded terminal described above.
 - `fn_read_file` reads any user-supplied path and `fn_save_note` writes to
   `~/jarvis_notes.md` — there is no sandboxing. Review before exposing Jarvis to
   untrusted input.

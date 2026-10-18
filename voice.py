@@ -28,7 +28,9 @@ from config import STT_LANG, TTS_VOICE
 
 # Hard bounds so a silent, missing, busy or blocked microphone can never stall
 # the caller (and therefore the worker loop) indefinitely.
-_LISTEN_TIMEOUT = 4        # max seconds to wait for speech to *start*
+_LISTEN_TIMEOUT = max(5, int(os.getenv("JARVIS_LISTEN_TIMEOUT", "30").strip() or 30))
+# ^ max seconds to wait for speech to *start* after you trigger Jarvis. Generous
+#   by default (30 s) so you can think, or say a long name, without it giving up.
 _PHRASE_TIME_LIMIT = 6     # max seconds of a single utterance
 _RECOGNIZE_TIMEOUT = 8     # max seconds for the speech-to-text HTTP round-trip
 
@@ -153,6 +155,16 @@ _stop_speaking = threading.Event()
 def stop_speaking():
     """Interrupt the reply currently being spoken, if any."""
     _stop_speaking.set()
+
+
+# Set by stop_listening() to abandon a listen that is still waiting for speech
+# (the GUI Stop button), instead of waiting out the full window.
+_stop_listening = threading.Event()
+
+
+def stop_listening():
+    """Give up on a listen that has not started recording yet."""
+    _stop_listening.set()
 
 
 def _ptt_active():
@@ -371,6 +383,11 @@ def _capture_from_stream(stream, fd=None, ptt=False, stop_event=None):
             reason = "muted"
             chunks = []
             break
+        if _stop_listening.is_set():
+            # The GUI Stop button was pressed while still waiting for speech.
+            reason = "stopped"
+            chunks = []
+            break
         if stop_event is not None and stop_event.is_set():
             reason = "ptt"
             break
@@ -490,6 +507,8 @@ def listen():
     if _mic_muted:
         _dbg("microphone muted; not listening")
         return ""
+
+    _stop_listening.clear()          # a stale Stop must not kill this listen
 
     device = _mic_device()
     ptt = _ptt_active()

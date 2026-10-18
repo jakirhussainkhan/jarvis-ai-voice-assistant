@@ -352,7 +352,7 @@ class JarvisWidget(QWidget):
         self.stop_button.setCursor(Qt.PointingHandCursor)
         self.stop_button.setStyleSheet(_BUTTON_STYLE)
         self.stop_button.setEnabled(False)
-        self.stop_button.clicked.connect(self._stop_speaking)
+        self.stop_button.clicked.connect(self._stop)
 
         buttons = QHBoxLayout()
         buttons.setSpacing(8)
@@ -400,7 +400,9 @@ class JarvisWidget(QWidget):
     def set_state(self, state):
         self.status.setText(state)
         self.reactor.set_state(state)
-        self.stop_button.setEnabled(state == SPEAKING)
+        # Stop can cut a reply short *or* abandon a listen that is still waiting
+        # for you to speak, so it is live whenever Jarvis is busy.
+        self.stop_button.setEnabled(state in (LISTENING, SPEAKING))
         if state == IDLE:
             self.reactor.set_energy(0.0)
         if self.tray is not None:
@@ -424,7 +426,9 @@ class JarvisWidget(QWidget):
             self.set_state(IDLE)
 
     # -- stop ------------------------------------------------------------- #
-    def _stop_speaking(self):
+    def _stop(self):
+        """Abandon a listen that is waiting, and cut off any reply."""
+        voice.stop_listening()
         voice.stop_speaking()
 
     # -- worker signals --------------------------------------------------- #
@@ -498,7 +502,7 @@ class JarvisWidget(QWidget):
         elif event.key() == Qt.Key_M:
             self.toggle_mute()
         elif event.key() == Qt.Key_Space:
-            self._stop_speaking()
+            self._stop()
         else:
             super().keyPressEvent(event)
 

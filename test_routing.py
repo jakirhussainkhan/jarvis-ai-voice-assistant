@@ -194,6 +194,41 @@ def test_bare_youtube_defers(monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
+# play a song by name, no "youtube" needed
+# --------------------------------------------------------------------------- #
+
+def test_play_by_name_without_youtube(monkeypatch):
+    calls = _spy(monkeypatch, "play_youtube", "Playing Kesariya on YouTube.")
+    assert router.try_local("play kesariya") == "Playing Kesariya on YouTube."
+    assert calls == [(("kesariya",), {})]
+
+
+def test_play_the_song_by_name(monkeypatch):
+    calls = _spy(monkeypatch, "play_youtube", "ok")
+    assert router.try_local("play the song kesariya") == "ok"
+    assert calls == [(("kesariya",), {})]
+
+
+def test_play_filler_only_asks(monkeypatch):
+    calls = _spy(monkeypatch, "play_youtube", "SHOULD NOT HAPPEN")
+    for phrase in ("play a song", "play the song", "play some music"):
+        assert router.try_local(phrase) == "What should I play?", phrase
+    assert calls == []
+
+
+def test_deictic_song_is_an_on_screen_action_not_a_search(monkeypatch):
+    """'play the second song'/'play that one' act on the screen, never a search."""
+    from tools import screen_do                        # noqa: F401 (existence)
+    import vision
+    search = _spy(monkeypatch, "play_youtube", "SHOULD NOT HAPPEN")
+    monkeypatch.setattr(vision, "act", lambda goal, **k: f"screen:{goal}")
+    for phrase in ("play the second song", "play this song", "play that one",
+                   "play the first video", "play it"):
+        assert router.try_local(phrase) == f"screen:{phrase}", phrase
+    assert search == []
+
+
+# --------------------------------------------------------------------------- #
 # media / volume / brightness / screenshot / lock
 # --------------------------------------------------------------------------- #
 

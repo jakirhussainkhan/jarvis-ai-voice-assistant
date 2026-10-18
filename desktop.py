@@ -14,6 +14,8 @@ import os
 import re
 import shutil
 import subprocess
+import threading
+import time
 import unicodedata
 from datetime import datetime
 from difflib import SequenceMatcher
@@ -620,6 +622,11 @@ def play_youtube(query):
                 break
         if rc == 0 and vid:
             if _open_url(f"https://www.youtube.com/watch?v={vid}"):
+                # Autoplay is normally blocked for a freshly opened tab, which
+                # would leave the video paused with no MPRIS session; nudge it in
+                # the background so the spoken reply is never delayed.
+                threading.Thread(target=ensure_browser_playing,
+                                 daemon=True).start()
                 return f"Playing {query} on YouTube."
         elif rc != 0:
             # Surface yt-dlp's own error instead of failing silently.
@@ -652,6 +659,78 @@ def close_youtube():
 # media (playerctl)
 # --------------------------------------------------------------------------- #
 
+# A browser's MPRIS session is deliberately limited: Chromium/Brave report
+# CanGoNext/CanGoPrevious = false, so playerctl refuses those outright. When we
+# can see the YouTube window we can drive the page with its own shortcuts
+# instead (these need no MPRIS at all).
+_BROWSER_MEDIA = re.compile(r"brave|chrome|chromium|firefox|edge|vivaldi|opera", re.I)
+_YT_KEYS = {"next": "shift+n", "previous": "shift+p", "prev": "shift+p"}
+
+
+def _browser_media_player():
+    """True when playerctl can see a browser publishing a media session.
+
+    A browser only appears here once it is actually playing, which makes this a
+    reliable "did the video start?" probe.
+    """
+    rc, out = _run(["playerctl", "-l"])
+    return bool(rc == 0 and _BROWSER_MEDIA.search(out))
+
+
+def _youtube_window():
+    """Window id of a visible browser window showing YouTube, or ``None``."""
+    if is_wayland() or not has("xdotool"):
+        return None
+    rc, out = _run(["xdotool", "search", "--onlyvisible", "--name", "YouTube"])
+    if rc != 0:
+        return None
+    ids = [line.strip() for line in out.splitlines() if line.strip()]
+    return ids[-1] if ids else None
+
+
+def _press_in_window(wid, key, restore=True):
+    """Focus ``wid``, send ``key``, then restore the previous focus (X11).
+
+    Chromium ignores synthetic key events sent to an unfocused window, so the
+    window genuinely has to be activated for the key to reach the page.
+    """
+    if not wid or is_wayland() or not has("xdotool"):
+        return False
+    rc, current = _run(["xdotool", "getactivewindow"])
+    previous = current.strip() if rc == 0 else ""
+    if _run(["xdotool", "windowactivate", "--sync", str(wid)])[0] != 0:
+        return False
+    time.sleep(0.3)
+    rc, _ = _run(["xdotool", "key", "--clearmodifiers", key])
+    time.sleep(0.2)
+    if restore and previous and previous != str(wid):
+        _run(["xdotool", "windowactivate", "--sync", previous])
+    return rc == 0
+
+
+def ensure_browser_playing(timeout=9.0):
+    """Nudge a freshly opened YouTube tab to actually start playing.
+
+    A browser refuses unmuted autoplay until the *site* has seen a user gesture,
+    and a spoken command is not one -- so a video we just opened sits paused and
+    publishes no MPRIS session at all (which is why "pause" then reports that
+    nothing is playing). Best effort, X11 only, never raises.
+    """
+    if is_wayland() or not (has("xdotool") and has("playerctl")):
+        return False
+    deadline = time.monotonic() + max(1.0, float(timeout))
+    nudged = False
+    while time.monotonic() < deadline:
+        if _browser_media_player():
+            return True
+        if not nudged:
+            wid = _youtube_window()
+            if wid and _press_in_window(wid, "k", restore=False):
+                nudged = True
+        time.sleep(0.8)
+    return _browser_media_player()
+
+
 _MEDIA = {
     "pause": "pause", "resume": "play", "play": "play",
     "next": "next", "previous": "previous", "prev": "previous",
@@ -665,11 +744,20 @@ def media_control(action):
     if key not in _MEDIA:
         return "I can handle pause, resume, next, previous or stop."
     if not has("playerctl"):
-        return "playerctl is not installed. Install it with: sudo apt install playerctl."
+        return ("playerctl is not installed. To install it, run: "
+                "sudo apt install playerctl")
     rc, out = _run(["playerctl", _MEDIA[key]])
-    if rc != 0:
-        return "There is no media player to control."
-    return f"Media {key if key != 'prev' else 'previous'}."
+    label = "previous" if key == "prev" else key
+    if rc == 0:
+        return f"Media {label}."
+    # A browser's MPRIS has no next/previous track (Chromium/Brave report
+    # CanGoNext = false), so playerctl refuses. Drive the page itself instead.
+    youtube_key = _YT_KEYS.get(key)
+    if youtube_key and _press_in_window(_youtube_window(), youtube_key):
+        return f"Media {label}."
+    if youtube_key and re.search(r"no player could handle", out, re.I):
+        return "That player can't skip tracks."
+    return "There is no media player to control."
 
 
 def media_seek(seconds):
@@ -679,7 +767,8 @@ def media_seek(seconds):
     except (TypeError, ValueError):
         return "How many seconds should I seek?"
     if not has("playerctl"):
-        return "playerctl is not installed."
+        return ("playerctl is not installed. To install it, run: "
+                "sudo apt install playerctl")
     if delta == 0:
         return "How many seconds should I seek?"
     # playerctl takes the direction as a suffix ("10+" forward, "10-" back); a
@@ -694,7 +783,8 @@ def media_seek(seconds):
 def now_playing():
     """Describe the current track, or report that nothing is playing."""
     if not has("playerctl"):
-        return "playerctl is not installed."
+        return ("playerctl is not installed. To install it, run: "
+                "sudo apt install playerctl")
     rc, out = _run(["playerctl", "metadata", "--format",
                     "{{artist}} - {{title}} ({{status}})"])
     if rc != 0 or not out.strip():
@@ -787,8 +877,8 @@ def brightness_control(action, value=None):
     """Brightness up/down/set via brightnessctl, clamped to 1-100."""
     key = (action or "").strip().lower()
     if not has("brightnessctl"):
-        return ("brightnessctl is not installed. Install it with: "
-                "sudo apt install brightnessctl.")
+        return ("brightnessctl is not installed. To install it, run: "
+                "sudo apt install brightnessctl")
     if key in ("up", "increase"):
         rc, _ = _run(["brightnessctl", "set", "+10%"])
         return "Brightness up." if rc == 0 else _BRIGHT_FAIL

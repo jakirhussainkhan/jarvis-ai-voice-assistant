@@ -234,12 +234,12 @@ _SCREEN_RISKY = re.compile(
 )
 
 
-def fn_screen_do(goal: str) -> str:
-    """Achieve a goal by looking at the screen and clicking/typing on it.
+def screen_do(goal):
+    """Look at the screen and act on it, confirming destructive goals first.
 
-    Use for direct UI actions like "click the login button", "open the first
-    result", "close that popup" or "fill in the search box and search". Goals
-    that sound destructive or financial are confirmed with the user first.
+    The shared implementation behind :func:`fn_screen_do` and the router's
+    on-screen action branch, so "play the video on my screen" behaves the same
+    whether the fast-path router or the agent handles it.
     """
     goal = (goal or "").strip()
     if not goal:
@@ -248,6 +248,17 @@ def fn_screen_do(goal: str) -> str:
         return confirm.request(lambda g=goal: vision.act(g),
                                f"Control the screen to {goal}?")
     return vision.act(goal)
+
+
+def fn_screen_do(goal: str) -> str:
+    """Achieve a goal by looking at the screen and clicking/typing on it.
+
+    Use for direct UI actions like "click the login button", "open the first
+    result", "close that popup", "play the video that is on screen" or "fill in
+    the search box and search". Goals that sound destructive or financial are
+    confirmed with the user first.
+    """
+    return screen_do(goal)
 
 
 def fn_click(x: int, y: int, button: int = 1, double: bool = False) -> str:
