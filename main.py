@@ -9,19 +9,34 @@ from memory import Memory
 
 EXIT_WORDS = ["exit", "quit", "bye", "stop"]
 
+# Filler that can surround an exit word without changing its meaning
+# ("please stop", "okay bye now", "stop it"). If real words remain after the
+# exit word and filler are removed, the utterance is a command with a target
+# (e.g. "quit youtube", "stop the music") -- not a request to end the session.
+_EXIT_FILLER = re.compile(
+    r"\b(exit|quit|bye|stop|please|jarvis|okay|ok|now|and|then|the|a|an|it|that"
+    r"|session)\b",
+    re.I,
+)
+
 total_tokens = 0
 local_count = 0
 agent_count = 0
 
 
 def is_exit(text: str) -> bool:
-    """True if text contains an exit word as a whole word.
+    """True if text is an exit command, not a command *about* exit.
 
     Word boundaries keep substrings like 'stop' in 'unstoppable' (or 'start' in
-    'restart') from ending the session.
+    'restart') from ending the session. A trailing target is respected: "stop"
+    and "please stop" end the session, but "quit youtube" / "stop the music" do
+    not, so they can be routed as commands instead.
     """
     text = text.lower().strip()
-    return any(re.search(rf"\b{re.escape(w)}\b", text) for w in EXIT_WORDS)
+    if not any(re.search(rf"\b{re.escape(w)}\b", text) for w in EXIT_WORDS):
+        return False
+    rest = re.sub(r"\s+", " ", _EXIT_FILLER.sub(" ", text)).strip(" .,!?")
+    return not rest
 
 
 def handle(text, memory):

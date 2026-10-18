@@ -139,16 +139,17 @@ class JarvisWorker(QThread):
                 # Nothing heard: return straight away so the finally block
                 # below resets the widget to Idle. Never spin here.
                 return
-            self.message.emit(f"👤 {user}")
+            # listen() already prints the "👤 <user>" line to stdout -- emitting
+            # it here too printed every recognised phrase twice. Same for speak()
+            # below. Keep the status signals, drop the duplicate logs.
 
             reply = try_local(user)
             if not reply:
                 self.state_changed.emit(THINKING)
                 reply, _tokens = run_agent(user, self.memory)
 
-            self.message.emit(f"🤖 {reply}")
             self.state_changed.emit(SPEAKING)
-            speak(reply)
+            speak(reply)          # prints "🤖 <reply>" exactly once
         except Exception as exc:                      # never kill the UI
             self.message.emit(f"⚠️ {exc}")
         finally:

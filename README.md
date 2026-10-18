@@ -22,19 +22,21 @@ Speech recognition and replies are **English-only by design**. A PyQt5
 - **Two front ends** — a terminal loop (`main.py`) and a floating, transparent,
   always-on-top reactor widget (`gui.py`) with live state colours
   (Idle / Listening / Thinking / Speaking).
-- **Robust audio capture** — device preference, a fixed energy gate, a warm-up
-  flush that discards the mic's stream-open transient, and bounded timeouts so a
-  misbehaving mic can never stall the loop.
+- **Robust audio capture** — capture runs through `arecord -D default -f S16_LE
+  -r 16000 -c 1` (PyAudio/PortAudio never saw this machine's mic), read in 0.1 s
+  chunks and RMS-gated: it starts above RMS 300, keeps a ~0.3 s pre-roll, uses
+  hysteresis (stays recording down to RMS 150) and ends after ~1.2 s below that,
+  with bounded timeouts so a misbehaving mic can never stall the loop.
 - **Tests** — a `pytest` suite covering routing, exit detection, memory, the
-  response cache, and the real router→agent dispatch path.
+  response cache, the capture gate, and the real router→agent dispatch path.
 
 ## Requirements
 
 - Linux with a working microphone (PipeWire or PulseAudio).
 - `pactl` (from `pulseaudio-utils`/`pipewire-pulse`) for volume control.
+- `arecord` / `aplay` from `alsa-utils` for capture and playback
+  (`sudo apt install alsa-utils`).
 - Python 3.10+ (developed on 3.12).
-- PortAudio development headers to build `pyaudio`
-  (e.g. `sudo apt install portaudio19-dev`).
 
 ## Setup
 
@@ -58,6 +60,8 @@ All configuration lives in `config.py` and can be overridden from `.env`:
 | `GROQ_API_KEY` | *(required)* | Groq API key, `gsk_…` |
 | `GROQ_BASE_URL` | `https://api.groq.com/openai/v1` | OpenAI-compatible endpoint |
 | `GROQ_MODEL` | `openai/gpt-oss-120b` | Model ID (must support tools) |
+| `JARVIS_MIC_DEVICE` | `default` | ALSA PCM name for `arecord -D` (any name from `arecord -L`) |
+| `JARVIS_DEBUG` | *(unset)* | Set to `1` to print per-chunk RMS / capture diagnostics |
 
 STT language (`en-US`), TTS voice (`en-US-AriaNeural`), history window, output
 token cap and tool-round limit are constants in `config.py`.
@@ -109,14 +113,14 @@ sends a miss to the agent.
 | File | Role |
 | --- | --- |
 | `config.py` | Loads `.env`; holds `API_KEY`, `BASE_URL`, `MODEL_NAME`, `STT_LANG`, `TTS_VOICE` and the history/output/tool limits. |
-| `voice.py` | `listen()` (SpeechRecognition + Google STT) and `speak()` (edge-tts + pygame). Picks the onboard mic, flushes the stream-open transient, suppresses ALSA/JACK spam, and bounds every call with timeouts. |
+| `voice.py` | `listen()` (SpeechRecognition + Google STT, `en-US`) and `speak()` (edge-tts + pygame). `listen()` captures via `arecord` in 0.1 s chunks, RMS-gates at `_ENERGY_THRESHOLD`, and wraps the bytes in `sr.AudioData`; it needs no PyAudio. |
 | `router.py` | `try_local()` — offline handling for volume, system status, time, date, YouTube and app launching. Commands containing a search verb (`search`, `look up`, `find`) deliberately return `None` so they reach the agent. |
 | `agent.py` | Groq chat orchestration: md5 response cache, token accounting, tool schemas built from function signatures, English-only system instruction, bounded tool loop. |
 | `tools.py` | Tool functions: open app, system status, YouTube, web search, save note, read file. |
 | `memory.py` | Rolling `deque` window of recent turns, rendered as a transcript. |
 | `main.py` | Terminal entry point and `handle()` dispatch. |
 | `gui.py` | PyQt5 Arc Reactor widget; the listen/think/speak cycle runs on a `QThread`. |
-| `test_mic.py` | Standalone mic diagnostic: lists devices, records a WAV, reports RMS/peak, plays back, recognises. |
+| `test_mic.py` | Standalone mic diagnostic (arecord-based): lists capture devices via `arecord -l`/`-L`, records a WAV with the same command as `listen()`, reports RMS/peak, plays it back with `aplay`, and recognises it. |
 
 ## Troubleshooting
 
@@ -126,9 +130,9 @@ sends a miss to the agent.
   JARVIS_DEBUG=1 ./venv/bin/python main.py
   ```
 
-  This prints the energy threshold, warm-up discards, captured length/peak, and
-  whether the outcome was a timeout, an unrecognised capture, or a network
-  (`RequestError`) failure.
+  This prints the device, the RMS gate, the per-0.1 s chunk RMS, the captured
+  length/peak, and whether the outcome was a timeout, an unrecognised capture,
+  or a network (`RequestError`) failure.
 - **Input is clipping** (debug prints `peak at full scale (32768)`): lower the
   microphone gain in your system mixer (`alsamixer`, or your desktop's sound
   settings).

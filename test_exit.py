@@ -20,3 +20,15 @@ def test_word_boundaries_prevent_false_positives():
 def test_old_bengali_exit_words_are_gone():
     assert not is_exit("bondho")
     assert not is_exit("thamo")
+
+
+def test_exit_word_with_filler_still_exits():
+    assert is_exit("stop it")
+    assert is_exit("quit now")
+
+
+def test_exit_word_with_a_target_is_not_exit():
+    # "quit/stop X" is a command about X, so it must reach the router.
+    assert not is_exit("quit youtube")
+    assert not is_exit("stop the music")
+    assert not is_exit("close youtube")

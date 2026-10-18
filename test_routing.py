@@ -43,6 +43,42 @@ def test_play_on_youtube_keeps_query_local(monkeypatch):
     assert router.try_local("play lo-fi music on youtube") == "Playing lo-fi music on YouTube."
 
 
+def test_play_lo_fi_on_youtube(monkeypatch):
+    _patch_side_effects(monkeypatch)
+    assert router.try_local("play lo-fi on youtube") == "Playing lo-fi on YouTube."
+
+
+def test_close_youtube_is_not_a_search(monkeypatch):
+    """Regression: 'close youtube' must not search for the word 'close'."""
+    opened = []
+    monkeypatch.setattr(router, "_open", lambda url: opened.append(url) or True)
+    monkeypatch.setattr(router, "_launch", lambda candidates: True)
+    monkeypatch.setattr(router, "_run", lambda args: True)
+
+    reply = router.try_local("close youtube")
+    assert reply == "I can't close browser tabs yet."
+    assert opened == [], "closing YouTube must not open/search anything"
+    assert "Playing" not in reply
+
+
+def test_close_app_closes_gracefully(monkeypatch):
+    _patch_side_effects(monkeypatch)
+    monkeypatch.setattr(router, "_close_app", lambda candidates: True)
+    assert router.try_local("close chrome") == "Closing Chrome."
+    assert router.try_local("quit firefox") == "Closing Firefox."
+
+
+def test_close_unknown_target_defers_to_agent(monkeypatch):
+    _patch_side_effects(monkeypatch)
+    assert router.try_local("close the door") is None
+
+
+def test_bare_youtube_is_not_a_search(monkeypatch):
+    """A YouTube mention with no action verb must not become a search query."""
+    _patch_side_effects(monkeypatch)
+    assert router.try_local("youtube") is None
+
+
 def test_open_app_is_local(monkeypatch):
     _patch_side_effects(monkeypatch)
     assert router.try_local("open chrome") == "Opening Chrome."

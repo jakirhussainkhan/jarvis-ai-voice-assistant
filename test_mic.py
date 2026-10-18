@@ -1,50 +1,29 @@
 """Standalone microphone diagnostic for Jarvis.
 
 Run this on the machine with the microphone to isolate capture problems,
-independently of the GUI / agent / TTS.
+independently of the GUI / agent / TTS. Capture now goes through ``arecord``
+(the same path as ``voice.listen()``), so this script no longer needs PyAudio.
 
 Usage:
-    ./venv/bin/python test_mic.py            # list mics + record 3s + play + recognise
-    ./venv/bin/python test_mic.py --list     # only list microphones
-    ./venv/bin/python test_mic.py --device 5 # force a specific device index
+    ./venv/bin/python test_mic.py            # list devices + record 3s + play + recognise
+    ./venv/bin/python test_mic.py --list     # only list capture devices
+    ./venv/bin/python test_mic.py --device plughw:1,0
     ./venv/bin/python test_mic.py --seconds 4
 """
 
 import argparse
-import ctypes
 import os
 import re
+import subprocess
 import sys
 import wave
 from pathlib import Path
 
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 
-import pyaudio
 import speech_recognition as sr
 
-
-# Mute ALSA/JACK chatter so the diagnostic output stays readable. Mirrors the
-# suppression in voice.py, but keeps this script standalone. The handler
-# objects MUST stay alive at module scope, otherwise C calls a freed pointer.
-_ALSA_HANDLER = ctypes.CFUNCTYPE(
-    None, ctypes.c_char_p, ctypes.c_int,
-    ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p,
-)
-_alsa_handler = _ALSA_HANDLER(lambda *args: None)
-try:
-    ctypes.cdll.LoadLibrary("libasound.so").snd_lib_error_set_handler(_alsa_handler)
-except OSError:
-    pass
-
-_JACK_HANDLER = ctypes.CFUNCTYPE(None, ctypes.c_char_p)
-_jack_handler = _JACK_HANDLER(lambda msg: None)
-try:
-    ctypes.cdll.LoadLibrary("libjack.so.0").jack_set_error_function(_jack_handler)
-except OSError:
-    pass
-
-
+import voice
 
 try:
     from config import STT_LANG
@@ -54,76 +33,85 @@ except Exception:  # pragma: no cover - config should exist, but stay standalone
 HERE = Path(__file__).resolve().parent
 WAV_PATH = HERE / "test_mic.wav"
 VOICE_PY = HERE / "voice.py"
+SAMPLE_RATE = voice._SAMPLE_RATE
+SAMPLE_WIDTH = voice._SAMPLE_WIDTH
 
 
 # --------------------------------------------------------------------------- #
 # helpers
 # --------------------------------------------------------------------------- #
 
-def list_microphones():
-    """Requirement 2: print every device the way speech_recognition sees them."""
-    names = sr.Microphone.list_microphone_names()
-    print(f"\n🎙️  speech_recognition sees {len(names)} device(s):")
-    for i, mic in enumerate(names):
-        print(f"  {i:>3}  {mic}")
-    return names
+def _run(cmd, **kwargs):
+    """Run a command and return the CompletedProcess (text mode)."""
+    return subprocess.run(cmd, capture_output=True, text=True, **kwargs)
 
 
-def default_input_index():
-    """pyaudio's default input device index, or None."""
-    pa = pyaudio.PyAudio()
-    try:
-        return pa.get_default_input_device_info()["index"]
-    except Exception:
-        return None
-    finally:
-        pa.terminate()
+def _indent(text):
+    return "\n".join("  " + line for line in text.splitlines())
 
 
-def preferred_input_index():
-    """Whatever voice._pick_input_device() would choose (system default/PipeWire)."""
-    try:
-        from voice import _pick_input_device
-        return _pick_input_device()
-    except Exception:
-        return None
+def list_devices():
+    """Print every capture device / PCM name arecord can see.
+
+    Replaces the old ``sr.Microphone.list_microphone_names()`` (PyAudio) with
+    native ALSA enumeration, matching the arecord capture path.
+    """
+    print("\n🎙️  arecord -l (hardware capture devices):")
+    out = _run(["arecord", "-l"])
+    body = (out.stdout or out.stderr or "<none>").strip()
+    print(_indent(body))
+
+    print("\n🎙️  arecord -L (PCM names usable with --device):")
+    out = _run(["arecord", "-L"])
+    pcm_names = [line for line in out.stdout.splitlines()
+                 if line and not line[0].isspace()]
+    for name in pcm_names:
+        print(f"  {name}")
+    if not pcm_names:
+        print("  <none>")
+    return pcm_names
 
 
-def device_name(index):
-    if index is None:
-        return "<system default>"
-    try:
-        names = sr.Microphone.list_microphone_names()
-        return f"{index} ({names[index]})" if 0 <= index < len(names) else str(index)
-    except Exception:
-        return str(index)
+def preferred_device():
+    """Whatever voice.listen() would capture from (default: ``default``)."""
+    return voice._mic_device()
 
 
-def record_wav(index, seconds):
-    """Requirement 3: capture `seconds` of audio to test_mic.wav."""
-    rec = sr.Recognizer()
-    rec.energy_threshold = 300
-    rec.dynamic_energy_threshold = False
+def record_wav(device, seconds):
+    """Capture `seconds` of audio to test_mic.wav using arecord.
 
-    print(f"\n🔴 Recording {seconds}s from device {device_name(index)} ...")
-    with sr.Microphone(device_index=index) as src:
-        # Deliberately NO adjust_for_ambient_noise() here: on this hardware it
-        # pushed energy_threshold to ~30000 and blocked normal speech. We keep a
-        # low fixed floor instead (matching voice.py). rec.record() ignores the
-        # threshold anyway, but the settings stay in sync with voice.py.
-        audio = rec.record(src, duration=seconds)
+    Uses the same command builder as voice.listen() so the diagnostic and the
+    real capture path cannot drift apart.
+    """
+    cmd = voice.arecord_command(device, seconds=seconds, output=WAV_PATH, fmt="wav")
+    print(f"\n🔴 Recording {seconds}s from {device} ...")
+    print(f"   $ {' '.join(cmd)}")
+    proc = _run(cmd)
+    if proc.returncode != 0:
+        raise RuntimeError(
+            (proc.stderr or proc.stdout or f"arecord exited {proc.returncode}").strip()
+        )
+    if not WAV_PATH.exists() or WAV_PATH.stat().st_size == 0:
+        raise RuntimeError("arecord reported success but produced no output")
 
-    with open(WAV_PATH, "wb") as fh:
-        fh.write(audio.get_wav_data())
+    with wave.open(str(WAV_PATH), "rb") as wf:
+        rate, width = wf.getframerate(), wf.getsampwidth()
+        if rate != SAMPLE_RATE or width != SAMPLE_WIDTH:
+            raise RuntimeError(
+                f"unexpected WAV format: rate={rate} width={width}; "
+                f"expected rate={SAMPLE_RATE} width={SAMPLE_WIDTH}"
+            )
+        data = wf.readframes(wf.getnframes())
+
     print(f"   saved -> {WAV_PATH}  ({WAV_PATH.stat().st_size} bytes)")
-    _report_level(audio)
-    return rec, audio
+    _report_level(data)
+    return data
 
 
-def _report_level(audio):
+def _report_level(raw):
     """Quick RMS so a silent capture is obvious without listening."""
-    raw = audio.get_raw_data(convert_rate=16000, convert_width=2)
-    samples = memoryview(raw).cast("h")
+    audio = sr.AudioData(raw, SAMPLE_RATE, SAMPLE_WIDTH)
+    samples = memoryview(audio.get_raw_data()).cast("h")
     if not samples:
         print("   ⚠️  captured 0 samples")
         return
@@ -135,33 +123,22 @@ def _report_level(audio):
 
 
 def play_wav(path):
-    """Requirement 4: play the recording back through pyaudio."""
+    """Play the recording back through ALSA (aplay) instead of PyAudio."""
     print(f"\n🔊 Playing back {path.name} ...")
-    pa = pyaudio.PyAudio()
-    try:
-        with wave.open(str(path), "rb") as wf:
-            stream = pa.open(
-                format=pa.get_format_from_width(wf.getsampwidth()),
-                channels=wf.getnchannels(),
-                rate=wf.getframerate(),
-                output=True,
-            )
-            try:
-                data = wf.readframes(1024)
-                while data:
-                    stream.write(data)
-                    data = wf.readframes(1024)
-            finally:
-                stream.stop_stream()
-                stream.close()
-    finally:
-        pa.terminate()
+    proc = _run(["aplay", "-q", str(path)])
+    if proc.returncode != 0:
+        raise RuntimeError(
+            (proc.stderr or proc.stdout or f"aplay exited {proc.returncode}").strip()
+        )
     print("   playback done")
 
 
-def recognise(rec, audio):
-    """Requirement 5: show the recognised text, or why nothing was heard."""
+def recognise(data):
+    """Show the recognised text, or why nothing was heard."""
     print("\n📝 Recognising ...")
+    audio = sr.AudioData(data, SAMPLE_RATE, SAMPLE_WIDTH)
+    rec = sr.Recognizer()
+    rec.operation_timeout = 8
     try:
         text = rec.recognize_google(audio, language=STT_LANG)
         print(f"   recognised ({STT_LANG}): {text!r}")
@@ -177,12 +154,12 @@ def recognise(rec, audio):
 
 
 # --------------------------------------------------------------------------- #
-# requirement 6 - energy_threshold check
+# requirement 6 - capture settings check
 # --------------------------------------------------------------------------- #
 
 def check_energy_threshold():
-    """Read the threshold voice.py ships with and advise if it's too high."""
-    print("\n🔧 Checking energy_threshold in voice.py ...")
+    """Read the RMS gate voice.py ships with and advise if it's too high."""
+    print("\n🔧 Checking capture settings in voice.py ...")
     try:
         src = VOICE_PY.read_text(encoding="utf-8")
     except OSError as exc:
@@ -191,13 +168,11 @@ def check_energy_threshold():
 
     match = (re.search(r"_ENERGY_THRESHOLD\s*=\s*([0-9.]+)", src)
              or re.search(r"energy_threshold\s*=\s*([0-9.]+)", src))
-    dynamic = re.search(r"dynamic_energy_threshold\s*=\s*(True|False)", src)
     if not match:
-        print("   no static energy_threshold found in voice.py")
+        print("   no RMS gate found in voice.py")
     else:
         value = float(match.group(1))
-        print(f"   voice.py sets energy_threshold = {value:.0f} "
-              f"(dynamic = {dynamic.group(1) if dynamic else '?'})")
+        print(f"   voice.py gates speech at RMS > {value:.0f}")
         if value > 4000:
             print("   ⚠️  VERY HIGH: normal speech may be ignored. Lower it.")
         elif value > 1000:
@@ -206,22 +181,18 @@ def check_energy_threshold():
             print("   ✅ reasonable starting value.")
 
     print(
-        "\n   Recommended capture settings (NO ambient calibration):\n"
-        "     rec = sr.Recognizer()\n"
-        "     rec.energy_threshold = 300            # low fixed floor\n"
-        "     rec.dynamic_energy_threshold = False  # fixed gate, no drift\n"
-        "     with sr.Microphone(device_index=idx) as src:\n"
-        "         <discard the stream-open warm-up transient>\n"
-        "         audio = rec.listen(src, timeout=4, phrase_time_limit=8)\n"
+        "\n   Capture path (same as voice.listen()):\n"
+        "     arecord -D <device> -f S16_LE -r 16000 -c 1\n"
         "\n   Notes:\n"
-        "   - Do NOT call adjust_for_ambient_noise() on this machine: it pushed\n"
-        "     the threshold to ~30000 and ignored normal speech.\n"
-        "   - Use the system default input (\"default\" / PipeWire). Direct ALSA\n"
-        "     access to the onboard codec (hw:1,0) returns a loud clipped signal\n"
-        "     and makes every listen() time out.\n"
-        "   - If the noise floor is high / audio clips, lower the capture gain\n"
-        "     (e.g. `amixer -c 1 sset Capture 50%`); 100% (30 dB) clips here.\n"
-        "   - Override the device with JARVIS_MIC_INDEX=<n> in the environment."
+        "   - listen() reads 0.1 s chunks, RMS-gates at _ENERGY_THRESHOLD,\n"
+        "     starts on speech, stops after ~1 s of silence (max phrase 8 s).\n"
+        "   - It waits up to 4 s for speech to start; no ambient calibration.\n"
+        "   - PyAudio/PortAudio is NOT used for capture: it never saw this\n"
+        "     machine's mic (it always timed out), while arecord works.\n"
+        "   - The device defaults to \"default\" (system/PipeWire input).\n"
+        "     Override with JARVIS_MIC_DEVICE=<name from `arecord -L`>.\n"
+        "   - If the noise floor sits near/above the gate, lower the capture\n"
+        "     gain (e.g. `amixer -c 1 sset Capture 40%`); 100% clips here."
     )
 
 
@@ -231,49 +202,38 @@ def check_energy_threshold():
 
 def main():
     parser = argparse.ArgumentParser(description="Jarvis microphone diagnostic")
-    parser.add_argument("--device", type=int, default=None,
-                        help="force a device index (default: the device voice.py picks)")
+    parser.add_argument("--device", default=None,
+                        help="ALSA PCM name to record from "
+                             "(default: the device voice.py picks)")
     parser.add_argument("--seconds", type=float, default=3.0,
                         help="seconds to record (default: 3)")
     parser.add_argument("--list", action="store_true",
-                        help="only list microphones and exit")
+                        help="only list capture devices and exit")
     parser.add_argument("--no-play", action="store_true",
-                        help="skip pyaudio playback")
+                        help="skip aplay playback")
     args = parser.parse_args()
 
     print("=" * 60)
-    print(" Jarvis microphone test")
+    print(" Jarvis microphone test (arecord)")
     print("=" * 60)
 
-    names = list_microphones()
-    if not names:
-        print("❌ No microphones reported by PortAudio. Check PulseAudio/PipeWire "
-              "and that the user is in the 'audio' group.")
-        return 1
+    list_devices()
 
-    default_idx = default_input_index()
-    preferred_idx = preferred_input_index()
-    # Test the SAME device voice.py would pick (falling back to the system
-    # default if voice.py couldn't choose one).
-    chosen = args.device if args.device is not None else (
-        preferred_idx if preferred_idx is not None else default_idx)
-
+    preferred = preferred_device()
+    chosen = args.device if args.device is not None else preferred
     print("\nDevice selection:")
-    print(f"  system default input : {device_name(default_idx)}")
-    print(f"  voice.py would pick   : {device_name(preferred_idx)}")
-    print(f"  using for this test   : {device_name(chosen)}")
-    print(f"  chosen device index   : {chosen}")
+    print(f"  voice.py would pick : {preferred}")
+    print(f"  using for this test : {chosen}")
 
     if args.list:
         check_energy_threshold()
         return 0
 
     try:
-        rec, audio = record_wav(chosen, args.seconds)
+        data = record_wav(chosen, args.seconds)
     except Exception as exc:
-        print(f"\n❌ Recording failed on device {device_name(chosen)}: "
-              f"{type(exc).__name__}: {exc}")
-        print("   Try another index with --device N (list printed above).")
+        print(f"\n❌ Recording failed on {chosen}: {type(exc).__name__}: {exc}")
+        print("   Try another device with --device NAME (see list above).")
         check_energy_threshold()
         return 1
 
@@ -283,7 +243,7 @@ def main():
         except Exception as exc:
             print(f"   ⚠️  playback failed: {type(exc).__name__}: {exc}")
 
-    recognise(rec, audio)
+    recognise(data)
     check_energy_threshold()
     print("\nDone.")
     return 0

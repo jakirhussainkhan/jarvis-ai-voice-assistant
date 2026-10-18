@@ -65,6 +65,28 @@ def _open(url):
         return False
 
 
+def _close_app(candidates):
+    """Best-effort graceful close (SIGTERM) of the first running program.
+
+    ``pkill -TERM -x`` matches the process name exactly and asks it to quit, so
+    it never force-kills or touches unrelated processes. Returns True if a
+    matching process was signalled.
+    """
+    if not shutil.which("pkill"):
+        return False
+    for cmd in candidates:
+        try:
+            result = subprocess.run(
+                ["pkill", "-TERM", "-x", cmd],
+                stdin=_DEVNULL, stdout=_DEVNULL, stderr=_DEVNULL,
+            )
+        except OSError:
+            continue
+        if result.returncode == 0:
+            return True
+    return False
+
+
 def _clean(text, pattern):
     """Remove every match of `pattern` and collapse leftover whitespace."""
     if isinstance(pattern, str):
@@ -97,8 +119,21 @@ YT_STRIP = re.compile(
     r"\b(youtube|play|watch|listen to|listen|open|launch|start|run|show|on)\b",
     re.I,
 )
+# Only an explicit media verb turns a YouTube mention into a play/search. With no
+# verb, a bare "youtube" is NOT treated as a search query.
+YT_ACTION = re.compile(r"\b(play|watch|listen to|listen|search|find|look ?up)\b", re.I)
 
 OPEN_VERB = re.compile(r"\b(open|launch|start|run|show)\b", re.I)
+
+# "close/quit/stop/kill X" is its own command (handled before anything else) and
+# is never treated as a search query. A *bare* exit word stays a session command.
+CLOSE_WORD = re.compile(r"\b(close|quit|stop|kill|exit)\b", re.I)
+CLOSE_STRIP = re.compile(
+    r"\b(close|quit|stop|kill|exit|the|a|an|app|application|window|tab|browser"
+    r"|please|jarvis)\b",
+    re.I,
+)
+BROWSER_WORD = re.compile(r"\b(browser|tab|chrome|chromium|firefox)\b", re.I)
 
 APPS = [
     ("Chrome", re.compile(r"\b(chrome|chromium|google[- ]chrome)\b", re.I),
@@ -169,14 +204,36 @@ def try_local(text):
     if DATE_WORD.search(t):
         return f"Today is {datetime.now().strftime('%A, %d %B %Y')}"
 
-    # --- youtube: open, or search only when no search verb was used ------ #
+    # --- close / quit / stop <target> ----------------------------------- #
+    # Handled before YouTube/apps so "close youtube" can never become a search
+    # query for the word "close".
+    if CLOSE_WORD.search(t):
+        target = _clean(t, CLOSE_STRIP)
+        if target:
+            for name, pattern, candidates in APPS:
+                if pattern.search(t):
+                    if _close_app(candidates):
+                        return f"Closing {name}."
+                    return f"I don't see {name} running."
+            if YT_WORD.search(t) or BROWSER_WORD.search(t):
+                return "I can't close browser tabs yet."
+        # Unknown target, or a bare "stop"/"quit"/"exit": fall through (the
+        # branches below return None) so the agent can decide.
+
+    # --- youtube: open, or play/search only with an explicit media verb --- #
     if YT_WORD.search(t):
-        query = _clean(t, YT_STRIP)
-        if query:
-            _open(f"https://www.youtube.com/results?search_query={query.replace(' ', '+')}")
-            return f"Playing {query} on YouTube."
-        _open("https://www.youtube.com")
-        return "Opening YouTube."
+        if YT_ACTION.search(t):
+            query = _clean(t, YT_STRIP)
+            if query:
+                _open(f"https://www.youtube.com/results?search_query={query.replace(' ', '+')}")
+                return f"Playing {query} on YouTube."
+            _open("https://www.youtube.com")
+            return "Opening YouTube."
+        if OPEN_VERB.search(t):
+            _open("https://www.youtube.com")
+            return "Opening YouTube."
+        # "youtube" with no explicit action -> leave it to the agent.
+        return None
 
     # --- open application ----------------------------------------------- #
     bare = re.sub(r"\s+", "", t.lower()).strip("!?.,")

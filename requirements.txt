@@ -1,6 +1,5 @@
 openai
 SpeechRecognition
-pyaudio
 edge-tts
 pygame
 PyQt5
