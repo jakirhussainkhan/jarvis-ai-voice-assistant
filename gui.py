@@ -4,11 +4,16 @@ Click the reactor (or the tray icon) to talk; the audio + agent work runs on a
 QThread so the UI never freezes. The app keeps running in the background: closing
 the floating widget hides it to the system tray instead of quitting.
 
+The reactor is alive: it reacts to your voice while it listens (the mic RMS) and
+moves in time with its own speech (the TTS loudness envelope). A mic button mutes
+and unmutes the microphone at any time, and a Stop button cuts a reply short.
+
 Controls:
   floating widget   left-click = talk   ·   drag = move
                     right-click = menu   ·   Esc = hide to tray
+                    Mic button = mute/unmute   ·   Stop = cut the reply
   tray icon         left-click = talk   ·   right-click = menu
-                    menu: Talk / Show-Hide / Quit
+                    menu: Talk / Mute mic / Show-Hide / Quit
 """
 
 import math
@@ -17,9 +22,10 @@ import sys
 from PyQt5.QtCore import QPointF, Qt, QThread, QTimer, pyqtSignal
 from PyQt5.QtGui import (QBrush, QColor, QIcon, QPainter, QPen, QPixmap,
                          QRadialGradient)
-from PyQt5.QtWidgets import (QApplication, QLabel, QMenu, QSystemTrayIcon,
-                             QVBoxLayout, QWidget)
+from PyQt5.QtWidgets import (QApplication, QHBoxLayout, QLabel, QMenu,
+                             QPushButton, QSystemTrayIcon, QVBoxLayout, QWidget)
 
+import voice
 from main import handle
 from memory import Memory
 from voice import listen, speak
@@ -28,6 +34,7 @@ IDLE = "Idle"
 LISTENING = "Listening..."
 THINKING = "Thinking..."
 SPEAKING = "Speaking..."
+MUTED = "Muted"
 
 # glow colour per state: (outer glow, core)
 _COLORS = {
@@ -35,7 +42,25 @@ _COLORS = {
     LISTENING: (QColor(0, 220, 140), QColor(140, 255, 210)),
     THINKING:  (QColor(255, 170, 0), QColor(255, 225, 150)),
     SPEAKING:  (QColor(170, 90, 255), QColor(220, 180, 255)),
+    MUTED:     (QColor(80, 92, 112), QColor(140, 155, 180)),
 }
+
+_BUTTON_STYLE = """
+QPushButton {
+    color:#dff2ff; background:rgba(20,40,70,190);
+    border:1px solid rgba(150,235,255,120);
+    border-radius:14px; padding:5px 12px;
+    font-size:12px; font-weight:600;
+}
+QPushButton:hover { background:rgba(30,70,120,230); }
+QPushButton:disabled {
+    color:rgba(220,240,255,80); background:rgba(20,40,70,80);
+    border-color:rgba(150,235,255,40);
+}
+QPushButton:checked {
+    background:rgba(200,70,70,220); border-color:rgba(255,160,160,190);
+}
+"""
 
 
 def make_icon(size=64):
@@ -72,7 +97,12 @@ def make_icon(size=64):
 
 
 class Reactor(QWidget):
-    """The circular arc-reactor button. Click to talk, drag to move."""
+    """The circular arc-reactor button. Click to talk, drag to move.
+
+    The glow breathes gently while idle and grows/quickens with ``set_energy``,
+    which the worker feeds from the live mic level (listening) or the TTS
+    loudness envelope (speaking).
+    """
 
     clicked = pyqtSignal()
     menu_requested = pyqtSignal(object)
@@ -82,21 +112,31 @@ class Reactor(QWidget):
         self.setFixedSize(diameter, diameter)
         self._state = IDLE
         self._phase = 0.0
+        self._energy = 0.0
         self._press = None
         self._dragged = False
         self.setCursor(Qt.PointingHandCursor)
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._pulse)
-        self._timer.start(40)              # ~25 fps glow pulse
+        self._timer.start(33)              # ~30 fps glow pulse
 
     def _pulse(self):
-        self._phase = (self._phase + 0.06) % (2 * math.pi)
+        # Faster shimmer while thinking; the resting pace otherwise.
+        speed = 0.14 if self._state == THINKING else 0.06
+        self._phase = (self._phase + speed) % (2 * math.pi)
         self.update()
 
     def set_state(self, state):
         self._state = state
         self.update()
+
+    def set_energy(self, value):
+        """Live loudness, 0..1, drives the size/brightness of the glow."""
+        try:
+            self._energy = max(0.0, min(1.0, float(value)))
+        except (TypeError, ValueError):
+            self._energy = 0.0
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -104,17 +144,21 @@ class Reactor(QWidget):
 
         center = QPointF(self.width() / 2.0, self.height() / 2.0)
         radius = min(center.x(), center.y()) - 2
-        pulse = 1.0 + 0.035 * math.sin(self._phase)
+        energy = self._energy
+        # Quiet: the gentle breathe. Loud: a bigger, springier pulse.
+        pulse = 1.0 + (0.03 + 0.18 * energy) * math.sin(self._phase)
+        scale = pulse * (1.0 + 0.12 * energy)
         glow, core = _COLORS.get(self._state, _COLORS[IDLE])
 
-        # 1. outer glow
-        grad = QRadialGradient(center, radius * pulse)
+        # 1. outer glow (brightens with the live level)
+        grad = QRadialGradient(center, radius * scale)
         grad.setColorAt(0.00, QColor(glow.red(), glow.green(), glow.blue(), 235))
-        grad.setColorAt(0.55, QColor(glow.red(), glow.green(), glow.blue(), 120))
+        grad.setColorAt(0.55, QColor(glow.red(), glow.green(), glow.blue(),
+                                     int(120 + 90 * energy)))
         grad.setColorAt(1.00, QColor(glow.red(), glow.green(), glow.blue(), 0))
         painter.setPen(Qt.NoPen)
         painter.setBrush(QBrush(grad))
-        painter.drawEllipse(center, radius * pulse, radius * pulse)
+        painter.drawEllipse(center, radius * scale, radius * scale)
 
         # 2. concentric rings
         ring_pen = QPen(QColor(150, 235, 255, 150))
@@ -125,7 +169,7 @@ class Reactor(QWidget):
             painter.drawEllipse(center, radius * frac, radius * frac)
 
         # 3. bright core
-        core_r = radius * 0.55 * pulse
+        core_r = radius * (0.55 + 0.12 * energy) * pulse
         core_grad = QRadialGradient(center, core_r)
         core_grad.setColorAt(0.0, QColor(255, 255, 255, 245))
         core_grad.setColorAt(0.45, core)
@@ -133,6 +177,20 @@ class Reactor(QWidget):
         painter.setPen(Qt.NoPen)
         painter.setBrush(QBrush(core_grad))
         painter.drawEllipse(center, core_r, core_r)
+
+        # 4. muted badge: a small dark disc with a slash
+        if self._state == MUTED:
+            badge_r = radius * 0.28
+            bx = center.x() + radius * 0.60
+            by = center.y() + radius * 0.60
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QBrush(QColor(22, 26, 34, 235)))
+            painter.drawEllipse(QPointF(bx, by), badge_r, badge_r)
+            slash = QPen(QColor(255, 90, 90), max(2.0, radius * 0.09))
+            slash.setCapStyle(Qt.RoundCap)
+            painter.setPen(slash)
+            off = badge_r * 0.5
+            painter.drawLine(QPointF(bx - off, by - off), QPointF(bx + off, by + off))
         painter.end()
 
     # -- click vs drag ---------------------------------------------------- #
@@ -168,12 +226,17 @@ class JarvisWorker(QThread):
 
     state_changed = pyqtSignal(str)
     message = pyqtSignal(str)
+    heard = pyqtSignal(str)
+    level = pyqtSignal(float)
 
     def __init__(self, memory, parent=None):
         super().__init__(parent)
         self.memory = memory
 
     def run(self):
+        # The level sink is a module global in voice; only one worker runs at a
+        # time, so emitting our signal from it is safe (Qt queues it to the GUI).
+        voice.set_level_sink(self.level.emit)
         try:
             self.state_changed.emit(LISTENING)
             user = listen()
@@ -184,6 +247,7 @@ class JarvisWorker(QThread):
             # listen() already prints the "👤 <user>" line to stdout and speak()
             # prints "🤖 <reply>" exactly once, so we only drive the state
             # colours here.
+            self.heard.emit(user)
 
             self.state_changed.emit(THINKING)
             # main.handle() is the single dispatch path: it resolves any pending
@@ -195,6 +259,8 @@ class JarvisWorker(QThread):
         except Exception as exc:                      # never kill the UI
             self.message.emit(f"⚠️ {exc}")
         finally:
+            voice.set_level_sink(None)
+            self.level.emit(0.0)
             self.state_changed.emit(IDLE)
 
 
@@ -209,6 +275,9 @@ class JarvisTray(QSystemTrayIcon):
         menu = QMenu()
         talk = menu.addAction("Talk")
         talk.triggered.connect(widget.trigger)
+        self.mute_action = menu.addAction("Mute mic")
+        self.mute_action.setCheckable(True)
+        self.mute_action.triggered.connect(widget.toggle_mute)
         self.toggle_action = menu.addAction("Hide window")
         self.toggle_action.triggered.connect(widget.toggle_visible)
         menu.addSeparator()
@@ -225,9 +294,12 @@ class JarvisTray(QSystemTrayIcon):
     def sync_toggle(self, visible):
         self.toggle_action.setText("Hide window" if visible else "Show window")
 
+    def sync_mute(self, muted):
+        self.mute_action.setChecked(muted)
+
 
 class JarvisWidget(QWidget):
-    """The floating window: reactor + status label."""
+    """The floating window: reactor + status + mic/stop buttons."""
 
     def __init__(self):
         super().__init__()
@@ -263,11 +335,39 @@ class JarvisWidget(QWidget):
             "font-size:13px; font-weight:600;"
         )
 
+        self.transcript = QLabel("")
+        self.transcript.setAlignment(Qt.AlignCenter)
+        self.transcript.setMinimumWidth(190)
+        self.transcript.setStyleSheet(
+            "color:#9fc4e8; background:transparent; font-size:11px;"
+        )
+
+        self.mic_button = QPushButton("🎤 Mic On")
+        self.mic_button.setCheckable(True)
+        self.mic_button.setCursor(Qt.PointingHandCursor)
+        self.mic_button.setStyleSheet(_BUTTON_STYLE)
+        self.mic_button.clicked.connect(self.toggle_mute)
+
+        self.stop_button = QPushButton("⏹ Stop")
+        self.stop_button.setCursor(Qt.PointingHandCursor)
+        self.stop_button.setStyleSheet(_BUTTON_STYLE)
+        self.stop_button.setEnabled(False)
+        self.stop_button.clicked.connect(self._stop_speaking)
+
+        buttons = QHBoxLayout()
+        buttons.setSpacing(8)
+        buttons.addStretch(1)
+        buttons.addWidget(self.mic_button)
+        buttons.addWidget(self.stop_button)
+        buttons.addStretch(1)
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 20, 20, 16)
         layout.setSpacing(4)
         layout.addWidget(self.reactor, alignment=Qt.AlignCenter)
         layout.addWidget(self.status, alignment=Qt.AlignCenter)
+        layout.addWidget(self.transcript, alignment=Qt.AlignCenter)
+        layout.addLayout(buttons)
 
         self._build_menu()
         self.tray = None
@@ -281,6 +381,9 @@ class JarvisWidget(QWidget):
     def _build_menu(self):
         talk = self._menu.addAction("Talk")
         talk.triggered.connect(self.trigger)
+        self.mute_action = self._menu.addAction("Mute mic")
+        self.mute_action.setCheckable(True)
+        self.mute_action.triggered.connect(self.toggle_mute)
         self.toggle_action = self._menu.addAction("Hide to tray")
         self.toggle_action.triggered.connect(self.toggle_visible)
         self._menu.addSeparator()
@@ -297,11 +400,46 @@ class JarvisWidget(QWidget):
     def set_state(self, state):
         self.status.setText(state)
         self.reactor.set_state(state)
+        self.stop_button.setEnabled(state == SPEAKING)
+        if state == IDLE:
+            self.reactor.set_energy(0.0)
         if self.tray is not None:
             self.tray.setToolTip(f"Jarvis — {state}")
 
+    # -- mic mute --------------------------------------------------------- #
+    def toggle_mute(self, _checked=False):
+        """Mute/unmute the microphone and reflect it everywhere."""
+        self.set_mic_muted(not voice.is_mic_muted())
+
+    def set_mic_muted(self, muted):
+        muted = voice.set_mic_muted(muted)
+        self.mic_button.setChecked(muted)
+        self.mic_button.setText("🔇 Muted" if muted else "🎤 Mic On")
+        self.mute_action.setChecked(muted)
+        if self.tray is not None:
+            self.tray.sync_mute(muted)
+        if muted:
+            self.set_state(MUTED)
+        elif self.status.text() == MUTED:
+            self.set_state(IDLE)
+
+    # -- stop ------------------------------------------------------------- #
+    def _stop_speaking(self):
+        voice.stop_speaking()
+
+    # -- worker signals --------------------------------------------------- #
+    def _on_heard(self, text):
+        self.transcript.setText(text if len(text) <= 34 else text[:31] + "…")
+
+    def _flash(self, text):
+        self.transcript.setText(text)
+        QTimer.singleShot(2000, lambda: self.transcript.setText(""))
+
     def trigger(self):
         """Start one listen/process/speak cycle (ignored if already busy)."""
+        if voice.is_mic_muted():
+            self._flash("Mic is muted — click “Mic On” to talk")
+            return
         if self.worker is not None and self.worker.isRunning():
             return
         if not self.isVisible():
@@ -309,6 +447,8 @@ class JarvisWidget(QWidget):
         self.worker = JarvisWorker(self.memory, self)
         self.worker.state_changed.connect(self.set_state)
         self.worker.message.connect(self._log)
+        self.worker.heard.connect(self._on_heard)
+        self.worker.level.connect(self.reactor.set_energy)
         self.worker.start()
 
     def toggle_visible(self):
@@ -323,6 +463,7 @@ class JarvisWidget(QWidget):
     def quit(self):
         """Really exit: stop the tray and the Qt event loop."""
         self._quitting = True
+        voice.stop_speaking()
         if self.tray is not None:
             self.tray.hide()
         if self.worker is not None and self.worker.isRunning():
@@ -354,6 +495,10 @@ class JarvisWidget(QWidget):
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Escape:
             self.hide()                      # hide to tray, don't quit
+        elif event.key() == Qt.Key_M:
+            self.toggle_mute()
+        elif event.key() == Qt.Key_Space:
+            self._stop_speaking()
         else:
             super().keyPressEvent(event)
 

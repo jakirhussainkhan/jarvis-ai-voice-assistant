@@ -21,21 +21,66 @@ GUI.
 | Guarded terminal | Working (3-layer guard; power/session commands refused in code) |
 | Offline mode (`main.py --offline`) | Working |
 | Conversation memory | Working |
-| GUI widget + system tray (`gui.py`) | Working (offscreen-tested) |
+| GUI widget + system tray (`gui.py`) | Working (offscreen-tested); **mic mute/unmute, Stop, and an orb that reacts to live voice + speech** |
 | Microphone diagnostic | Working |
 | Desktop control (apps/YouTube/media/volume/brightness/screenshot/lock) | Working |
 | Confirmation-gated actions | Working (power, risky terminal, risky screen goals) |
 | Timers / reminders | Working |
-| Tests | `pytest` suite — **244 passed, 1 skipped** |
-| Published | GitHub, tag **`v1.0.1`** (README + MIT LICENSE) |
+| Tests | `pytest` suite — **264 passed, 1 skipped** |
+| Published | GitHub, tags **`v1.0.1`**, **`v1.0.2`** (README + MIT LICENSE) |
 
 ## Repository & releases
 
 - Remote: <https://github.com/jakirhussainkhan/jarvis-voice-assistant>
 - Default branch: `main`
-- Release tags: **`v1.0.0`** (initial) and **`v1.0.1`** (screen vision, live
-  internet, guarded terminal, offline-first, terminal hardening).
+- Release tags: **`v1.0.0`** (initial), **`v1.0.1`** (screen vision, live
+  internet, guarded terminal, offline-first, terminal hardening) and
+  **`v1.0.2`** (voice-chat widget: mic mute/unmute, Stop, live reactive orb).
 - Secrets are **not** committed (see *Security* below).
+
+## Voice-chat widget: mic mute, Stop & a live reactive orb (2026-10-18, v1.0.2)
+
+The user asked for the ChatGPT voice-chat feel: control the mic yourself, and watch
+a live animation that moves when Jarvis talks. All three parts landed:
+
+- **Mic mute / unmute** — `voice.set_mic_muted()` / `is_mic_muted()` /
+  `toggle_mic_mute()` (a runtime flag kept deliberately separate from the existing
+  `JARVIS_MUTE`, which silences *output*). Reachable from the widget's **Mic**
+  button, the tray's checkable **Mute mic** item, and the **`M`** key. While muted
+  the orb dims with a "mic off" badge, `trigger()` refuses to listen, and — because
+  `_capture_from_stream()` checks the flag every 0.1 s chunk — *pressing mute
+  mid-listen drops the phrase immediately* and `listen()` returns `""` without even
+  opening `arecord`.
+- **Live, audio-reactive orb** — `voice.set_level_sink(fn)` registers a callback
+  fed a 0..1 loudness. While listening that is the real chunk RMS (`_emit_level`);
+  while speaking it is the **TTS loudness envelope**. `JarvisWorker` sets the sink
+  to a `level = pyqtSignal(float)` and the reactor scales/brightens its glow and
+  core from it (a gentle breathe at rest, a springier pulse when loud). The sink is
+  optional, so the terminal loop pays nothing.
+- **Stop** — `voice.stop_speaking()` sets an event that cuts the current reply
+  short (pygame `music.stop()`), exposed as the **Stop** button and the **`Space`**
+  key. It also cancels a reply that has not started playing yet (the flag is cleared
+  at the *top* of `_play_tts`, so a Stop pressed during synthesis skips playback and
+  a stale Stop never silences the *next* reply).
+- **Envelope** — `_tts_envelope()` decodes the generated mp3 with ffmpeg to 8 kHz
+  mono and computes ~20 ms RMS hops (peak-normalised, sqrt curve); `_pump_envelope()`
+  indexes it by real playback position. If ffmpeg is missing or fails it returns `[]`
+  and the orb simply keeps its normal pulse — never fatal.
+
+Also in this pass: the widget grew a one-line **"you: …"** transcript, the status
+line gained a **Muted** state, and the window is now 230×261 with the two buttons.
+`doctor.py` describes the new controls in its "try the GUI" hint.
+
+Verified live: the widget builds offscreen (230×261), mute toggles everywhere,
+`trigger()` refuses while muted, the reactor paints at every state/energy, a real
+edge-tts mp3 produced a 262-sample / ~5.2 s envelope (mean 0.31, decaying to 0), a
+real `speak()` drove 69 level frames, and a Stop at t≈3 s cut a ~9 s clip to 3.04 s.
+Found and fixed one real bug doing so (the Stop was cleared *after* synthesis, so a
+Stop pressed during synthesis was lost, and pressing Stop early was silently
+ignored). Documented above.
+
+**Files:** `voice.py`, `gui.py`, `doctor.py`, `config.py` (`__version__ = "1.0.2"`),
+`test_voice_capture.py`, new `test_voice_speech.py`, `test_gui.py`, `README.md`.
 
 ## Screen vision, live internet, guarded terminal & offline-first (2026-10-18, v1.0.1)
 
@@ -129,7 +174,7 @@ The guard lives in `shell.py` and is enforced in code, not in the prompt:
 
 ### Verification
 
-- `pytest`: **244 passed, 1 skipped**.
+- `pytest`: **264 passed, 1 skipped**.
   New: `test_vision.py`, `test_screen.py`, `test_screen_routing.py`, `test_tools_extra.py`,
   `test_net.py`, `test_timers.py`, `test_offline.py`, `test_gui.py` (offscreen), plus
   a much larger `test_shell.py` (power/session bypasses, quoted commands,
@@ -716,6 +761,13 @@ by compiling `gui.py`; the PyQt GUI itself was not launched here.
 - The response cache is in-memory only and keyed by lowercased query, so it is
   lost on restart and ignores conversation context.
 - The agent path needs network access; the router fast-path works offline.
+- The voice-chat widget's **mic-level reaction while *listening*** is covered by
+  unit tests (a synthetic tone drives the sink) but was not watched on a real mic;
+  the *speaking* animation, the Stop button and the envelope were verified live.
+- Clicking the **tray** Mute/Talk items was not exercised on screen (the tray is
+  unavailable offscreen); the widget buttons, the `M`/`Space` keys and the shared
+  `voice` state they drive are all tested.
+- The mic mute is per-session (not persisted across restarts) by design.
 - `MAX_OUTPUT_TOKENS = 600` keeps the assistant brief while leaving reasoning
   headroom; raise it if long answers are ever cut off.
 - The arecord rewrite was verified against a *recorded* speech WAV and the local
@@ -727,6 +779,8 @@ by compiling `gui.py`; the PyQt GUI itself was not launched here.
 1. Consider persisting notes/history and adding a wake word.
 2. Decide on sandboxing for file/shell tools.
 3. Optionally add CI (run `pytest` on push).
+4. Optional hands-free "voice session": one Start button, then listen/reply in a
+   loop using the existing RMS voice-activity gate until the user mutes or stops.
 
 ## How to run
 
@@ -746,6 +800,11 @@ echo "GROQ_API_KEY=your-key" > .env   # Groq key, starts with gsk_
 ./venv/bin/python test_mic.py         # mic diagnostic (add --list to only list devices)
 ./venv/bin/python -m pytest           # test suite
 ```
+
+The GUI is a small voice-chat console: click the orb to talk, the **Mic** button
+(or `M`) mutes/unmutes the microphone instantly, **Stop** (or `Space`) cuts a reply
+short, the orb reacts to your voice while listening and moves with its own speech
+while talking, and only **Quit** in the tray menu exits.
 
 Requires a working microphone and, for the agent path, network access plus a
 valid Groq `GROQ_API_KEY`. `.env`, `venv/`, caches, `TOKEN.txt` and audio

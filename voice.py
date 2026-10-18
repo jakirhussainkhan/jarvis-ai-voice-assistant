@@ -91,6 +91,70 @@ _MUTE = os.getenv("JARVIS_MUTE", "").strip().lower() not in ("", "0", "false", "
 _LOUD_BACKGROUND = 200
 
 
+# --------------------------------------------------------------------------- #
+# runtime mic mute + live level (driven by the GUI)
+# --------------------------------------------------------------------------- #
+# The GUI's mic button toggles this at runtime. It is deliberately separate from
+# _MUTE above: that one silences the *reply*, this one stops Jarvis *listening*.
+_mic_muted = False
+
+
+def set_mic_muted(flag):
+    """Mute/unmute the microphone and return the new state."""
+    global _mic_muted
+    _mic_muted = bool(flag)
+    return _mic_muted
+
+
+def is_mic_muted():
+    """True while the microphone is muted from the GUI."""
+    return _mic_muted
+
+
+def toggle_mic_mute():
+    """Flip the mic mute and return the new state."""
+    return set_mic_muted(not _mic_muted)
+
+
+# Optional callback (set by the GUI) fed a 0..1 loudness for the live animation.
+# None means nobody is watching, so the capture path stays at zero overhead.
+_level_sink = None
+
+# RMS that maps to full scale ("1.0") in the animation; speech lands well below.
+_LEVEL_CEILING = 3000.0
+
+
+def set_level_sink(fn):
+    """Register a callback receiving live loudness (0..1); None removes it."""
+    global _level_sink
+    _level_sink = fn
+
+
+def _emit_value(value):
+    """Push a 0..1 loudness to the level sink, swallowing any sink error."""
+    sink = _level_sink
+    if sink is None:
+        return
+    try:
+        sink(max(0.0, min(1.0, float(value))))
+    except Exception:
+        pass
+
+
+def _emit_level(rms):
+    """Normalise a raw chunk RMS to 0..1 (sqrt curve) and push it."""
+    _emit_value(min(1.0, max(0.0, float(rms) / _LEVEL_CEILING)) ** 0.5)
+
+
+# Set by stop_speaking() to cut the current reply short (the GUI Stop button).
+_stop_speaking = threading.Event()
+
+
+def stop_speaking():
+    """Interrupt the reply currently being spoken, if any."""
+    _stop_speaking.set()
+
+
 def _ptt_active():
     """Push-to-talk only makes sense on an interactive terminal."""
     try:
@@ -302,6 +366,11 @@ def _capture_from_stream(stream, fd=None, ptt=False, stop_event=None):
         begin_recording()
 
     while True:
+        if _mic_muted:
+            # The GUI mic button was pressed mid-capture: drop what we have.
+            reason = "muted"
+            chunks = []
+            break
         if stop_event is not None and stop_event.is_set():
             reason = "ptt"
             break
@@ -312,6 +381,7 @@ def _capture_from_stream(stream, fd=None, ptt=False, stop_event=None):
             break
 
         rms = _rms(chunk, _SAMPLE_WIDTH)
+        _emit_level(rms)          # live loudness for the GUI animation
 
         if not started:
             pre_roll.append(chunk)
@@ -376,6 +446,7 @@ def _capture_from_stream(stream, fd=None, ptt=False, stop_event=None):
     if _DEBUG:
         total = sum(len(c) for c in chunks)
         _dbg(f"state=ended reason={reason} chunks={len(chunks)} bytes={total}")
+    _emit_value(0.0)
     return b"".join(chunks)
 
 
@@ -415,6 +486,10 @@ def listen():
     """
     rec = sr.Recognizer()
     rec.operation_timeout = _RECOGNIZE_TIMEOUT
+
+    if _mic_muted:
+        _dbg("microphone muted; not listening")
+        return ""
 
     device = _mic_device()
     ptt = _ptt_active()
@@ -488,24 +563,101 @@ def listen():
     return text.lower()
 
 
+# Loudness-envelope extraction for the speaking animation. ffmpeg is already a
+# dependency of the screen pipeline; if it is missing we fall back to synthetic
+# motion, so this is always best-effort.
+_ENVELOPE_RATE = 8000
+_ENVELOPE_HOP = 0.02          # 20 ms per envelope sample
+
+
+def _tts_envelope(path, hop=_ENVELOPE_HOP):
+    """Return the loudness envelope (0..1 floats) of an audio file, via ffmpeg.
+
+    Decoding is local and offline, so it never blocks on the network. Returns an
+    empty list when ffmpeg is unavailable or fails; the caller then simply keeps
+    the normal pulse instead of a speech-synced one.
+    """
+    proc = None
+    try:
+        proc = subprocess.Popen(
+            ["ffmpeg", "-v", "quiet", "-i", str(path),
+             "-ac", "1", "-ar", str(_ENVELOPE_RATE), "-f", "s16le", "-"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        )
+        raw, _ = proc.communicate(timeout=20)
+    except Exception:
+        if proc is not None:
+            with contextlib.suppress(Exception):
+                proc.kill()
+        return []
+    if not raw:
+        return []
+
+    step = max(1, int(_ENVELOPE_RATE * hop) * _SAMPLE_WIDTH)
+    levels = [_rms(raw[i:i + step], _SAMPLE_WIDTH)
+              for i in range(0, len(raw) - _SAMPLE_WIDTH + 1, step)]
+    peak = max(levels, default=0)
+    if peak <= 0:
+        return []
+    return [min(1.0, level / peak) ** 0.5 for level in levels]
+
+
+def _playback_seconds(started):
+    """Seconds of music played (pygame if it can, else the wall clock)."""
+    try:
+        pos = pygame.mixer.music.get_pos()
+        if pos is not None and pos >= 0:
+            return pos / 1000.0
+    except Exception:
+        pass
+    return time.monotonic() - started
+
+
+def _pump_envelope(envelope, started):
+    """Feed the envelope value for the current playback position to the sink."""
+    if not envelope:
+        return
+    index = int(_playback_seconds(started) / _ENVELOPE_HOP)
+    if 0 <= index < len(envelope):
+        _emit_value(envelope[index])
+
+
 def _play_tts(text):
-    """Synthesise `text` with edge-tts and play it through pygame (may raise)."""
+    """Synthesise `text` with edge-tts and play it through pygame (may raise).
+
+    While it plays, the decoded loudness envelope drives the level sink so the
+    GUI orb moves in time with the words, and stop_speaking() cuts it short.
+    """
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3").name
     try:
+        _stop_speaking.clear()      # a new reply must ignore a stale Stop
         asyncio.run(edge_tts.Communicate(text, voice=TTS_VOICE).save(tmp))
+        envelope = _tts_envelope(tmp)
+
+        if _stop_speaking.is_set():
+            # Stop was pressed while the reply was still being synthesised.
+            _emit_value(0.0)
+            return
 
         pygame.mixer.init()
         try:
             pygame.mixer.music.load(tmp)
             pygame.mixer.music.play()
             clock = pygame.time.Clock()
+            started = time.monotonic()
             while pygame.mixer.music.get_busy():
-                clock.tick(10)
+                if _stop_speaking.is_set():
+                    with contextlib.suppress(Exception):
+                        pygame.mixer.music.stop()
+                    break
+                _pump_envelope(envelope, started)
+                clock.tick(30)
         finally:
             with contextlib.suppress(Exception):
                 pygame.mixer.music.unload()
             with contextlib.suppress(Exception):
                 pygame.mixer.quit()
+            _emit_value(0.0)
     finally:
         with contextlib.suppress(OSError):
             os.remove(tmp)

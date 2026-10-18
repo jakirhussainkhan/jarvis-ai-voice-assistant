@@ -1,6 +1,6 @@
 # Jarvis — Voice Assistant for Linux
 
-**Version 1.0.1**
+**Version 1.0.2**
 
 A voice-controlled desktop assistant for Linux that can *see* your screen, use the
 internet, and operate the terminal. You speak a command; Jarvis either handles it
@@ -15,6 +15,17 @@ off and asks before anything risky. Power actions and other sensitive steps are
 confirmation-gated everywhere.
 
 ---
+
+## What's new in 1.0.2
+
+- **A live, voice-chat-style widget** — the reactor now *reacts*. While it listens
+  it grows and glows with your real microphone level, and while it speaks it moves
+  in time with its own words (the TTS loudness envelope).
+- **Mic mute / unmute** — a button (plus a tray item, an `M` key, and a checkable
+  tray action) mutes the microphone instantly, even mid-listen; the orb dims and
+  Jarvis stops listening until you turn it back on.
+- **Stop** — cut a reply off mid-sentence with the Stop button (or `Space`). A Stop
+  pressed while the reply is still being synthesised cancels it too.
 
 ## What's new in 1.0.1
 
@@ -61,7 +72,9 @@ confirmation-gated everywhere.
   can never become a YouTube search.
 - **Two front ends** — a terminal loop (`main.py`) and a floating, transparent,
   always-on-top reactor widget with a system tray (`gui.py`). Both share
-  `main.handle()`, so confirmation and routing behave identically in each.
+  `main.handle()`, so confirmation and routing behave identically in each. The
+  widget is a mini voice-chat console: it reacts to your voice, moves while it
+  speaks, and has a mic mute button and a Stop button.
 - **Usable without a microphone** — `JARVIS_TEXT=1 ./venv/bin/python main.py`
   (or `main.py --text`) takes *typed* commands through the exact same
   router/agent path.
@@ -76,11 +89,12 @@ confirmation-gated everywhere.
   of silence. Phrases are capped at 6 s. Playing media is paused while Jarvis
   listens and resumed afterwards (best effort), and `JARVIS_PTT=1` switches to
   push-to-talk for noisy rooms.
-- **Tests** — a `pytest` suite of **244 tests** (1 skipped) covering routing, app
+- **Tests** — a `pytest` suite of **264 tests** (1 skipped) covering routing, app
   matching, the protected list, the confirmation flow, the terminal guardrails,
   screen routing, clipboard fallbacks, offline behaviour, the internet tools,
   vision parsing, timers, the YouTube path, text mode, the doctor, the GUI
-  (offscreen) and the real router→agent dispatch path.
+  (offscreen), the live mic-level/TTS-envelope hooks and the real router→agent
+  dispatch path.
 
 ---
 
@@ -182,7 +196,10 @@ end a session.
 
 **GUI:** left-click the reactor (or the tray icon) to talk, drag to move it,
 right-click for the menu, `Esc` or closing the window hides it to the tray, and
-only **Quit** in the tray menu really exits.
+only **Quit** in the tray menu really exits. The orb **reacts to your voice** while
+it listens and **moves while it speaks**; the **Mic** button mutes/unmutes the
+microphone instantly (also `M` or the tray's *Mute mic*), and **Stop** (or `Space`)
+cuts a reply off mid-sentence.
 
 ### Voice commands
 
@@ -285,7 +302,7 @@ confirmation first, then tries the router, and only sends a miss to the agent.
 | File | Role |
 | --- | --- |
 | `config.py` | Loads `.env`; holds `__version__`, models, and the screen/shell/history limits. |
-| `voice.py` | `listen()` (arecord + SpeechRecognition, `en-US`) and `speak()` (edge-tts + pygame). |
+| `voice.py` | `listen()` (arecord + SpeechRecognition, `en-US`) and `speak()` (edge-tts + pygame). Also the runtime mic mute (`set_mic_muted`), the live level sink the GUI animates from, the TTS loudness envelope, and `stop_speaking()`. |
 | `router.py` | `try_local()` — the offline fast path: power, media, volume, brightness, screenshot, lock, windows, clipboard, battery/status/time/date, screen reading, folders, YouTube, dictated commands and app open/close. Search verbs return `None` for the agent. Also holds the spoken `CAPABILITIES` list. |
 | `desktop.py` | Whitelisted desktop actions plus the protected-process list. |
 | `vision.py` | Screen capture, `look()` (ask about the screen) and `act()` (bounded perceive→act loop). |
@@ -297,7 +314,7 @@ confirmation first, then tries the router, and only sends a miss to the agent.
 | `tools.py` | The tool functions (see the list below). |
 | `memory.py` | Rolling `deque` window of recent turns. |
 | `main.py` | Entry point and `handle()` dispatch (`--text`, `--offline`, `--screen`, `--gui`, `--check`, `--version`). |
-| `gui.py` | PyQt5 Arc Reactor widget + system tray; the listen/think/speak cycle runs on a `QThread`. |
+| `gui.py` | PyQt5 Arc Reactor widget + system tray; the listen/think/speak cycle runs on a `QThread`. The orb is fed live mic levels (listening) and the TTS loudness envelope (speaking); the widget adds a mic mute/unmute button and a Stop button. |
 | `doctor.py` | Readiness self-check. |
 | `test_mic.py` | Standalone mic diagnostic. |
 

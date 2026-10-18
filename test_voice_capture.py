@@ -21,6 +21,8 @@ def _no_media_pause(monkeypatch):
     """Never touch the real audio sink during tests: pause/resume are stubbed."""
     monkeypatch.setattr(voice.desktop, "pause_media_if_playing", lambda: None)
     monkeypatch.setattr(voice.desktop, "resume_media", lambda token: None)
+    monkeypatch.setattr(voice, "_level_sink", None)
+    monkeypatch.setattr(voice, "_mic_muted", False)
 
 
 # --------------------------------------------------------------------------- #
@@ -214,6 +216,49 @@ def test_listen_returns_empty_when_arecord_missing(monkeypatch):
 
     monkeypatch.setattr(voice, "_spawn_arecord", boom)
     assert voice.listen() == ""
+
+
+def test_listen_returns_empty_without_capturing_when_muted(monkeypatch):
+    """A muted mic must not even open arecord (nor call STT)."""
+    monkeypatch.setattr(voice, "_mic_muted", True)
+    spawned = []
+    monkeypatch.setattr(voice, "_spawn_arecord",
+                        lambda device=None: spawned.append(device))
+
+    assert voice.listen() == ""
+    assert spawned == []
+
+
+def test_muting_mid_capture_discards_the_phrase(monkeypatch):
+    """Pressing Mute while listening must end the capture and drop the phrase."""
+    pipe = _Pipe()
+    try:
+        pipe.feed(_tone(3.0, 3000))
+        voice.set_level_sink(lambda _v: voice.set_mic_muted(True))
+        data = _capture(pipe, monkeypatch, phrase=5.0)
+    finally:
+        voice.set_level_sink(None)
+        pipe.close()
+
+    assert data == b"", "a phrase captured after Mute must be discarded"
+
+
+def test_capture_feeds_the_live_level_sink(monkeypatch):
+    """The GUI animation is fed the chunk level, and a final 0 when it ends."""
+    seen = []
+    voice.set_level_sink(seen.append)
+    pipe = _Pipe()
+    try:
+        pipe.feed(_silence(0.3) + _tone(0.4, 3000) + _silence(1.5))
+        data = _capture(pipe, monkeypatch)
+    finally:
+        voice.set_level_sink(None)
+        pipe.close()
+
+    assert data, "speech should still have been captured"
+    assert seen, "the level sink should have received live values"
+    assert all(0.0 <= value <= 1.0 for value in seen)
+    assert seen[-1] == 0.0, "the sink must go quiet when capture ends"
 
 
 # --------------------------------------------------------------------------- #

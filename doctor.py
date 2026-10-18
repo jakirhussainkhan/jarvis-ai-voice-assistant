@@ -116,7 +116,9 @@ def report():
     out.append("Ask about the current screen once:")
     out.append("  ./venv/bin/python main.py --screen \"what is on my screen?\"")
     out.append("Floating widget + system tray:")
-    out.append("  ./venv/bin/python main.py --gui")
+    out.append("  ./venv/bin/python main.py --gui   # click the orb to talk;")
+    out.append("       mic button mutes/unmutes, Stop cuts a reply, the orb")
+    out.append("       reacts to your voice and to Jarvis's own speech")
     return "\n".join(out)
 
 
