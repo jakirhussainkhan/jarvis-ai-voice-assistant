@@ -20,6 +20,14 @@ GUI.
 | GUI widget (`gui.py`) | Working |
 | Microphone diagnostic | Working |
 | Tests | `pytest` suite — 24 tests |
+| Published | GitHub, tag `v1.0.0` (README + MIT LICENSE) |
+
+## Repository & releases
+
+- Remote: <https://github.com/jakirhussainkhan/jarvis-voice-assistant>
+- Default branch: `main`
+- Release tag: **`v1.0.0`** — contains the full project, `README.md`, and `LICENSE`.
+- Secrets are **not** committed (see *Security* below).
 
 ## How it works
 
@@ -48,12 +56,15 @@ Two front ends share the same brain:
 
 ## Module map
 
-- `config.py` — loads `.env`, holds `API_KEY` (from `GROQ_API_KEY`), `BASE_URL`,
-  `MODEL_NAME`, `STT_LANG`, `TTS_VOICE`, and the history/output/tool limits.
+- `config.py` — loads `.env`, holds `API_KEY` (from `GROQ_API_KEY`), `BASE_URL`
+  (`https://api.groq.com/openai/v1`), `MODEL_NAME` (`openai/gpt-oss-120b`),
+  `STT_LANG` (`en-US`), `TTS_VOICE` (`en-US-AriaNeural`), and the
+  history/output/tool limits.
 - `voice.py` — `listen()` (SpeechRecognition + Google STT, `en-US`) and `speak()`
   (edge-tts + pygame, `en-US-AriaNeural`). Suppresses ALSA/JACK spam, picks the
-  onboard mic (`ALC245` / `hw:1,0`), and bounds every call with timeouts so a
-  dead mic can never stall the loop.
+  onboard mic (`ALC245` / `hw:1,0`), uses a **fixed** energy threshold with a
+  **warm-up flush**, and bounds every call with timeouts so a dead mic can never
+  stall the loop.
 - `router.py` — `try_local()`: offline regex handling for volume, system status,
   time, date, YouTube (open/play only) and app launching. Any command containing
   a search verb (`search`, `look up`, `find`) returns `None` so it reaches the
@@ -65,10 +76,13 @@ Two front ends share the same brain:
   YouTube, web search, save note, read file. Signatures + docstrings become the
   schema (no hand-written schema).
 - `memory.py` — rolling `deque` window of recent turns, rendered as a transcript.
+- `main.py` — terminal entry point and `handle()` dispatch.
+- `gui.py` — PyQt5 Arc Reactor widget (`QThread` worker).
 - `test_mic.py` — standalone mic diagnostic: lists devices, records a WAV,
   reports RMS/peak, plays back, recognises, and checks `energy_threshold`.
 - `test_routing.py`, `test_exit.py`, `test_memory.py`, `test_agent_cache.py`,
   `test_flow.py` — pytest suite (see Verification).
+- `README.md`, `LICENSE` — docs and MIT license.
 
 ## What's done
 
@@ -83,13 +97,39 @@ Two front ends share the same brain:
 - Offline fast-path for common commands; API only used on a miss.
 - Local tools for app control, system stats, search, notes, and file reading.
 - Response cache to avoid repeat API calls for identical queries.
-- Hardened audio capture: device preference, no `adjust_for_ambient_noise()`
-  (it pushed the threshold to ~30000 on this machine), bounded timeouts, and
-  error suppression for ALSA/JACK.
+- **Microphone capture fixed** (see below): the mic's stream-open transient used
+  to poison the dynamic energy threshold and make `listen()` always time out.
 - Floating, transparent, always-on-top reactor widget with live state colours
   (Idle / Listening / Thinking / Speaking).
 - pytest suite covering routing, `is_exit`, memory, the response cache, and the
   real router→agent dispatch.
+- Published to GitHub with a README and an MIT LICENSE (`v1.0.0`).
+
+### Microphone fix (2026-10-18)
+
+Symptom: `main.py` printed `Listening…` forever and never recognised speech, even
+when clearly spoken. Measured on the real mic (`ALC245`, device 4):
+
+- Idle ambient is quiet — RMS ≈ 40.
+- Every time the capture stream opens after a few seconds idle, the mic emits a
+  loud, **clipped** transient: peak **32768** (full scale, ~2700 clipped samples),
+  RMS 32768 for the first ~7 buffers (~150 ms), decaying below the gate only
+  after ~0.8 s. This re-appears after TTS/agent gaps.
+- With the old `energy_threshold = 300` + `dynamic_energy_threshold = True`, that
+  transient tripped the gate, produced a too-short "phrase" that was discarded,
+  and ratcheted the threshold from 300 up to ~14000 — after which ambient (≈40)
+  never tripped it, so `listen()` raised `WaitTimeoutError` and returned `""`.
+
+Fix (`voice.py`):
+
+- `energy_threshold = 300`, **fixed**; `dynamic_energy_threshold = False`; no
+  `adjust_for_ambient_noise()`.
+- `_flush_warmup(src)` discards the stream-open transient right after the mic
+  opens (until input settles, bounded at 1.5 s) — on the real mic it drops
+  34–45 buffers (~0.73–0.96 s) per call.
+- `RequestError` (network/STT) is now printed loudly instead of being swallowed;
+  `WaitTimeoutError` / `UnknownValueError` / capture errors log distinct messages.
+- Debug output is gated behind `JARVIS_DEBUG=1`.
 
 ## Verification (2026-10-18)
 
@@ -97,10 +137,26 @@ Two front ends share the same brain:
 - Real dispatch via `main.handle()`: `"what time is it"` → local, no API call.
 - Real dispatch via `main.handle()` with a live Groq call: `"open YouTube and
   search for lo-fi music"` reaches the agent and triggers the `fn_youtube` tool.
-- `test_mic.py` on device 4 (ALC245): capture 286 KB, RMS 8830, peak 32768,
-  playback OK (recognition returns "no words" until someone speaks).
+- Mic fix, end-to-end through the real `listen()` path (system-output loopback):
+  captured `157696` bytes, `rms=3040 peak=17347` → recognised `'open YouTube'`.
+  With no speech it now correctly returns a timeout instead of grabbing garbage.
+- Manual chunk scan confirms the transient: first buffers at RMS `32768 …` decaying
+  to `~40`; idle ambient `~40`.
+- `test_mic.py` on device 4 (ALC245): capture 286 KB, peak 32768, playback OK.
 - Project source has no `gemini` / `GEMINI_API_KEY` / `google.genai` references;
   the unused `google-genai` SDK was uninstalled from `venv/`.
+
+## Security / secret handling
+
+- **Never commit API keys.** `.env` (holds `GROQ_API_KEY`) and `TOKEN.txt` are
+  gitignored and are **not** tracked.
+- Verified: `git grep` and full `git log -p` history contain **no** Groq key
+  value — only placeholders like `GROQ_API_KEY=your-key` and the note that Groq
+  keys start with `gsk_`.
+- The remote has no `.env` (HTTP 404).
+- If a key is ever exposed, **rotate/revoke it** in the provider console
+  (Groq: <https://console.groq.com/keys>; GitHub PAT: Settings → Developer
+  settings → Personal access tokens).
 
 ## Known issues & things to verify
 
@@ -109,11 +165,14 @@ Two front ends share the same brain:
 - The response cache is in-memory only and keyed by lowercased query, so it is
   lost on restart and ignores conversation context.
 - The agent path needs network access; the router fast-path works offline.
+- `MAX_OUTPUT_TOKENS = 220` may truncate long answers from the reasoning model —
+  raise it if replies are cut off.
 
 ## Next steps
 
 1. Consider persisting notes/history and adding a wake word.
 2. Decide on sandboxing for file/shell tools.
+3. Optionally add CI (run `pytest` on push).
 
 ## How to run
 
@@ -129,4 +188,5 @@ echo "GROQ_API_KEY=your-key" > .env   # Groq key, starts with gsk_
 ```
 
 Requires a working microphone and, for the agent path, network access plus a
-valid Groq `GROQ_API_KEY`. `.env`, `venv/`, and `__pycache__/` are gitignored.
+valid Groq `GROQ_API_KEY`. `.env`, `venv/`, caches, `TOKEN.txt` and audio
+artifacts are gitignored.
