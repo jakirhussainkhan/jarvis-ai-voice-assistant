@@ -26,10 +26,15 @@ from PyQt5.QtWidgets import (QApplication, QHBoxLayout, QLabel, QMenu,
                              QPushButton, QSystemTrayIcon, QVBoxLayout, QWidget)
 
 import voice
-from main import handle
+from config import CHAT_ON, CHAT_TIMEOUT
+from main import handle, is_exit
 from memory import Memory
 from voice import listen, speak
 import wake
+
+# What Jarvis says when a continuous session ends (you said an exit word, went
+# quiet, or pressed Stop).
+_SESSION_END = "Session over. See you soon, sir."
 
 IDLE = "Idle"
 LISTENING = "Listening..."
@@ -224,40 +229,66 @@ class Reactor(QWidget):
 
 
 class JarvisWorker(QThread):
-    """Runs listen -> try_local/run_agent -> speak off the GUI thread."""
+    """Runs listen -> try_local/run_agent -> speak off the GUI thread.
+
+    In continuous-chat mode (``chat=True``) it does that *in a loop*: after each
+    reply it opens the microphone again, so a normal conversation flows without
+    clicking. It leaves on any of: an exit word, silence (you went quiet for the
+    chat timeout), the mic being muted, or the Stop button.
+    """
 
     state_changed = pyqtSignal(str)
     message = pyqtSignal(str)
     heard = pyqtSignal(str)
     level = pyqtSignal(float)
 
-    def __init__(self, memory, parent=None):
+    def __init__(self, memory, parent=None, chat=False, chat_timeout=CHAT_TIMEOUT):
         super().__init__(parent)
         self.memory = memory
+        self.chat = chat
+        self.chat_timeout = chat_timeout
 
     def run(self):
         # The level sink is a module global in voice; only one worker runs at a
         # time, so emitting our signal from it is safe (Qt queues it to the GUI).
         voice.set_level_sink(self.level.emit)
+        first_turn = True                     # the wake click listens normally
+        voice._stop_speaking.clear()          # a stale Stop must not end this chat
         try:
-            self.state_changed.emit(LISTENING)
-            user = listen()
-            if not user:
-                # Nothing heard: return straight away so the finally block
-                # below resets the widget to Idle. Never spin here.
-                return
-            # listen() already prints the "👤 <user>" line to stdout and speak()
-            # prints "🤖 <reply>" exactly once, so we only drive the state
-            # colours here.
-            self.heard.emit(user)
+            while True:
+                self.state_changed.emit(LISTENING)
+                # Talking back and forth should feel natural: the wait between
+                # turns is the chat timeout, so Jarvis stays with you instead of
+                # going to sleep after 30 s.
+                user = listen(None if first_turn else self.chat_timeout)
+                first_turn = False
+                if not user:
+                    # You went quiet (or pressed Stop / muted the mic): end the
+                    # conversation instead of grabbing the microphone again.
+                    return
+                # listen() already prints the "👤 <user>" line to stdout and speak()
+                # prints "🤖 <reply>" exactly once, so we only drive the state
+                # colours here.
+                self.heard.emit(user)
 
-            self.state_changed.emit(THINKING)
-            # main.handle() is the single dispatch path: it resolves any pending
-            # confirmation, then tries the router and finally the agent.
-            reply, _kind, _tokens = handle(user, self.memory)
+                if is_exit(user):
+                    # A spoken exit word must end the session by voice, too --
+                    # no need to reach for the terminal.
+                    self.state_changed.emit(SPEAKING)
+                    speak(_SESSION_END)
+                    return
 
-            self.state_changed.emit(SPEAKING)
-            speak(reply)          # prints "🤖 <reply>" exactly once
+                self.state_changed.emit(THINKING)
+                # main.handle() is the single dispatch path: it resolves any pending
+                # confirmation, then tries the router and finally the agent.
+                reply, _kind, _tokens = handle(user, self.memory)
+
+                self.state_changed.emit(SPEAKING)
+                speak(reply)          # prints "🤖 <reply>" exactly once
+                if voice._stop_speaking.is_set():
+                    # Stop cut the reply short: leave the conversation rather
+                    # than immediately waiting for the next sentence.
+                    return
         except Exception as exc:                      # never kill the UI
             self.message.emit(f"⚠️ {exc}")
         finally:
@@ -284,6 +315,10 @@ class JarvisTray(QSystemTrayIcon):
         self.wake_action.setCheckable(True)
         self.wake_action.setChecked(widget._wake is not None)
         self.wake_action.triggered.connect(widget.toggle_wake)
+        self.chat_action = menu.addAction("Continuous chat")
+        self.chat_action.setCheckable(True)
+        self.chat_action.setChecked(widget._chat)
+        self.chat_action.triggered.connect(widget.toggle_chat)
         self.toggle_action = menu.addAction("Hide window")
         self.toggle_action.triggered.connect(widget.toggle_visible)
         menu.addSeparator()
@@ -305,6 +340,9 @@ class JarvisTray(QSystemTrayIcon):
 
     def sync_wake(self, on):
         self.wake_action.setChecked(on)
+
+    def sync_chat(self, on):
+        self.chat_action.setChecked(on)
 
 
 class JarvisWidget(QWidget):
@@ -334,6 +372,7 @@ class JarvisWidget(QWidget):
         self.worker = None
         self._drag_offset = None
         self._quitting = False
+        self._chat = CHAT_ON
         self._menu = QMenu(self)
         self._wake = None
         # The wake-word listener runs on its own thread, so it signals us instead
@@ -407,6 +446,10 @@ class JarvisWidget(QWidget):
         self.wake_action.setCheckable(True)
         self.wake_action.setChecked(self._wake is not None)
         self.wake_action.triggered.connect(self.toggle_wake)
+        self.chat_action = self._menu.addAction("Continuous chat")
+        self.chat_action.setCheckable(True)
+        self.chat_action.setChecked(self._chat)
+        self.chat_action.triggered.connect(self.toggle_chat)
         self.toggle_action = self._menu.addAction("Hide to tray")
         self.toggle_action.triggered.connect(self.toggle_visible)
         self._menu.addSeparator()
@@ -513,6 +556,20 @@ class JarvisWidget(QWidget):
         self._start_wake()
         self._flash("Wake word on — say “Hey Jarvis”")
 
+    def toggle_chat(self, _checked=False):
+        """Switch continuous mode on or off, starting with the next session."""
+        self._chat = not self._chat
+        action = getattr(self, "chat_action", None)
+        if action is not None:
+            action.setChecked(self._chat)
+        tray = getattr(self, "tray", None)
+        if tray is not None:
+            tray.sync_chat(self._chat)
+        if self._chat:
+            self._flash("Continuous chat on — just talk to me")
+        else:
+            self._flash("Continuous chat off")
+
     def _sync_wake(self, on):
         """Reflect the wake-word state in both menus."""
         action = getattr(self, "wake_action", None)
@@ -523,7 +580,12 @@ class JarvisWidget(QWidget):
             tray.sync_wake(on)
 
     def trigger(self):
-        """Start one listen/process/speak cycle (ignored if already busy)."""
+        """Start a listen/process/speak session (ignored if already busy).
+
+        With continuous mode on, the session keeps going: Jarvis opens the mic
+        again after every reply and only stops when you go quiet, say an exit
+        word, press Stop or mute the mic.
+        """
         # Give the microphone up first: the wake listener and listen() must never
         # hold it at the same time.
         if self._wake is not None:
@@ -537,7 +599,7 @@ class JarvisWidget(QWidget):
             return
         if not self.isVisible():
             self.show()
-        self.worker = JarvisWorker(self.memory, self)
+        self.worker = JarvisWorker(self.memory, self, chat=self._chat)
         self.worker.state_changed.connect(self.set_state)
         self.worker.message.connect(self._log)
         self.worker.heard.connect(self._on_heard)

@@ -154,7 +154,9 @@ def test_worker_clears_the_level_sink_when_done(app, monkeypatch):
 
 
 def test_worker_reports_heard_and_speaks(app, monkeypatch):
-    monkeypatch.setattr(gui, "listen", lambda: "hello")
+    # One exchange, then silence: with chat mode that is a complete session.
+    turns = iter(["hello", ""])
+    monkeypatch.setattr(gui, "listen", lambda *args, **kwargs: next(turns, ""))
     monkeypatch.setattr(gui, "handle", lambda text, memory: ("hi there", "local", 0))
     spoken = []
     monkeypatch.setattr(gui, "speak", lambda reply: spoken.append(reply))
@@ -171,6 +173,113 @@ def test_worker_reports_heard_and_speaks(app, monkeypatch):
     assert spoken == ["hi there"]
     assert states[-1] == gui.IDLE
 
+
+def test_worker_keeps_talking_until_silence(app, monkeypatch):
+    """Chat mode: several exchanges in one session, then it stops itself."""
+    turns = iter(["what time is it", "open downloads", "", "never reached"])
+    replies = {"what time is it": "3 pm", "open downloads": "Opening Downloads"}
+    monkeypatch.setattr(
+        gui, "handle", lambda text, memory: (replies.get(text, "?"), "local", 0))
+    spoken = []
+    monkeypatch.setattr(gui, "speak", lambda reply: spoken.append(reply))
+
+    worker = gui.JarvisWorker(Memory(), chat=True, chat_timeout=60)
+    heard = []
+    listened = []
+    worker.heard.connect(heard.append)
+
+    def record_listen(wait=None):
+        listened.append(wait)
+        return next(turns, "")
+
+    monkeypatch.setattr(gui, "listen", record_listen)
+    states = []
+    worker.state_changed.connect(states.append)
+
+    worker.run()
+
+    assert heard == ["what time is it", "open downloads"]
+    assert spoken == ["3 pm", "Opening Downloads"]
+    assert not voice._level_sink, "the sink must not outlive the session"
+    assert "never reached" not in heard
+    assert states[-1] == gui.IDLE
+    # The first turn waits the normal window; the ones after wait the chat
+    # timeout, so the conversation continues without a click.
+    assert listened[0] != 60
+    assert listened[1:] == [60, 60]
+
+
+def test_worker_ends_the_session_on_an_exit_word(app, monkeypatch):
+    """A spoken "bye" must end the chat, like "exit" does in the terminal."""
+    turns = iter(["what time is it", "bye", "again"])
+    monkeypatch.setattr(gui, "listen", lambda *args, **kwargs: next(turns, ""))
+    monkeypatch.setattr(
+        gui, "handle",
+        lambda text, memory: ("3 pm" if "time" in text else "ignored", "local", 0))
+    spoken = []
+    monkeypatch.setattr(gui, "speak", lambda reply: spoken.append(reply))
+
+    worker = gui.JarvisWorker(Memory(), chat=True)
+    heard = []
+    worker.heard.connect(heard.append)
+    states = []
+    worker.state_changed.connect(states.append)
+
+    worker.run()
+
+    assert heard == ["what time is it", "bye"]
+    assert "again" not in heard, "the session must not continue after an exit word"
+    assert any("Session over" in reply for reply in spoken)
+
+
+def test_worker_lets_stop_end_the_conversation(app, monkeypatch):
+    """Pressing Stop cuts the reply and must not grab the mic again."""
+    turns = iter(["what time is it", "what are you doing?"])
+    monkeypatch.setattr(gui, "listen", lambda *args, **kwargs: next(turns, ""))
+    monkeypatch.setattr(
+        gui, "handle", lambda text, memory: ("3 pm", "local", 0))
+
+    def speak_and_stop(_reply):
+        voice.stop_speaking()          # exactly what the GUI Stop button does
+        spoken.append(1)
+
+    spoken = []
+    monkeypatch.setattr(gui, "speak", speak_and_stop)
+
+    worker = gui.JarvisWorker(Memory(), chat=True)
+    heard = []
+    worker.heard.connect(heard.append)
+    states = []
+    worker.state_changed.connect(states.append)
+
+    worker.run()
+
+    assert heard == ["what time is it"]
+    assert "what are you doing?" not in heard, "Stop must end the conversation"
+    assert spoken == [1]
+    assert states[-1] == gui.IDLE
+    voice._stop_speaking.clear()
+
+
+def test_worker_hands_the_microphone_back_to_the_wake_word(app, monkeypatch):
+    """Ending a chat session returns to Idle, which unpauses the wake listener."""
+    listener = FakeWake()
+    monkeypatch.setattr(gui.wake, "enabled", lambda: True)
+    monkeypatch.setattr(gui.wake, "Listener", lambda on_wake: listener)
+    turns = iter(["", ""])
+    monkeypatch.setattr(gui, "listen", lambda *args, **kwargs: next(turns, ""))
+    monkeypatch.setattr(gui, "speak", lambda reply: None)
+
+    widget = gui.JarvisWidget()
+    assert widget._wake is listener
+
+    worker = gui.JarvisWorker(Memory(), chat=True)
+    widget.set_state(gui.LISTENING)
+    worker.run()                       # one empty turn -> session over -> Idle
+    widget.set_state(gui.IDLE)
+
+    assert listener.resumes >= 1, "idle must give the mic back to the wake word"
+
 # --------------------------------------------------------------------------- #
 # wake word ("Hey Jarvis") wiring (v1.0.5)
 # --------------------------------------------------------------------------- #
@@ -185,7 +294,9 @@ class Signal:
 class FakeWorker:
     """A JarvisWorker that never touches a microphone or the network."""
 
-    def __init__(self, memory, parent=None):
+    def __init__(self, memory, parent=None, chat=False, chat_timeout=60):
+        self.chat = chat
+        self.chat_timeout = chat_timeout
         self.state_changed = Signal()
         self.message = Signal()
         self.heard = Signal()

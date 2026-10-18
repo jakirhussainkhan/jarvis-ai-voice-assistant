@@ -332,7 +332,8 @@ def _read_chunk(stream, fd, deadline):
     return bytes(buf)
 
 
-def _capture_from_stream(stream, fd=None, ptt=False, stop_event=None):
+def _capture_from_stream(stream, fd=None, ptt=False, stop_event=None,
+                         wait_timeout=None):
     """Gate a raw S16_LE stream on RMS and return the captured utterance.
 
     Reads ``_CHUNK_SECONDS`` chunks. The arecord stream-open spike is discarded
@@ -361,7 +362,7 @@ def _capture_from_stream(stream, fd=None, ptt=False, stop_event=None):
     warm_left = _WARMUP_CHUNKS
     spike_rms = None
     first_chunk = True
-    wait_deadline = time.monotonic() + _LISTEN_TIMEOUT
+    wait_deadline = time.monotonic() + (wait_timeout or _LISTEN_TIMEOUT)
     phrase_deadline = None
     reason = "ptt" if ptt else "timeout"
     reported = False
@@ -511,12 +512,17 @@ def _ptt_stop_reader(stop_event):
     threading.Thread(target=run, daemon=True).start()
 
 
-def listen():
+def listen(wait=None, *, label=""):
     """Capture one utterance from the microphone via ``arecord``.
 
     Returns the recognised text in lower case, or "" when nothing usable was
     heard (timeout, silence, or no microphone). Bounded by the *_TIMEOUT
     constants above so it always returns instead of blocking forever.
+
+    ``wait`` overrides how long it waits for you to *start* speaking (seconds).
+    Continuous-chat mode passes a longer one: Jarvis then keeps the mic open
+    after each reply instead of going to sleep. Pass ``label`` to tag debug
+    output (``listen`` vs ``chat``).
 
     With ``JARVIS_PTT=1`` this becomes push-to-talk: it waits for Enter, records
     until Enter is pressed again or silence is detected, then transcribes. Media
@@ -534,8 +540,9 @@ def listen():
 
     device = _mic_device()
     ptt = _ptt_active()
-    _dbg(f"device={device} gate={_ENERGY_THRESHOLD} chunk={_CHUNK_SECONDS}s "
-         f"wait={_LISTEN_TIMEOUT}s phrase_max={_PHRASE_TIME_LIMIT}s ptt={ptt}")
+    _dbg(f"{label or 'listen'} device={device} gate={_ENERGY_THRESHOLD} "
+         f"chunk={_CHUNK_SECONDS}s wait={wait or _LISTEN_TIMEOUT}s "
+         f"phrase_max={_PHRASE_TIME_LIMIT}s ptt={ptt}")
 
     if ptt and not _ptt_wait_for_enter():
         return ""
@@ -562,7 +569,8 @@ def listen():
 
     try:
         try:
-            data = _capture_from_stream(proc.stdout, ptt=ptt, stop_event=stop_event)
+            data = _capture_from_stream(proc.stdout, ptt=ptt, stop_event=stop_event,
+                                        wait_timeout=wait)
         except Exception as exc:
             _dbg(f"capture error: {type(exc).__name__}: {exc}")
             return ""
@@ -571,7 +579,8 @@ def listen():
         desktop.resume_media(pause_token)
 
     if not data:
-        _dbg(f"TIMEOUT: no speech above threshold within {_LISTEN_TIMEOUT}s")
+        _dbg(f"TIMEOUT:{label or 'listen'} no speech above threshold within "
+             f"{wait or _LISTEN_TIMEOUT}s")
         return ""
 
     rms = _rms(data, _SAMPLE_WIDTH)

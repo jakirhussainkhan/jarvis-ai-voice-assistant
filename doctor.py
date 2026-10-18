@@ -137,9 +137,10 @@ def report():
     out.append("Floating widget + system tray:")
     out.append("  ./venv/bin/python main.py --gui   # click the orb -- or, once the")
     out.append("       wake word is installed, just say \"Hey Jarvis\" -- to talk;")
-    out.append("       mic button mutes/unmutes, Stop cuts a reply or a")
-    out.append("       pending listen, and the orb reacts to your voice and")
-    out.append("       to Jarvis's own speech")
+    out.append("       continuous chat keeps the mic open after every reply until")
+    out.append("       you go quiet (60 s), say \"bye\", press Stop or mute; Stop")
+    out.append("       cuts a reply or a pending listen, and the orb reacts to")
+    out.append("       your voice and to Jarvis's own speech")
     return "\n".join(out)
 
 

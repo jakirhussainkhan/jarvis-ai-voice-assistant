@@ -29,7 +29,7 @@ is installed.
 | Timers / reminders | Working |
 | Offline wake word ("Hey Jarvis") | **Built + unit-tested; NOT yet verified live** (needs `pip install openwakeword onnxruntime`) |
 | Desktop launcher (`run.sh` + app-menu entry) | Working (verified: `desktop-file-validate` clean, GUI starts) |
-| Tests | `pytest` suite — **350 passed, 1 skipped** |
+| Tests | `pytest` suite — **354 passed, 1 skipped** |
 | Spoken voice | `en-GB-RyanNeural` (British male); override with `JARVIS_TTS_VOICE` |
 | Published | GitHub, tags **`v1.0.1`**…**`v1.0.7`** (README + MIT LICENSE) |
 
@@ -44,9 +44,49 @@ is installed.
   Stop cancels a wait; copy-paste install hints), **`v1.0.4`** (no more
   mid-sentence cut-offs; silent screen reading, no flash), **`v1.0.5`**
   (optional offline "Hey Jarvis" wake word), **`v1.0.6`** (desktop launcher:
-  `run.sh`, an application-menu entry and autostart) and **`v1.0.7`** (a stronger,
-  Iron-Man voice: the British male `en-GB-RyanNeural`, env-switchable).
+  `run.sh`, an application-menu entry and autostart), **`v1.0.7`** (a stronger,
+  Iron-Man voice: the British male `en-GB-RyanNeural`, env-switchable) and
+  **`v1.0.8`** (continuous conversation: Jarvis keeps the mic open after every
+  reply until you go quiet, say "bye", press Stop or mute).
 - Secrets are **not** committed (see *Security* below).
+
+## Continuous conversation, like ChatGPT's voice mode (2026-10-19, v1.0.8)
+
+The user was frustrated at having to re-trigger Jarvis for every sentence: click
+(or "Hey Jarvis"), speak, get an answer — and click again. The ask was explicit:
+"a ChatGPT-voice-like system: I keep talking, it keeps listening, and it only
+turns the mic off when I say nothing for a minute."
+
+- **The worker now runs a conversation loop.** `JarvisWorker` had exactly one
+  turn (listen → handle → speak → sleep). It now loops turn after turn while
+  continuous mode is on: after each reply it emits `Listening` and opens the
+  microphone again. The first turn of a session still waits for a click/wake;
+  every turn after that waits `JARVIS_CHAT_TIMEOUT` (**60 s**, default on,
+  `JARVIS_CHAT=0` for the old behaviour) instead of the 30 s one-shot window —
+  implemented as a `listen(wait=…)` parameter threaded down to
+  `_capture_from_stream`, so the arecord stream is bounded either way.
+- **Four ways out, all of them verified:** an exit word spoken by voice
+  ("bye"/"stop"/"exit" — `main.is_exit`, closing the session with
+  "Session over. See you soon, sir."), silence past the chat timeout, the Stop
+  button (checked after `speak()` returns — checking it after the *next* listen
+  would have left Jarvis holding the mic for 60 s after a Stop), and the mic
+  mute (a muted listen returns "" which ends the loop). A stale Stop flag is
+  cleared once at the start of a session so it cannot kill a fresh chat.
+- **"Are you sure?" stays, by voice.** The user explicitly wants confirmation
+  before shutdown — *and* wants to be able to answer it by mouth. Verified
+  end-to-end and safely through the real router with a scripted pipe:
+  "shut down" → "Are you sure you want to shutdown?" → "no" → "Cancelled."
+  (nothing executed). A spoken "yes" within the 15 s window runs the command.
+- **Wake word co-exists.** The wake listener stays paused for the whole session
+  (trigger() owns the mic), and the existing Idle → resume logic hands the mic
+  back when the conversation ends.
+- Both menu surfaces gained a checkable **Continuous chat** item, mirroring the
+  wake-word toggle; it switches on/off from the next session onward.
+- `pytest`: **354 passed, 1 skipped** (was 350). New GUI worker tests: a
+  multi-turn session that ends on silence, waiting 60 s (not 30) between turns,
+  ending on a spoken exit word, Stop ending the conversation without grabbing
+  the mic again, and the wake listener being resumed when the session drops to
+  Idle. The single-turn worker test became a one-exchange-then-silence session.
 
 ## A stronger, Iron-Man voice (2026-10-19, v1.0.7)
 

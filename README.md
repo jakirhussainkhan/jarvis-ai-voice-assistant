@@ -1,6 +1,6 @@
 # Jarvis — Voice Assistant for Linux
 
-**Version 1.0.7**
+**Version 1.0.8**
 
 A voice-controlled desktop assistant for Linux that can *see* your screen, use the
 internet, and operate the terminal. You speak a command; Jarvis either handles it
@@ -17,6 +17,19 @@ confirmation-gated everywhere. When a tool is missing it will *print* a
 copy-paste install command for you to run yourself, but it never executes one.
 
 ---
+
+## What's new in 1.0.8
+
+- **Continuous conversation.** Say one thing and Jarvis replies, then **opens the
+  microphone again** so you can keep talking — hands-free, like ChatGPT's voice
+  mode. It stops only when you: go quiet (**60 s**, `JARVIS_CHAT_TIMEOUT`), say an
+  **exit word** ("bye", "stop", "exit"), press **Stop**, or mute the mic.
+  `JARVIS_CHAT=0` brings back the old one-shot behaviour, and the checkable
+  **Continuous chat** menu item switches it at runtime.
+- **End a session by voice.** A spoken "bye"/"stop"/"exit" now closes the whole
+  exchange politely instead of expecting the terminal. And risky commands (power
+  off, risky terminal commands) keep their spoken **"Are you sure?"** — a "yes"
+  runs them, anything else cancels, so you never need to touch the keyboard.
 
 ## What's new in 1.0.7
 
@@ -157,7 +170,9 @@ copy-paste install command for you to run yourself, but it never executes one.
   always-on-top reactor widget with a system tray (`gui.py`). Both share
   `main.handle()`, so confirmation and routing behave identically in each. The
   widget is a mini voice-chat console: it reacts to your voice, moves while it
-  speaks, and has a mic mute button and a Stop button.
+  speaks, and has a mic mute button and a Stop button. One click starts a
+  **continuous conversation**: Jarvis replies, then keeps listening so you can
+  just talk, hands-free.
 - **Optional offline wake word** — say **"Hey Jarvis"** instead of clicking. The
   GUI listens through `openWakeWord`'s pretrained ONNX model: no network, no
   account, no API key, ~1-2% of one CPU core, and English-only like everything
@@ -284,6 +299,8 @@ All configuration lives in `config.py` and can be overridden from `.env`:
 | `JARVIS_TEXT` | *(unset)* | `1` to type commands instead of speaking |
 | `JARVIS_MUTE` | *(unset)* | `1` to skip text-to-speech (replies still print) |
 | `JARVIS_TTS_VOICE` | `en-GB-RyanNeural` | Spoken voice (any edge-tts name; restart Jarvis to apply) |
+| `JARVIS_CHAT` | *(on)* | `0` turns continuous voice conversation off |
+| `JARVIS_CHAT_TIMEOUT` | `60` | Seconds of silence that end a continuous session |
 | `JARVIS_WAKE` | *(on if installed)* | `0` disables the "Hey Jarvis" wake word |
 | `JARVIS_WAKE_MODEL` | `hey jarvis` | Wake phrase/model name (`alexa`, `hey_mycroft`, … or `off`) |
 | `JARVIS_WAKE_THRESHOLD` | `0.5` | Score (0-1) a frame needs to count — raise if it triggers too easily |
@@ -324,8 +341,13 @@ tray menu really exits. The orb **reacts to your voice** while it listens and
 **moves while it speaks**; the **Mic** button mutes/unmutes the microphone
 instantly (also `M` or the tray's *Mute mic* — and it silences the wake word too),
 and **Stop** (or `Space`) cuts a reply off mid-sentence — or abandons a listen that
-is still waiting for you. The **Hey Jarvis** menu item (in both the widget and the
-tray menu) switches the wake word off and on while Jarvis is running.
+is still waiting for you — and in continuous chat it also ends the whole exchange.
+With **Continuous chat** on (the default, `JARVIS_CHAT=0` for the old one-shot
+behaviour), Jarvis **keeps the microphone open after each reply**: you answer, it
+replies, and you just keep talking until you go quiet (60 s,
+`JARVIS_CHAT_TIMEOUT`), say **"bye"/"stop"/"exit"**, press Stop, or mute. The
+**Hey Jarvis** and **Continuous chat** menu items (in both the widget and the
+tray menu) switch the wake word and the chat mode off and on while Jarvis runs.
 
 **Desktop launcher.** `./run.sh` starts the GUI with the right virtualenv, and
 `./venv/bin/python install_desktop.py` adds Jarvis to your application menu with
@@ -452,7 +474,7 @@ confirmation first, then tries the router, and only sends a miss to the agent.
 | `tools.py` | The tool functions (see the list below). |
 | `memory.py` | Rolling `deque` window of recent turns. |
 | `main.py` | Entry point and `handle()` dispatch (`--text`, `--offline`, `--screen`, `--gui`, `--check`, `--version`). |
-| `gui.py` | PyQt5 Arc Reactor widget + system tray; the listen/think/speak cycle runs on a `QThread`. The orb is fed live mic levels (listening) and the TTS loudness envelope (speaking); the widget adds a mic mute/unmute button and a Stop button. Owns the wake listener's lifecycle (start/pause/resume/stop). |
+| `gui.py` | PyQt5 Arc Reactor widget + system tray; the listen/think/speak cycle runs on a `QThread` — and with continuous chat on, that thread loops turn after turn until you go quiet, say an exit word, press Stop or mute. The orb is fed live mic levels (listening) and the TTS loudness envelope (speaking); the widget adds a mic mute/unmute button and a Stop button. Owns the wake listener's lifecycle (start/pause/resume/stop). |
 | `wake.py` | Optional offline **"Hey Jarvis"** wake word (openWakeWord ONNX). `Detector` re-frames audio into 80 ms frames and applies the threshold; `Listener` streams the mic on a daemon thread, hands the device over before any listen cycle, and stays silent while the mic is muted. Importable without openWakeWord. |
 | `doctor.py` | Readiness self-check. Prints a copy-paste install line for missing tools (never runs it), and the wake-word status. |
 | `install_desktop.py` | Adds/removes the application-menu entry (and optionally autostart), pointing at this checkout. Writes only inside your own home directory; `--uninstall` is exact. |

@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-__version__ = "1.0.7"
+__version__ = "1.0.8"
 
 # Groq (https://console.groq.com) exposes an OpenAI-compatible Chat Completions
 # API. The key is read from GROQ_API_KEY in .env; Groq keys start with "gsk_".
@@ -23,6 +23,28 @@ STT_LANG = "en-US"  # English-only by design.
 # The Iron-Man Jarvis voice: a British male neural voice ("Ryan"). Override it
 # (or go back to a female voice) from .env, e.g. JARVIS_TTS_VOICE=en-US-AriaNeural.
 TTS_VOICE = os.getenv("JARVIS_TTS_VOICE", "en-GB-RyanNeural")
+
+
+def _env_int(name, default, minimum=None):
+    """Read an int env var, falling back to ``default`` when it is unusable."""
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    if minimum is not None and value < minimum:
+        return default
+    return value
+
+
+# Continuous conversation (ChatGPT-like voice mode). After Jarvis replies it
+# keeps the microphone open so the next sentence flows without another click.
+# It sleeps when you go quiet, and leaves when you say an exit word, press Stop
+# or mute the mic. JARVIS_CHAT=0 gets the old click-to-talk behaviour back.
+CHAT_ON = os.getenv("JARVIS_CHAT", "1").strip().lower() not in ("0", "false", "no", "off")
+CHAT_TIMEOUT = _env_int("JARVIS_CHAT_TIMEOUT", 60, minimum=10)
 MAX_HISTORY_MSGS = 8
 # Headroom so a reasoning model's thinking tokens never crowd out the answer
 # (too low a cap makes it return empty and Jarvis says "I couldn't finish that").
