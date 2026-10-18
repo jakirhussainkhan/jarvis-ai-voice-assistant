@@ -19,10 +19,17 @@ from config import (
     MODEL_NAME,
 )
 from tools import (
+    fn_brightness,
+    fn_close_app,
+    fn_list_running,
+    fn_lock_screen,
+    fn_media,
     fn_open_app,
     fn_read_file,
     fn_save_note,
+    fn_screenshot,
     fn_system_status,
+    fn_volume,
     fn_web_search,
     fn_youtube,
 )
@@ -38,8 +45,15 @@ SYSTEM_INSTRUCTION = (
 # there is no hand-written schema to keep in sync (see _tool_schema).
 _TOOLS = [
     fn_open_app,
-    fn_system_status,
+    fn_close_app,
+    fn_list_running,
     fn_youtube,
+    fn_media,
+    fn_volume,
+    fn_brightness,
+    fn_screenshot,
+    fn_lock_screen,
+    fn_system_status,
     fn_web_search,
     fn_save_note,
     fn_read_file,

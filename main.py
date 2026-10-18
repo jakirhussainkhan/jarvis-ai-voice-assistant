@@ -2,6 +2,7 @@
 
 import re
 
+import confirm
 from voice import listen, speak
 from router import try_local
 from agent import run_agent
@@ -42,12 +43,17 @@ def is_exit(text: str) -> bool:
 def handle(text, memory):
     """Dispatch one utterance through the real path.
 
-    The local router is tried first; only a miss reaches the agent. Returns
-    ``(reply, kind, tokens)`` where ``kind`` is ``"local"``, ``"cache"`` or
-    ``"agent"``.
+    A pending "Are you sure?" confirmation is resolved first: a "yes" runs the
+    stored action, anything else cancels it. Otherwise the local router is tried,
+    and only a miss reaches the agent. Returns ``(reply, kind, tokens)`` where
+    ``kind`` is ``"local"``, ``"cache"`` or ``"agent"``.
     """
+    handled, reply = confirm.resolve(text)
+    if handled:
+        return reply, "local", 0
+
     local = try_local(text)
-    if local:
+    if local is not None:
         return local, "local", 0
     reply, tokens = run_agent(text, memory)
     return reply, ("cache" if tokens == 0 else "agent"), tokens

@@ -210,6 +210,50 @@ def test_listen_returns_empty_when_arecord_missing(monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
+# calibration / warm-up (step 7)
+# --------------------------------------------------------------------------- #
+
+def test_calibrate_floor_is_1_5x_median_clamped():
+    assert voice._calibrate([]) == voice._SILENCE_THRESHOLD
+    assert voice._calibrate([10, 20, 30]) == voice._SILENCE_THRESHOLD   # 15 -> 150
+    assert voice._calibrate([120]) == 180                               # 1.5x120
+    assert voice._calibrate([250]) == voice._MAX_SILENCE_THRESHOLD      # 375 -> 300
+    # The median ignores an outlier (e.g. the open spike).
+    assert voice._calibrate([100, 120, 400]) == 180
+
+
+def test_stream_open_spike_is_discarded(monkeypatch):
+    """The ~6000 stream-open spike must not itself trigger a capture."""
+    pipe = _Pipe()
+    try:
+        spike = _tone(0.1, 6000)          # one chunk, exactly
+        pipe.feed(spike + _silence(0.6) + _tone(0.4, 3000) + _silence(1.5))
+
+        data = _capture(pipe, monkeypatch)
+
+        assert data, "the real speech after the spike should be captured"
+        onset = data[: voice._CHUNK_BYTES]
+        assert voice._rms(onset) < voice._ENERGY_THRESHOLD, "spike leaked into capture"
+    finally:
+        pipe.close()
+
+
+def test_speech_that_starts_immediately_is_not_cut(monkeypatch):
+    """A phrase starting on the very first chunk must keep its onset."""
+    pipe = _Pipe()
+    try:
+        pipe.feed(_tone(1.0, 3000) + _silence(1.5))
+
+        data = _capture(pipe, monkeypatch, phrase=8.0)
+
+        assert data
+        onset = data[: voice._CHUNK_BYTES]
+        assert voice._rms(onset) > voice._ENERGY_THRESHOLD, "the first word was cut"
+    finally:
+        pipe.close()
+
+
+# --------------------------------------------------------------------------- #
 # recorded speech WAV (opt-in)
 # --------------------------------------------------------------------------- #
 

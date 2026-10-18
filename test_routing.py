@@ -1,99 +1,223 @@
-"""Tests for the offline router (router.try_local)."""
+"""Tests for the offline router (router.try_local).
 
+The router's job is decision-making, so these tests replace the :mod:`desktop`
+actions with spies and assert which one the router chose, and with what
+arguments. The real system behaviour is covered by test_desktop.py.
+"""
+
+from pathlib import Path
+
+import pytest
+
+import confirm
+import desktop
 import router
 
+APP = desktop.App("google-chrome", "Chrome", "google-chrome", [], Path("/a/chrome.desktop"))
 
-def _patch_side_effects(monkeypatch):
-    """Stop the router launching apps / opening browsers during tests."""
-    monkeypatch.setattr(router, "_open", lambda url: True)
-    monkeypatch.setattr(router, "_launch", lambda candidates: True)
-    monkeypatch.setattr(router, "_run", lambda args: True)
 
+@pytest.fixture(autouse=True)
+def _clear_confirm():
+    confirm.clear()
+    yield
+    confirm.clear()
+
+
+def _spy(monkeypatch, name, reply):
+    """Replace desktop.<name> with a spy that records its calls."""
+    calls = []
+
+    def fn(*args, **kwargs):
+        calls.append((args, kwargs))
+        return reply
+
+    monkeypatch.setattr(desktop, name, fn)
+    return calls
+
+
+# --------------------------------------------------------------------------- #
+# basic local answers
+# --------------------------------------------------------------------------- #
 
 def test_empty_and_blank_are_not_handled():
     assert router.try_local("") is None
     assert router.try_local("   ") is None
 
 
-def test_time_is_handled_locally():
-    reply = router.try_local("what time is it")
-    assert reply is not None
-    assert reply.startswith("Current time:")
+def test_time_date_and_status_are_local():
+    assert router.try_local("what time is it").startswith("Current time:")
+    assert router.try_local("what's the date today").startswith("Today is ")
+    assert router.try_local("system status").startswith("CPU ")
 
 
-def test_system_status_is_handled_locally():
-    reply = router.try_local("system status")
-    assert reply is not None
-    assert reply.startswith("CPU ")
+def test_battery_is_local():
+    reply = router.try_local("battery")
+    assert reply.endswith(".") and ("Battery" in reply or "No battery" in reply)
 
 
-def test_date_is_handled_locally():
-    reply = router.try_local("what's the date today")
-    assert reply is not None
-    assert reply.startswith("Today is ")
-
-
-def test_open_youtube_stays_local(monkeypatch):
-    _patch_side_effects(monkeypatch)
-    assert router.try_local("open youtube") == "Opening YouTube."
-
-
-def test_play_on_youtube_keeps_query_local(monkeypatch):
-    _patch_side_effects(monkeypatch)
-    assert router.try_local("play lo-fi music on youtube") == "Playing lo-fi music on YouTube."
-
-
-def test_play_lo_fi_on_youtube(monkeypatch):
-    _patch_side_effects(monkeypatch)
-    assert router.try_local("play lo-fi on youtube") == "Playing lo-fi on YouTube."
-
-
-def test_close_youtube_is_not_a_search(monkeypatch):
-    """Regression: 'close youtube' must not search for the word 'close'."""
-    opened = []
-    monkeypatch.setattr(router, "_open", lambda url: opened.append(url) or True)
-    monkeypatch.setattr(router, "_launch", lambda candidates: True)
-    monkeypatch.setattr(router, "_run", lambda args: True)
-
-    reply = router.try_local("close youtube")
-    assert reply == "I can't close browser tabs yet."
-    assert opened == [], "closing YouTube must not open/search anything"
-    assert "Playing" not in reply
-
-
-def test_close_app_closes_gracefully(monkeypatch):
-    _patch_side_effects(monkeypatch)
-    monkeypatch.setattr(router, "_close_app", lambda candidates: True)
-    assert router.try_local("close chrome") == "Closing Chrome."
-    assert router.try_local("quit firefox") == "Closing Firefox."
-
-
-def test_close_unknown_target_defers_to_agent(monkeypatch):
-    _patch_side_effects(monkeypatch)
-    assert router.try_local("close the door") is None
-
-
-def test_bare_youtube_is_not_a_search(monkeypatch):
-    """A YouTube mention with no action verb must not become a search query."""
-    _patch_side_effects(monkeypatch)
-    assert router.try_local("youtube") is None
-
-
-def test_open_app_is_local(monkeypatch):
-    _patch_side_effects(monkeypatch)
-    assert router.try_local("open chrome") == "Opening Chrome."
-
-
-def test_search_verb_defers_to_agent(monkeypatch):
-    _patch_side_effects(monkeypatch)
-    assert router.try_local("open YouTube and search for lo-fi music") is None
+def test_search_verb_defers_to_agent():
     assert router.try_local("search for cats") is None
     assert router.try_local("look up the weather") is None
     assert router.try_local("find my notes") is None
+    assert router.try_local("open YouTube and search for lo-fi music") is None
 
 
-def test_no_bengali_helpers_remain():
-    removed = ("_has_bengali", "_reply", "_digits", "_BN_DIGITS",
-               "_BN_WEEKDAYS", "_BN_MONTHS", "_APP_BN")
-    for name in removed:
-        assert not hasattr(router, name), f"{name} should have been removed"
+# --------------------------------------------------------------------------- #
+# opening apps
+# --------------------------------------------------------------------------- #
+
+def test_open_app_is_local(monkeypatch):
+    calls = _spy(monkeypatch, "open_app", "Opening Chrome.")
+    assert router.try_local("open chrome") == "Opening Chrome."
+    assert calls == [(("chrome",), {})]
+
+
+def test_bare_app_name_is_local(monkeypatch):
+    _spy(monkeypatch, "open_app", "Opening Chrome.")
+    assert router.try_local("chrome") == "Opening Chrome."
+
+
+# --------------------------------------------------------------------------- #
+# closing apps
+# --------------------------------------------------------------------------- #
+
+def test_close_app_strong_match(monkeypatch):
+    monkeypatch.setattr(desktop, "match_app", lambda name: (APP, 0.95))
+    calls = _spy(monkeypatch, "close_app", "Closed Chrome.")
+    assert router.try_local("close chrome") == "Closed Chrome."
+    assert calls == [((APP,), {})]
+
+
+def test_quit_and_kill_are_close_commands(monkeypatch):
+    monkeypatch.setattr(desktop, "match_app", lambda name: (APP, 0.95))
+    _spy(monkeypatch, "close_app", "Closed Chrome.")
+    assert router.try_local("quit chrome") == "Closed Chrome."
+    assert router.try_local("kill chrome") == "Closed Chrome."
+
+
+def test_weak_match_asks_before_closing(monkeypatch):
+    monkeypatch.setattr(desktop, "match_app", lambda name: (APP, 0.60))
+    calls = _spy(monkeypatch, "close_app", "Closed Chrome.")
+    reply = router.try_local("close chorme")
+    assert reply == "Did you mean Chrome?"
+    assert calls == []                 # nothing closed until confirmed
+    assert confirm.is_pending()
+
+    handled, result = confirm.resolve("yes")
+    assert handled and result == "Closed Chrome."
+    assert calls == [((APP,), {})]
+
+
+def test_close_unknown_target_defers(monkeypatch):
+    monkeypatch.setattr(desktop, "match_app", lambda name: (None, 0.1))
+    assert router.try_local("close the door") is None
+
+
+def test_close_youtube_is_not_a_search(monkeypatch):
+    """Regression: 'close youtube' must never run a YouTube search/play."""
+    play = _spy(monkeypatch, "play_youtube", "SHOULD NOT HAPPEN")
+    search = _spy(monkeypatch, "search_youtube", "SHOULD NOT HAPPEN")
+    open_ = _spy(monkeypatch, "open_youtube", "SHOULD NOT HAPPEN")
+    close = _spy(monkeypatch, "close_youtube", "Which window?")
+
+    assert router.try_local("close youtube") == "Which window?"
+    assert close == [((), {})]
+    assert play == search == open_ == []
+
+
+# --------------------------------------------------------------------------- #
+# YouTube
+# --------------------------------------------------------------------------- #
+
+def test_open_youtube(monkeypatch):
+    _spy(monkeypatch, "open_youtube", "Opening YouTube.")
+    assert router.try_local("open youtube") == "Opening YouTube."
+
+
+def test_play_on_youtube_keeps_query(monkeypatch):
+    calls = _spy(monkeypatch, "play_youtube", "Playing lo-fi on YouTube.")
+    assert router.try_local("play lo-fi on youtube") == "Playing lo-fi on YouTube."
+    assert calls == [(("lo-fi",), {})]
+
+
+def test_search_on_youtube_defers_to_agent(monkeypatch):
+    # "search" is a search verb, so the router deliberately defers; the agent
+    # calls fn_youtube(action="search") to open the results page.
+    calls = _spy(monkeypatch, "search_youtube", "SHOULD NOT HAPPEN")
+    assert router.try_local("search cats on youtube") is None
+    assert calls == []
+
+
+def test_bare_youtube_defers(monkeypatch):
+    assert router.try_local("youtube") is None
+
+
+# --------------------------------------------------------------------------- #
+# media / volume / brightness / screenshot / lock
+# --------------------------------------------------------------------------- #
+
+def test_media_commands(monkeypatch):
+    calls = _spy(monkeypatch, "media_control", "ok")
+    assert router.try_local("pause the music") == "ok"
+    assert router.try_local("next song") == "ok"
+    assert calls[0] == (("pause",), {})
+    assert calls[1] == (("next",), {})
+
+
+def test_volume_up_and_set(monkeypatch):
+    calls = _spy(monkeypatch, "volume_control", "Volume up.")
+    assert router.try_local("volume up") == "Volume up."
+    assert calls[0] == (("up", None), {})
+    router.try_local("set volume to 150")
+    assert calls[1] == (("set", 150), {})
+
+
+def test_volume_mute_and_unmute(monkeypatch):
+    calls = _spy(monkeypatch, "volume_control", "ok")
+    router.try_local("mute")
+    router.try_local("unmute")
+    assert calls[0] == (("mute", None), {})
+    assert calls[1] == (("unmute", None), {})
+
+
+def test_brightness_up_and_set(monkeypatch):
+    calls = _spy(monkeypatch, "brightness_control", "Brightness up.")
+    assert router.try_local("brightness up") == "Brightness up."
+    assert calls[0] == (("up", None), {})
+    router.try_local("set brightness to 40")
+    assert calls[1] == (("set", 40), {})
+
+
+def test_screenshot_and_lock(monkeypatch):
+    _spy(monkeypatch, "screenshot", "Screenshot saved as x.png.")
+    _spy(monkeypatch, "lock_screen", "Locking the screen.")
+    assert router.try_local("take a screenshot") == "Screenshot saved as x.png."
+    assert router.try_local("lock the screen") == "Locking the screen."
+
+
+# --------------------------------------------------------------------------- #
+# power: confirmation-gated
+# --------------------------------------------------------------------------- #
+
+def test_shutdown_asks_first_and_runs_after_yes(monkeypatch):
+    calls = _spy(monkeypatch, "power", "Shutting down.")
+    reply = router.try_local("shut down")
+    assert reply == "Are you sure you want to shutdown?"
+    assert calls == []                 # nothing runs yet
+    assert confirm.is_pending()
+
+    handled, result = confirm.resolve("yes")
+    assert handled and result == "Shutting down."
+    assert calls == [(("shutdown",), {})]
+
+
+def test_restart_is_cancelled_by_anything_but_yes(monkeypatch):
+    calls = _spy(monkeypatch, "power", "Restarting.")
+    router.try_local("restart")
+    assert confirm.resolve("no") == (True, "Cancelled.")
+    assert calls == []
+
+
+def test_power_word_with_a_target_is_not_power(monkeypatch):
+    # "restart chrome" is about chrome, not the machine.
+    assert router.try_local("restart chrome") is None

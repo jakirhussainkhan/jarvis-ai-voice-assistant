@@ -47,13 +47,25 @@ _CHUNK_SECONDS = 0.1
 _CHUNK_FRAMES = int(_SAMPLE_RATE * _CHUNK_SECONDS)   # 1600
 _CHUNK_BYTES = _CHUNK_FRAMES * _SAMPLE_WIDTH         # 3200
 
-# Speech starts on a chunk above _ENERGY_THRESHOLD (300). Once started we use
-# hysteresis: any chunk still above _SILENCE_THRESHOLD (150) counts as speech, so
-# a brief dip between words does not end the phrase. The phrase only ends after
+# Speech starts on a chunk above _ENERGY_THRESHOLD (300). The level that counts
+# as "still speaking" is auto-calibrated on every listen: we measure the room's
+# background noise first and set the stop floor to 1.5x its median, clamped to
+# [_SILENCE_THRESHOLD, _MAX_SILENCE_THRESHOLD] (150..300). Hysteresis then keeps
+# recording through brief dips between words; the phrase only ends after
 # ~_SILENCE_SECONDS (1.2 s) below that floor.
-_SILENCE_THRESHOLD = 150
+_SILENCE_THRESHOLD = 150        # minimum floor (also the fallback)
+_MAX_SILENCE_THRESHOLD = 300    # maximum floor
+_SILENCE_FACTOR = 1.5
 _SILENCE_SECONDS = 1.2
 _SILENCE_CHUNKS_TO_STOP = max(1, round(_SILENCE_SECONDS / _CHUNK_SECONDS))  # 12
+
+# Warm-up: the very first chunk after the stream opens is a spike (it reads
+# ~6000 and decays). We keep it out of the background estimate and skip its
+# decaying tail for at most _WARMUP_SECONDS (0.5 s), so calibration measures
+# real room noise. The bound is short, so a phrase that starts immediately is
+# still captured.
+_WARMUP_SECONDS = 0.5
+_WARMUP_CHUNKS = max(1, round(_WARMUP_SECONDS / _CHUNK_SECONDS))  # 5
 
 # Keep the last ~0.3 s of audio from *before* the gate trips: word onsets are
 # often quieter than 300, so without this the first syllable gets clipped.
@@ -88,6 +100,20 @@ def _rms(buf, width=2):
 def _peak(buf, width=2):
     samples = _samples(buf, width)
     return max((abs(x) for x in samples), default=0)
+
+
+def _calibrate(samples):
+    """Stop floor from background RMS: 1.5x the median, clamped to 150..300.
+
+    The median ignores the odd outlier, and the clamps keep the floor sane even
+    in a very quiet (or very noisy) room.
+    """
+    if not samples:
+        return _SILENCE_THRESHOLD
+    ordered = sorted(samples)
+    background = ordered[len(ordered) // 2]
+    return int(min(_MAX_SILENCE_THRESHOLD,
+                   max(_SILENCE_THRESHOLD, round(_SILENCE_FACTOR * background))))
 
 
 def _mic_device():
@@ -184,21 +210,27 @@ def _read_chunk(stream, fd, deadline):
 def _capture_from_stream(stream, fd=None):
     """Gate a raw S16_LE stream on RMS and return the captured utterance.
 
-    Reads ``_CHUNK_SECONDS`` chunks. While waiting it keeps a short pre-roll, so
-    the quiet start of a word is not clipped when the gate finally trips. Speech
-    starts on RMS > ``_ENERGY_THRESHOLD``; recording then continues through brief
-    dips thanks to hysteresis (any chunk above ``_SILENCE_THRESHOLD`` resets the
-    silence run) until ~``_SILENCE_SECONDS`` below that floor, the phrase hits
-    ``_PHRASE_TIME_LIMIT``, or the stream ends. Returns the raw bytes captured
-    (possibly empty).
+    Reads ``_CHUNK_SECONDS`` chunks. The arecord stream-open spike is discarded
+    and the "still speaking" floor is auto-calibrated from the background noise
+    (1.5x its median, clamped to 150..300). Speech starts on RMS >
+    ``_ENERGY_THRESHOLD``; recording then continues through brief dips (any chunk
+    above the calibrated floor resets the silence run) until
+    ~``_SILENCE_SECONDS`` below that floor, the phrase hits ``_PHRASE_TIME_LIMIT``,
+    or the stream ends. A ~0.3 s pre-roll is kept so a quiet onset is never
+    clipped. Returns the raw bytes captured (possibly empty).
     """
     if fd is None:
         fd = stream.fileno()
 
     pre_roll = deque(maxlen=_PRE_ROLL_CHUNKS)
     chunks = []
+    bg_samples = []
     started = False
     silent_run = 0
+    stop_threshold = _SILENCE_THRESHOLD
+    warm_left = _WARMUP_CHUNKS
+    spike_rms = None
+    first_chunk = True
     wait_deadline = time.monotonic() + _LISTEN_TIMEOUT
     phrase_deadline = None
     reason = "timeout"
@@ -217,27 +249,61 @@ def _capture_from_stream(stream, fd=None):
 
         if not started:
             pre_roll.append(chunk)
+
+            # The first chunk is the stream-open spike: never let it start the
+            # phrase, and keep it out of the background estimate.
+            if first_chunk:
+                first_chunk = False
+                if rms > _ENERGY_THRESHOLD:
+                    spike_rms = rms
+                    if _DEBUG:
+                        _dbg(f"chunk rms={rms:.0f} gate={_ENERGY_THRESHOLD} "
+                             f"state=warmup spike=discarded")
+                    continue
+
             if rms > _ENERGY_THRESHOLD:
+                # A decaying tail of the open spike (bounded by the warm-up
+                # window) is discarded; anything else is speech and starts now,
+                # so a phrase that begins immediately is never cut off.
+                if spike_rms is not None and warm_left > 0 and rms < spike_rms * 0.6:
+                    spike_rms = rms
+                    warm_left -= 1
+                    if _DEBUG:
+                        _dbg(f"chunk rms={rms:.0f} gate={_ENERGY_THRESHOLD} "
+                             f"state=warmup spike=decay left={warm_left}")
+                    continue
+                spike_rms = None
                 started = True
                 phrase_deadline = time.monotonic() + _PHRASE_TIME_LIMIT
+                stop_threshold = _calibrate(bg_samples)
                 # Seed the utterance with the ~0.3 s leading up to the trigger.
                 chunks.extend(pre_roll)
                 pre_roll.clear()
-                state = "recording"
-            else:
-                state = "waiting"
+                if _DEBUG:
+                    _dbg(f"chunk rms={rms:.0f} gate={_ENERGY_THRESHOLD} "
+                         f"state=recording floor={stop_threshold}")
+                continue
+
+            # Quiet chunk: this is background. Re-estimate the floor each time.
+            spike_rms = None
+            warm_left = max(0, warm_left - 1)
+            bg_samples.append(rms)
+            stop_threshold = _calibrate(bg_samples)
             if _DEBUG:
-                _dbg(f"chunk rms={rms:.0f} gate={_ENERGY_THRESHOLD} state={state}")
+                state = "warmup" if warm_left > 0 else "waiting"
+                _dbg(f"chunk rms={rms:.0f} gate={_ENERGY_THRESHOLD} "
+                     f"state={state} floor={stop_threshold}")
             continue
 
         chunks.append(chunk)
-        if rms > _SILENCE_THRESHOLD:
+        if rms > stop_threshold:
             silent_run = 0
         else:
             silent_run += 1
         if _DEBUG:
             _dbg(f"chunk rms={rms:.0f} gate={_ENERGY_THRESHOLD} "
-                 f"state=recording silence={silent_run}/{_SILENCE_CHUNKS_TO_STOP}")
+                 f"state=recording floor={stop_threshold} "
+                 f"silence={silent_run}/{_SILENCE_CHUNKS_TO_STOP}")
 
         if silent_run >= _SILENCE_CHUNKS_TO_STOP:
             reason = "silence"

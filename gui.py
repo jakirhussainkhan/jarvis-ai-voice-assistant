@@ -13,9 +13,8 @@ from PyQt5.QtCore import QPointF, Qt, QThread, QTimer, pyqtSignal
 from PyQt5.QtGui import QBrush, QColor, QPainter, QPen, QRadialGradient
 from PyQt5.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget
 
-from agent import run_agent
+from main import handle
 from memory import Memory
-from router import try_local
 from voice import listen, speak
 
 IDLE = "Idle"
@@ -139,14 +138,14 @@ class JarvisWorker(QThread):
                 # Nothing heard: return straight away so the finally block
                 # below resets the widget to Idle. Never spin here.
                 return
-            # listen() already prints the "👤 <user>" line to stdout -- emitting
-            # it here too printed every recognised phrase twice. Same for speak()
-            # below. Keep the status signals, drop the duplicate logs.
+            # listen() already prints the "👤 <user>" line to stdout and speak()
+            # prints "🤖 <reply>" exactly once, so we only drive the state
+            # colours here.
 
-            reply = try_local(user)
-            if not reply:
-                self.state_changed.emit(THINKING)
-                reply, _tokens = run_agent(user, self.memory)
+            self.state_changed.emit(THINKING)
+            # main.handle() is the single dispatch path: it resolves any pending
+            # confirmation, then tries the router and finally the agent.
+            reply, _kind, _tokens = handle(user, self.memory)
 
             self.state_changed.emit(SPEAKING)
             speak(reply)          # prints "🤖 <reply>" exactly once

@@ -19,7 +19,9 @@ GUI.
 | Conversation memory | Working |
 | GUI widget (`gui.py`) | Working |
 | Microphone diagnostic | Working |
-| Tests | `pytest` suite — 39 tests |
+| Desktop control (apps/YouTube/media/volume/brightness/screenshot/lock) | Working (see *Desktop control pass*) |
+| Confirmation-gated power actions | Working (ask "Are you sure?") |
+| Tests | `pytest` suite — 80 tests (1 opt-in WAV test skipped by default) |
 | Published | GitHub, tag `v1.0.0` (README + MIT LICENSE) |
 
 ## Repository & releases
@@ -62,34 +64,51 @@ Two front ends share the same brain:
   history/output/tool limits.
 - `voice.py` — `listen()` and `speak()`. `listen()` captures through
   `arecord -D <device> -f S16_LE -r 16000 -c 1` (no PyAudio/PortAudio), reads
-  0.1 s chunks, computes RMS per chunk, keeps a ~0.3 s **pre-roll**, starts on
-  speech above **300**, then uses **hysteresis** (keeps recording while RMS stays
-  above **150**), ends after ~**1.2 s** below that, caps phrases at 8 s, and waits
+  0.1 s chunks and computes RMS per chunk. The stream-open spike (first chunk,
+  ~6000) is discarded (and its decaying tail, bounded at 0.5 s); the room floor
+  is then **auto-calibrated** to `1.5 × median(background)` clamped to
+  **150–300**. Speech starts on RMS > **300**, a ~0.3 s **pre-roll** keeps quiet
+  onsets, **hysteresis** keeps recording while RMS stays above the calibrated
+  floor, the phrase ends after ~**1.2 s** below it, caps phrases at 8 s, and waits
   at most 4 s for speech to start. Bytes are wrapped in
   `sr.AudioData(data, 16000, 2)` and sent to Google STT (`en-US`). `speak()` is
   edge-tts + pygame (`en-US-AriaNeural`). Device defaults to `default`; override
   with `JARVIS_MIC_DEVICE`.
-- `router.py` — `try_local()`: offline regex handling for volume, system status,
-  time, date, YouTube and app launching, plus `close/quit/stop <app|browser>`.
-  A YouTube play/search only fires with an explicit media verb; `close youtube`
-  returns a "can't close browser tabs" reply instead of searching for "close".
-  Any command containing a search verb (`search`, `look up`, `find`) returns
-  `None` so it reaches the agent instead of being intercepted.
+- `router.py` — `try_local()`: offline regex handling for **power (confirmation-
+  gated)**, media (`playerctl`), volume (`pactl`), brightness (`brightnessctl`),
+  screenshot, lock, battery, system status, time, date, YouTube (open/play),
+  open/close/quit/kill apps. A play only fires with an explicit media verb;
+  `close youtube` targets the tab (never a search). A weak app-name match asks
+  "Did you mean <app>?" instead of guessing; an unknown target defers to the
+  agent. Any command containing a search verb returns `None` (agent handles it).
+- `desktop.py` — the whitelisted desktop actions: app index from `.desktop`
+  files (`gtk-launch`/`gio launch`), fuzzy matching with weighted keys, graceful
+  close (`wmctrl -c` → SIGTERM → SIGKILL after ~3 s), `list_running()`, YouTube
+  (`yt-dlp` top result / search / homepage / tab close), media, volume,
+  brightness, screenshot, lock, and confirmed power actions. Holds the protected
+  list (Jarvis + ancestors, display server, session manager, systemd, shell).
+  X11/Cinnamon here; on Wayland window ops degrade to "Which window?".
+- `confirm.py` — tiny pending-action state machine for "Are you sure?": a "yes"
+  runs the action, anything else cancels, and it expires after 15 s.
 - `agent.py` — Groq chat orchestration over the OpenAI-compatible client, md5
   response cache, token accounting, tool schemas built from function signatures,
   and an English-only system instruction.
-- `tools.py` — tool functions the model can call: open app, system status,
-  YouTube, web search, save note, read file. Signatures + docstrings become the
-  schema (no hand-written schema).
+- `tools.py` — tool functions the model can call: open app, close app, list
+  running, YouTube, media, volume, brightness, screenshot, lock, system status,
+  web search, save note, read file. Signatures + docstrings become the schema (no
+  hand-written schema).
 - `memory.py` — rolling `deque` window of recent turns, rendered as a transcript.
-- `main.py` — terminal entry point and `handle()` dispatch.
-- `gui.py` — PyQt5 Arc Reactor widget (`QThread` worker).
+- `main.py` — terminal entry point and `handle()` dispatch (confirmation first,
+  then router, then agent).
+- `gui.py` — PyQt5 Arc Reactor widget (`QThread` worker); shares `main.handle()`
+  so confirmations work in the GUI too.
 - `test_mic.py` — standalone mic diagnostic (arecord-based): lists capture
   devices/PCMs with `arecord -l` / `-L`, records a WAV with the same
   `arecord_command()` as `listen()`, reports RMS/peak, plays it back with `aplay`,
   recognises it, and checks the gate in `voice.py`. No PyAudio.
-- `test_routing.py`, `test_exit.py`, `test_memory.py`, `test_agent_cache.py`,
-  `test_flow.py`, `test_voice_capture.py` — pytest suite (see Verification).
+- `test_routing.py`, `test_desktop.py`, `test_confirm.py`, `test_exit.py`,
+  `test_memory.py`, `test_agent_cache.py`, `test_flow.py`, `test_voice_capture.py`
+  — pytest suite (see Verification).
 - `README.md`, `LICENSE` — docs and MIT license.
 
 ## What's done
@@ -187,6 +206,109 @@ stream-open transient) and the `pyaudio` dependency (dropped from
 name>` (default `default`); the PyAudio `JARVIS_MIC_INDEX` override is obsolete.
 `test_mic.py` uses the **same** `arecord_command()` builder (WAV output), lists
 devices with `arecord -l`/`-L`, and plays back with `aplay`.
+
+## Desktop control, safety & capture tuning (2026-10-18)
+
+Final feature pass: control the Linux desktop by voice (English only). All new
+system actions live in `desktop.py` and are reached either from the offline
+router or as agent tools. **No `sudo`, no arbitrary shell** — only fixed,
+whitelisted commands.
+
+### Environment check (this machine)
+
+| Tool | Status |
+| --- | --- |
+| `wmctrl` | present |
+| `pactl` | present |
+| `yt-dlp` | present |
+| `gtk-launch` | present |
+| `gio` | present |
+| `gnome-screenshot` | present |
+| `amixer` | present |
+| `loginctl`, `systemctl`, `gdbus` | present |
+| `xdotool` | **missing** |
+| `playerctl` | **missing** |
+| `brightnessctl` | **missing** |
+| `scrot`, ImageMagick `import`, `qdbus` | **missing** |
+
+Session is **X11 / Cinnamon** (`XDG_SESSION_TYPE=x11`, `XDG_CURRENT_DESKTOP=X-Cinnamon`),
+so `wmctrl` works and Wayland caveats do not apply.
+
+Install the missing pieces with:
+
+```bash
+sudo apt install xdotool playerctl brightnessctl scrot imagemagick
+```
+
+What still works without them: launching/closing apps and YouTube play/search
+(`gtk-launch`/`gio`/`yt-dlp`), volume (`pactl`), screenshot
+(`gnome-screenshot`), lock (`cinnamon-screensaver-command`/`loginctl`),
+system status/time/date/battery. What **does not** work until installed:
+media keys (`playerctl`), brightness (`brightnessctl`), closing a *focused*
+YouTube tab with Ctrl+W (`xdotool`), and the `scrot`/`import` screenshot
+fallbacks. `close youtube` therefore answers **"Which window?"** here.
+
+### Voice commands
+
+| You say | What happens |
+| --- | --- |
+| "open telegram" / "open files" / "open terminal" / "open settings" / "open calculator" | fuzzy-matches the app and launches it |
+| "open <name>" (something not installed) | "I couldn't find that app." (never guesses) |
+| "close telegram" / "quit files" / "kill calculator" | graceful close, then SIGKILL after ~3 s |
+| "close youtube" | closes the focused tab via Ctrl+W if possible, else "Which window?" |
+| "open youtube" | opens the YouTube homepage |
+| "play lo-fi on youtube" | plays the top `yt-dlp` result, says what is playing |
+| "search cats on youtube" | opens the results page (via the agent) |
+| "pause" / "resume" / "next song" / "previous track" / "stop the music" | media control (`playerctl`) |
+| "volume up" / "volume down" / "set volume to 40" / "mute" / "unmute" | volume (`pactl`, clamped 0–100) |
+| "brightness up" / "brightness down" / "set brightness to 40" | brightness (`brightnessctl`) |
+| "take a screenshot" | saves `~/Pictures/jarvis-screenshot-<time>.png` and names it |
+| "lock the screen" | locks the session |
+| "what time is it" / "what's the date" / "battery" / "system status" | time / date / battery / CPU-RAM-disk |
+| "shut down" / "restart" / "log out" / "suspend" | asks **"Are you sure?"**; runs only on "yes" (expires in 15 s) |
+| "exit" / "quit" / "bye" / "stop" (bare) | ends the session |
+| anything with "search", "look up", "find", or otherwise unclear | goes to the Groq agent |
+
+### Safety
+
+- **Protected list** (never closed/touched): Jarvis itself and its whole
+  ancestor chain (so the terminal running it), the display server (`Xorg`/
+  `Xwayland`), the session manager, `systemd`/`dbus`, and the desktop shell
+  (`cinnamon`, `gnome-shell`, `plasmashell`, …).
+- **Confirmation flow**: shutdown/restart/logout/suspend (and any future
+  delete) register with `confirm.py`; "yes" runs them, anything else cancels,
+  and an unconfirmed request expires after 15 s. There is currently **no** delete
+  function, so nothing else is destructive.
+- **Weak matches**: if the best app-name score is below the strong threshold,
+  Jarvis asks "Did you mean <app>?" instead of closing the wrong thing.
+- `close/quit/kill X` is handled before the YouTube branch, so it can never
+  become a search query.
+
+### Capture tuning
+
+- Warm-up discards the `arecord` stream-open spike (and its decaying tail,
+  bounded at 0.5 s) without cutting a phrase that starts immediately.
+- The stop floor is auto-calibrated per listen: `1.5 × median(background)`
+  clamped to **150–300**, replacing the fixed 150.
+- `JARVIS_DEBUG` keeps the per-chunk trace (now showing `state=warmup|waiting|
+  recording` and the live `floor=`).
+
+### Honest limitations (not verified on the real machine)
+
+- **Real-voice capture** with the new calibration was validated on synthetic PCM
+  and a recorded speech WAV, **not** the live microphone. Run
+  `JARVIS_DEBUG=1 ./venv/bin/python main.py` and speak; the per-chunk lines show
+  the calibrated `floor=` and whether the phrase was captured whole.
+- **Media, brightness and focused-tab closing were not exercised live** because
+  `playerctl`, `brightnessctl` and `xdotool` are not installed here. Their logic
+  is unit-tested with mocked subprocess calls only.
+- **Power actions were deliberately not run** (they would power off / reboot the
+  machine). Only the confirmation handshake is tested.
+- **Screenshot success** relies on `gnome-screenshot`; the fallbacks (`scrot`,
+  `import`) are absent, so a real screenshot was not captured in this pass.
+- App matching was checked against this machine's 125 `.desktop` entries
+  (`telegram`, `files`, `terminal`, `settings`, `calculator`, `browser` all
+  resolve correctly); other apps were not individually verified.
 
 ## Verification (2026-10-18)
 
