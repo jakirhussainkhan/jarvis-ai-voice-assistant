@@ -8,8 +8,11 @@ def test_report_lists_tools_and_text_mode(monkeypatch):
     text = doctor.report()
     assert "Jarvis readiness check" in text
     assert "JARVIS_TEXT" in text                 # how to test without a mic
-    assert "sudo apt install" in text            # missing optional tools listed
     assert "arecord" in text                     # required tool shown
+    assert "xclip" in text                       # missing optional tools listed
+    # Never suggests running sudo: the user asked for a sudo-free assistant.
+    assert "sudo apt" not in text and "sudo install" not in text
+    assert "--offline" in text and "--gui" in text
 
 
 def test_report_flags_a_missing_api_key(monkeypatch):

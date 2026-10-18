@@ -452,6 +452,61 @@ def list_running():
     return "Running: " + ", ".join(names) + "." if names else "I couldn't detect any open windows."
 
 
+def matching_process_pids(name, limit=200):
+    """PIDs of non-protected processes whose name contains ``name``.
+
+    Used by the ``kill process`` tool; protected processes (the session, the
+    shell chain, Jarvis itself) are never returned.
+    """
+    query = _normalize(name)
+    if not query:
+        return []
+    protected = _protected_pids()
+    pids = []
+    for proc in psutil.process_iter(["pid", "name"]):
+        try:
+            info = proc.info
+        except psutil.Error:
+            continue
+        pid = info.get("pid")
+        pname = info.get("name") or ""
+        if pid in protected or not pname or _is_protected(pname, pid):
+            continue
+        if query in _normalize(pname):
+            pids.append(pid)
+            if len(pids) >= limit:
+                break
+    return pids
+
+
+_TERMINALS = (
+    ("gnome-terminal", ["--"]),
+    ("kgx", ["--"]),
+    ("tilix", ["-e"]),
+    ("x-terminal-emulator", ["-e"]),
+    ("xfce4-terminal", ["-x"]),
+    ("konsole", ["-e"]),
+    ("alacritty", ["-e"]),
+    ("xterm", ["-e"]),
+)
+
+
+def run_in_terminal(command):
+    """Open a visible terminal and run ``command`` there, leaving it open.
+
+    The caller (see tools.fn_run_in_terminal) applies the same guardrails as
+    hidden execution before reaching here.
+    """
+    command = (command or "").strip()
+    if not command:
+        return "Which command should I run?"
+    inner = f"{command}; echo; echo '[Jarvis] finished -- press Enter to close'; read"
+    for name, flag in _TERMINALS:
+        if has(name) and _spawn([name, *flag, "bash", "-c", inner]):
+            return f"Running in a terminal: {command}"
+    return "I couldn't find a terminal emulator."
+
+
 # --------------------------------------------------------------------------- #
 # YouTube
 # --------------------------------------------------------------------------- #
@@ -617,6 +672,36 @@ def media_control(action):
     return f"Media {key if key != 'prev' else 'previous'}."
 
 
+def media_seek(seconds):
+    """Seek the active player forward/back by ``seconds`` (can be negative)."""
+    try:
+        delta = int(seconds)
+    except (TypeError, ValueError):
+        return "How many seconds should I seek?"
+    if not has("playerctl"):
+        return "playerctl is not installed."
+    if delta == 0:
+        return "How many seconds should I seek?"
+    # playerctl takes the direction as a suffix ("10+" forward, "10-" back); a
+    # leading "-10" would be read as an option flag instead of a value.
+    offset = f"{abs(delta)}{'+' if delta > 0 else '-'}"
+    rc, _ = _run(["playerctl", "position", offset])
+    if rc != 0:
+        return "There is no media player to control."
+    return f"Seeked {'forward' if delta > 0 else 'back'} {abs(delta)} seconds."
+
+
+def now_playing():
+    """Describe the current track, or report that nothing is playing."""
+    if not has("playerctl"):
+        return "playerctl is not installed."
+    rc, out = _run(["playerctl", "metadata", "--format",
+                    "{{artist}} - {{title}} ({{status}})"])
+    if rc != 0 or not out.strip():
+        return "There is no media player to control."
+    return out.strip()
+
+
 def pause_media_if_playing():
     """Best-effort pause of active media so it does not leak into the mic.
 
@@ -660,6 +745,10 @@ def _clamp(value, low=0, high=100):
     return max(low, min(high, value))
 
 
+_AUDIO_FAIL = "I couldn't reach the audio system."
+_BRIGHT_FAIL = "I couldn't change the brightness."
+
+
 def _sink_volume():
     rc, out = _run(["pactl", "get-sink-volume", "@DEFAULT_SINK@"])
     if rc == 0 and out:
@@ -676,21 +765,21 @@ def volume_control(action, value=None):
         return "pactl is not installed."
     sink = "@DEFAULT_SINK@"
     if key in ("mute",):
-        _run(["pactl", "set-sink-mute", sink, "1"])
-        return "Muted."
+        rc, _ = _run(["pactl", "set-sink-mute", sink, "1"])
+        return "Muted." if rc == 0 else _AUDIO_FAIL
     if key in ("unmute",):
-        _run(["pactl", "set-sink-mute", sink, "0"])
-        return "Unmuted."
+        rc, _ = _run(["pactl", "set-sink-mute", sink, "0"])
+        return "Unmuted." if rc == 0 else _AUDIO_FAIL
     if key in ("up", "increase"):
-        _run(["pactl", "set-sink-volume", sink, "+10%"])
-        return "Volume up."
+        rc, _ = _run(["pactl", "set-sink-volume", sink, "+10%"])
+        return "Volume up." if rc == 0 else _AUDIO_FAIL
     if key in ("down", "decrease"):
-        _run(["pactl", "set-sink-volume", sink, "-10%"])
-        return "Volume down."
+        rc, _ = _run(["pactl", "set-sink-volume", sink, "-10%"])
+        return "Volume down." if rc == 0 else _AUDIO_FAIL
     if key in ("set", "to", "level") and value is not None:
         pct = _clamp(int(value))
-        _run(["pactl", "set-sink-volume", sink, f"{pct}%"])
-        return f"Volume set to {pct} percent."
+        rc, _ = _run(["pactl", "set-sink-volume", sink, f"{pct}%"])
+        return f"Volume set to {pct} percent." if rc == 0 else _AUDIO_FAIL
     return "I can change the volume up, down, mute, unmute or to a percent."
 
 
@@ -701,15 +790,15 @@ def brightness_control(action, value=None):
         return ("brightnessctl is not installed. Install it with: "
                 "sudo apt install brightnessctl.")
     if key in ("up", "increase"):
-        _run(["brightnessctl", "set", "+10%"])
-        return "Brightness up."
+        rc, _ = _run(["brightnessctl", "set", "+10%"])
+        return "Brightness up." if rc == 0 else _BRIGHT_FAIL
     if key in ("down", "decrease"):
-        _run(["brightnessctl", "set", "10%-"])
-        return "Brightness down."
+        rc, _ = _run(["brightnessctl", "set", "10%-"])
+        return "Brightness down." if rc == 0 else _BRIGHT_FAIL
     if key in ("set", "to", "level") and value is not None:
         pct = _clamp(int(value), 1, 100)
-        _run(["brightnessctl", "set", f"{pct}%"])
-        return f"Brightness set to {pct} percent."
+        rc, _ = _run(["brightnessctl", "set", f"{pct}%"])
+        return f"Brightness set to {pct} percent." if rc == 0 else _BRIGHT_FAIL
     return "I can change the brightness up, down or to a percent."
 
 
@@ -717,28 +806,43 @@ def brightness_control(action, value=None):
 # screenshot / lock
 # --------------------------------------------------------------------------- #
 
+def capture_screenshot(path):
+    """Capture the whole screen to ``path``. Returns the Path on success, else None.
+
+    Tries the desktop-native tools first, then scrot, then ImageMagick's import.
+    Never raises. Used by :func:`screenshot` and by :mod:`vision` to feed the
+    screen to the vision model.
+    """
+    path = Path(path)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    attempts = (
+        ["gnome-screenshot", "-f", str(path)],
+        ["scrot", str(path)],
+        ["import", "-window", "root", str(path)],
+    )
+    for cmd in attempts:
+        if not has(cmd[0]):
+            continue
+        rc, _ = _run(cmd, timeout=15)
+        try:
+            ok = rc == 0 and path.exists() and path.stat().st_size > 0
+        except OSError:
+            ok = False
+        if ok:
+            return path
+    return None
+
+
 def screenshot():
     """Save a screenshot to ~/Pictures and return the file name."""
     folder = Path.home() / "Pictures"
-    try:
-        folder.mkdir(parents=True, exist_ok=True)
-    except OSError:
-        folder = Path.home()
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     path = folder / f"jarvis-screenshot-{stamp}.png"
-
-    if has("gnome-screenshot"):
-        rc, _ = _run(["gnome-screenshot", "-f", str(path)], timeout=15)
-        if rc == 0 and path.exists():
-            return f"Screenshot saved as {path.name}."
-    if has("scrot"):
-        rc, _ = _run(["scrot", str(path)], timeout=15)
-        if rc == 0 and path.exists():
-            return f"Screenshot saved as {path.name}."
-    if has("import"):
-        rc, _ = _run(["import", "-window", "root", str(path)], timeout=15)
-        if rc == 0 and path.exists():
-            return f"Screenshot saved as {path.name}."
+    if capture_screenshot(path) is not None:
+        return f"Screenshot saved as {path.name}."
     return "I couldn't take a screenshot; install gnome-screenshot or scrot."
 
 
@@ -753,6 +857,320 @@ def lock_screen():
         if has(cmd[0]) and _run(cmd)[0] == 0:
             return "Locking the screen."
     return "I couldn't find a screen locker."
+
+
+# --------------------------------------------------------------------------- #
+# screen / window interaction (xdotool + wmctrl; X11 only)
+# --------------------------------------------------------------------------- #
+#
+# Everything here is an explicit, whitelisted action -- Jarvis can move the
+# pointer, click, type and press shortcuts, but there is no way for speech to
+# smuggle in arbitrary shell. On Wayland these tools do not work, so every
+# function degrades to a plain "not supported" message instead of guessing.
+
+_WAYLAND_MSG = ("I can't control the screen on Wayland -- window tools "
+                "(wmctrl/xdotool) only work on X11.")
+
+
+def _xdo(*args, timeout=6):
+    """Run an xdotool command. Returns ``(rc, out)``; rc 127 when unavailable."""
+    if is_wayland():
+        return 127, _WAYLAND_MSG
+    if not has("xdotool"):
+        return 127, "xdotool is not installed."
+    return _run(["xdotool", *args], timeout=timeout)
+
+
+def screen_size():
+    """Return ``(width, height)`` of the display, or ``None`` if unknown."""
+    rc, out = _run(["xdotool", "getdisplaygeometry"])
+    if rc != 0:
+        return None
+    parts = out.split()
+    if len(parts) != 2 or not all(p.isdigit() for p in parts):
+        return None
+    return int(parts[0]), int(parts[1])
+
+
+def move_mouse(x, y):
+    """Move the pointer to absolute ``(x, y)`` pixels."""
+    x, y = int(x), int(y)
+    rc, out = _xdo("mousemove", str(x), str(y))
+    return f"Moved the pointer to {x}, {y}." if rc == 0 else out
+
+
+def click_at(x, y, button=1, double=False):
+    """Click at absolute ``(x, y)``. ``button`` 1=left, 2=middle, 3=right."""
+    x, y = int(x), int(y)
+    try:
+        button = int(button)
+    except (TypeError, ValueError):
+        button = 1
+    if button not in (1, 2, 3):
+        button = 1
+    cmd = ["mousemove", str(x), str(y), "click"]
+    if double:
+        cmd += ["--repeat", "2", "--delay", "120"]
+    cmd.append(str(button))
+    rc, out = _xdo(*cmd)
+    if rc != 0:
+        return out
+    label = {1: "Left", 2: "Middle", 3: "Right"}[button]
+    return f"{'Double-' if double else ''}{label}-clicked at {x}, {y}."
+
+
+def type_text(text):
+    """Type ``text`` into whatever window currently has focus."""
+    text = "" if text is None else str(text)
+    if not text:
+        return "I have nothing to type."
+    rc, out = _xdo("type", "--clearmodifiers", "--delay", "12", text)
+    return "Typed it." if rc == 0 else out
+
+
+_KEY_OK = re.compile(r"^[A-Za-z0-9+_\- ]{1,60}$")
+
+
+def press_keys(keys):
+    """Press a keyboard shortcut or key, e.g. ``ctrl+s``, ``alt+tab``, ``super``."""
+    keys = (keys or "").strip().lower()
+    if not _KEY_OK.match(keys):
+        return "That key combination looks invalid."
+    rc, out = _xdo("key", "--clearmodifiers", keys)
+    return f"Pressed {keys}." if rc == 0 else out
+
+
+def scroll(direction, amount=3):
+    """Scroll the focused window: direction is 'up' or 'down'."""
+    direction = (direction or "down").strip().lower()
+    if direction not in ("up", "down", "left", "right"):
+        return "Scroll direction must be up, down, left or right."
+    try:
+        count = max(1, min(20, int(amount)))
+    except (TypeError, ValueError):
+        count = 3
+    button = {"up": 4, "down": 5, "left": 6, "right": 7}[direction]
+    rc, out = _xdo("click", "--repeat", str(count), str(button))
+    return f"Scrolled {direction}." if rc == 0 else out
+
+
+def _wmctrl(action, name):
+    """Run a wmctrl window action. Returns a normalised (rc, out)."""
+    if is_wayland():
+        return 127, _WAYLAND_MSG
+    if not has("wmctrl"):
+        return 127, "wmctrl is not installed."
+    return _run(["wmctrl", action, name])
+
+
+def focus_window(name):
+    """Bring the window whose title matches ``name`` to the front."""
+    rc, out = _wmctrl("-a", name)
+    return f"Focused {name}." if rc == 0 else out
+
+
+def minimize_window(name):
+    """Minimise windows whose title matches ``name``."""
+    rc, out = _wmctrl("-r", name)
+    if rc != 0:
+        return out
+    rc, out = _run(["wmctrl", "-r", name, "-b", "add,hidden"])
+    return f"Minimized {name}." if rc == 0 else out
+
+
+def maximize_window(name):
+    """Maximise windows whose title matches ``name``."""
+    rc, out = _wmctrl("-r", name)
+    if rc != 0:
+        return out
+    rc, out = _run(["wmctrl", "-r", name,
+                    "-b", "add,maximized_vert,maximized_horz"])
+    return f"Maximized {name}." if rc == 0 else out
+
+
+def list_windows():
+    """Enumerate the open top-level windows (one per line) for the agent."""
+    titles = _window_titles()
+    if not titles:
+        return "I couldn't list any windows (no window manager on Wayland?)."
+    lines = [f"{i + 1}. {t}" for i, t in enumerate(titles[:20])]
+    more = "" if len(titles) <= 20 else f"\n(+{len(titles) - 20} more)"
+    return "\n".join(lines) + more
+
+
+# --------------------------------------------------------------------------- #
+# open files / folders / URLs, notifications, clipboard
+# --------------------------------------------------------------------------- #
+
+# A bare domain ("example.com", "docs.python.org/index") -> open in the browser.
+# Restricted to well-known TLDs so a filename like "notes.txt" is not mistaken
+# for a website.
+_DOMAIN_RE = re.compile(
+    r"^(?:[a-z0-9-]+\.)+(?:com|org|net|edu|gov|io|dev|app|ai|co|me|info|xyz|"
+    r"tv|site|online|store|blog|tech|news|live|cloud|uk|us|ca|de|fr|in|jp|au|"
+    r"eu)(?:/\S*)?$",
+    re.I,
+)
+
+
+def open_path(target):
+    """Open a file, folder or URL with the desktop's default application."""
+    target = (target or "").strip()
+    if not target:
+        return "What should I open?"
+    if re.match(r"^(https?://|www\.)", target, re.I):
+        url = target if target.lower().startswith("http") else "https://" + target
+        return f"Opening {url}." if _open_url(url) else "I couldn't open the browser."
+    path = os.path.expanduser(target)
+    if os.path.exists(path):
+        if has("xdg-open") and _spawn(["xdg-open", path]):
+            return f"Opening {path}."
+        return f"I couldn't find a way to open {path}."
+    # A bare domain opens in the browser; anything else goes to xdg-open.
+    if _DOMAIN_RE.match(target):
+        url = "https://" + target
+        return f"Opening {url}." if _open_url(url) else "I couldn't open the browser."
+    if has("xdg-open") and _spawn(["xdg-open", path]):
+        return f"Handing {path} to the desktop."
+    return f"I couldn't find {target}."
+
+
+# Common folders a spoken name can mean. Kept small and explicit so "open
+# downloads" opens the real folder offline, while "open files" still opens the
+# Files application.
+_FOLDER_NAMES = {
+    "home": "~",
+    "downloads": "~/Downloads",
+    "download": "~/Downloads",
+    "documents": "~/Documents",
+    "document": "~/Documents",
+    "docs": "~/Documents",
+    "pictures": "~/Pictures",
+    "photos": "~/Pictures",
+    "images": "~/Pictures",
+    "music": "~/Music",
+    "videos": "~/Videos",
+    "movies": "~/Videos",
+    "desktop": "~/Desktop",
+    "templates": "~/Templates",
+    "public": "~/Public",
+}
+
+
+def resolve_folder(name):
+    """Return an existing path for a spoken folder name, or ``None``.
+
+    ``resolve_folder`` only ever returns a path that really exists, so the router
+    can safely fall back to application matching when this returns ``None``.
+    """
+    if not name:
+        return None
+    key = _normalize(name)
+    key = re.sub(r"\b(folder|directory|dir|my|the|our|a|an)\b", " ", key)
+    key = re.sub(r"\s+", " ", key).strip()
+    for candidate in (key, key.replace(" ", "")):
+        raw = _FOLDER_NAMES.get(candidate)
+        if raw:
+            path = os.path.expanduser(raw)
+            if os.path.isdir(path):
+                return path
+    # A bare name that is an existing directory directly under the home folder.
+    path = os.path.expanduser(os.path.join("~", name.strip()))
+    return path if os.path.isdir(path) else None
+
+
+def notify(message, title="Jarvis"):
+    """Show a desktop notification."""
+    message = (message or "").strip()
+    if not message:
+        return "What should the notification say?"
+    if not has("notify-send"):
+        return "notify-send is not installed."
+    if _spawn(["notify-send", title or "Jarvis", message]):
+        return "Notification sent."
+    return "I couldn't send a notification."
+
+
+def clipboard(action):
+    """Copy / cut / paste in the focused window, or read the clipboard text."""
+    action = (action or "").strip().lower()
+    shortcut = {"copy": "ctrl+c", "cut": "ctrl+x", "paste": "ctrl+v",
+                "select all": "ctrl+a"}
+    if action in shortcut:
+        return press_keys(shortcut[action])
+    if action in ("read", "get", "show", "what", "contents", "text"):
+        if has("xclip"):
+            rc, out = _run(["xclip", "-selection", "clipboard", "-o"])
+            text = out if rc == 0 else ""
+        elif has("xsel"):
+            rc, out = _run(["xsel", "--clipboard", "--output"])
+            text = out if rc == 0 else ""
+        else:
+            text = _qt_clipboard_read()
+            if text is None:
+                return ("I can't read the clipboard on this system, but copy, "
+                        "cut and paste still work.")
+        return (text.strip()[:600] or "The clipboard is empty.")
+    return "I can copy, cut, paste or read the clipboard."
+
+
+# Set when we create a QApplication just to read the clipboard. Kept alive for
+# the process lifetime so Qt does not tear the clipboard selection down.
+_QT_APP = None
+
+
+def _qt_clipboard_read():
+    """Read the clipboard with Qt (PyQt5) when xclip/xsel are missing.
+
+    Returns the clipboard text, or ``None`` if Qt is unavailable. Reuses the
+    running GUI's QApplication when there is one.
+    """
+    global _QT_APP
+    try:
+        from PyQt5.QtWidgets import QApplication
+    except Exception:
+        return None
+    app = QApplication.instance() or _QT_APP
+    if app is None:
+        try:
+            app = QApplication([])
+            _QT_APP = app
+        except Exception:
+            return None
+    try:
+        return app.clipboard().text()
+    except Exception:
+        return None
+
+
+def find_files(query, limit=15):
+    """Find files under the home directory whose name matches ``query``."""
+    query = (query or "").strip()
+    if not query:
+        return "What file are you looking for?"
+    home = os.path.expanduser("~")
+    try:
+        limit = max(1, min(40, int(limit)))
+    except (TypeError, ValueError):
+        limit = 15
+    hits = []
+    if has("plocate"):
+        rc, out = _run(["plocate", "-i", "-l", str(limit), query], timeout=10)
+    elif has("locate"):
+        rc, out = _run(["locate", "-i", "-l", str(limit), query], timeout=10)
+    else:
+        rc, out = _run(
+            ["find", home, "-maxdepth", "5", "-iname", f"*{query}*"],
+            timeout=12,
+        )
+    if rc == 0:
+        hits = [line.strip() for line in out.splitlines() if line.strip()]
+    if not hits:
+        return f"I couldn't find any file matching {query}."
+    home_hits = [h for h in hits if h.startswith(home)]
+    shown = (home_hits or hits)[:limit]
+    return "\n".join(shown)
+
 
 
 # --------------------------------------------------------------------------- #

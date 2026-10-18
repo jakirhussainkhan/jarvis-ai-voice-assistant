@@ -68,15 +68,41 @@ def test_agent_cache_hit_reports_cache(monkeypatch):
     )
 
 
-def test_agent_failure_is_caught_not_raised(monkeypatch):
-    """A network error in the agent must not kill the session."""
+def test_network_failure_falls_back_to_offline(monkeypatch):
+    """A connection error must degrade to the offline list, not a raw error."""
     def boom(text, memory):
         raise RuntimeError("network down")
 
     monkeypatch.setattr(main, "run_agent", boom)
     reply, kind, tokens = main.handle("tell me a joke", Memory())
-    assert "network down" in reply
+    assert reply == main.OFFLINE_REPLY
     assert kind == "local" and tokens == 0
+
+
+def test_non_network_failure_still_reports_the_error(monkeypatch):
+    def boom(text, memory):
+        raise RuntimeError("kaboom")
+
+    monkeypatch.setattr(main, "run_agent", boom)
+    reply, kind, tokens = main.handle("tell me a joke", Memory())
+    assert "kaboom" in reply
+    assert kind == "local" and tokens == 0
+
+
+def test_offline_mode_never_calls_the_agent(monkeypatch):
+    monkeypatch.setattr(main, "_OFFLINE", True)
+
+    def fail(*args, **kwargs):
+        raise AssertionError("the agent must not run in offline mode")
+
+    monkeypatch.setattr(main, "run_agent", fail)
+    assert main.handle("tell me a joke", Memory()) == (main.CAPABILITIES, "local", 0)
+
+
+def test_offline_mode_still_runs_local_commands(monkeypatch):
+    monkeypatch.setattr(main, "_OFFLINE", True)
+    monkeypatch.setattr(desktop, "open_youtube", lambda: "Opening YouTube.")
+    assert main.handle("open youtube", Memory()) == ("Opening YouTube.", "local", 0)
 
 
 def test_text_mode_reads_a_typed_line(monkeypatch):

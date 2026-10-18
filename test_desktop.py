@@ -160,6 +160,19 @@ def test_brightness_reports_missing_tool(monkeypatch):
     assert "brightnessctl is not installed" in desktop.brightness_control("up")
 
 
+def test_volume_reports_audio_failure(monkeypatch):
+    monkeypatch.setattr(desktop, "has", lambda tool: tool == "pactl")
+    monkeypatch.setattr(desktop, "_run", lambda args, timeout=6: (1, ""))
+    assert "audio system" in desktop.volume_control("up")
+    assert "audio system" in desktop.volume_control("mute")
+
+
+def test_brightness_reports_failure(monkeypatch):
+    monkeypatch.setattr(desktop, "has", lambda tool: tool == "brightnessctl")
+    monkeypatch.setattr(desktop, "_run", lambda args, timeout=6: (1, ""))
+    assert "brightness" in desktop.brightness_control("down").lower()
+
+
 # --------------------------------------------------------------------------- #
 # media
 # --------------------------------------------------------------------------- #

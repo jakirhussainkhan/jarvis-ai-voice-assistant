@@ -1,13 +1,21 @@
 """Routes user input to the appropriate local action or the agent.
 
 ``try_local`` handles a fixed set of commands entirely offline (regex only, no
-API calls): open/close apps, YouTube, media, volume, brightness, screenshot,
-lock, power (confirmation-gated), time, date and system status. It returns a
-string reply, or ``None`` when nothing matches so the agent can decide.
+API calls): open/close apps, folders and paths, YouTube, media (including
+seeking by seconds and "what's playing"), volume, brightness, screenshot, lock,
+clipboard, window listing, terminal commands you dictate, power
+(confirmation-gated), time, date and system status. It returns a string reply,
+or ``None`` when nothing matches so the agent can decide.
+
+Everything here works without an internet connection. Only screen reading
+(:func:`vision.look`) and the agent itself need the network; :data:`CAPABILITIES`
+spells out the offline set so Jarvis can explain itself when offline.
 
 Safety rules enforced here and in :mod:`desktop`:
 
-* only whitelisted functions run -- never ``sudo``, never arbitrary shell,
+* only whitelisted functions run -- never ``sudo``, never arbitrary shell except
+  through :func:`shell.run`, which denies anything that could power off the
+  device and asks before anything risky,
 * ``close/quit/kill X`` is handled before YouTube so it can never become a
   search query,
 * destructive actions (shutdown/restart/logout/suspend) are registered with
@@ -22,6 +30,24 @@ import psutil
 
 import confirm
 import desktop
+import shell
+import vision
+
+# A short, spoken summary of what Jarvis can do with no internet at all. Used
+# for "help" / "what can you do offline" and as the fallback when a network
+# request fails, so Jarvis always stays useful.
+CAPABILITIES = (
+    "Even with no internet I can: open and close apps, open folders and files, "
+    "list windows and switch, minimise or close them, control volume, media "
+    "(pause, next, seek, what's playing) and brightness, take screenshots, lock "
+    "the screen, copy, cut, paste and read the clipboard, tell the time, date, "
+    "battery and CPU/RAM/disk use, create notes, and run the terminal commands "
+    "you dictate. Web search, live answers, weather and reading the screen need "
+    "a connection."
+)
+
+# Shown when the agent cannot be reached because the network is down.
+OFFLINE_REPLY = "I can't reach the internet right now, so I'm staying offline. " + CAPABILITIES
 
 # --------------------------------------------------------------------------- #
 # patterns
@@ -30,6 +56,62 @@ import desktop
 # A search verb means the user wants information, so the router leaves it to the
 # agent (which can call the search tools).
 SEARCH_VERB = re.compile(r"\b(search|look ?up|find)\b", re.I)
+
+# A terminal request must reach the agent (it can call fn_run_command). The
+# leading-verb match also stops "run ls" from being mistaken for "launch an app
+# called ls"; "open terminal" stays local because "terminal" is not hinted here.
+RUN_VERB = re.compile(r"^\s*(run|execute)\b", re.I)
+TERMINAL_HINT = re.compile(r"\b(command|cmd|shell|bash|script|pipeline)\b", re.I)
+
+# --- offline help / a dictated command -------------------------------------- #
+# "help" or any offline question -> the offline capability list (no API call).
+HELP_PHRASE = re.compile(
+    r"^\s*(?:help|what can you do(?:\s+offline)?|what are your "
+    r"(?:capabilities|commands|skills)|what (?:works|can i do) "
+    r"(?:offline|without internet)|list (?:your )?(?:commands|capabilities))"
+    r"\s*[?.!]*$",
+    re.I,
+)
+OFFLINE_WORD = re.compile(
+    r"\b(offline|without internet|without a connection|no internet|no connection)\b",
+    re.I,
+)
+
+# A command spoken with an explicit marker is run directly, offline -- no model
+# needed. "run firefox" deliberately does NOT match (it has no marker), so it
+# still reaches the agent and is handled as an app launch.
+DIRECT_CMD = re.compile(
+    r"^\s*(?:run the command|run this command|execute the command|"
+    r"run in the terminal|terminal|shell|bash|command|cmd)\b"
+    r"\s*[:,-]?\s*(?P<cmd>.+?)\s*$",
+    re.I,
+)
+
+# --- windows / now playing / seek / clipboard ------------------------------- #
+LIST_WINDOWS = re.compile(
+    r"\b(?:list|show|see)\b[^.]{0,15}\bwindows\b"
+    r"|\bwhat\b[^.]{0,15}\bwindows\b",
+    re.I,
+)
+NOW_PLAYING = re.compile(
+    r"\b(?:what'?s playing|what is playing|now playing|what song is this|"
+    r"current(?:ly)? (?:song|track|playing))\b",
+    re.I,
+)
+SEEK = re.compile(
+    r"\b(?P<dir>back|backward|rewind|forward|ahead)\b[^.]{0,12}?"
+    r"(?P<n>\d{1,3})\b[^.]{0,10}?\b(?:second|sec|seconds|s)\b",
+    re.I,
+)
+CLIP_ACTION = re.compile(
+    r"^\s*(?:copy|cut|paste)(?:\s+(?:that|this|it|to clipboard))?\s*[.!]?$",
+    re.I,
+)
+CLIP_READ = re.compile(
+    r"\b(?:what'?s|what is|read|show)\b[^.]{0,15}\bclipboard\b"
+    r"|\bclipboard\b[^.]{0,10}\b(?:text|content|contents)\b",
+    re.I,
+)
 
 # --- power (confirmation-gated) -------------------------------------------- #
 POWER_WORD = re.compile(
@@ -75,6 +157,20 @@ SCREENSHOT_WORD = re.compile(
     r"\b(screenshot|screen ?shot|capture the screen|grab the screen)\b", re.I
 )
 LOCK_WORD = re.compile(r"\block\b", re.I)
+
+# --- screen reading (vision) ------------------------------------------------ #
+# "what's on my screen", "read this", "describe the screen". Answered locally by
+# vision.look() so it is fast and deterministic. The negative lookahead keeps
+# "open screen recorder" / "screen settings" out of this branch.
+SCREEN_READ = re.compile(
+    r"\b(?:what'?s on|what is on|read|describe|explain|look at|look on|see|"
+    r"check|show me|tell me about|summari[sz]e|scan)\b[^.]{0,30}\b"
+    r"(?:screen|monitor|display)\b"
+    r"(?!\s*(?:recorder|reader|lock|settings|saver|capture|shot|share|"
+    r"keyboard|resolution|brightness|bright|timer|time ?out))"
+    r"|\b(?:screen|monitor|display)\b[^.]{0,20}\b(?:shows?|displays?|says?)\b",
+    re.I,
+)
 
 # --- system / time / date --------------------------------------------------- #
 BATTERY_WORD = re.compile(r"\b(battery|charge|charging)\b", re.I)
@@ -200,8 +296,23 @@ def try_local(text):
         return None
     t = text.strip()
 
+    # --- a dictated command with an explicit marker runs directly (offline) - #
+    # Checked before the offline-help branch so a command that happens to
+    # mention, say, "offline" is still run instead of being swallowed.
+    command = DIRECT_CMD.match(t)
+    if command:
+        return shell.run(command.group("cmd").strip())
+
+    # --- offline help: answered locally so it works with no connection ------ #
+    if HELP_PHRASE.match(t) or (OFFLINE_WORD.search(t) and len(t.split()) <= 12):
+        return CAPABILITIES
+
     # Search requests belong to the agent (it can call the search tools).
     if SEARCH_VERB.search(t):
+        return None
+
+    # Terminal requests belong to the agent (fn_run_command / fn_run_in_terminal).
+    if RUN_VERB.match(t) or TERMINAL_HINT.search(t):
         return None
 
     # --- power: never run straight away, always confirm first -------------- #
@@ -211,6 +322,16 @@ def try_local(text):
             lambda k=kind: desktop.power(k),
             f"Are you sure you want to {kind}?",
         )
+
+    # --- now playing / seek ------------------------------------------------- #
+    if NOW_PLAYING.search(t):
+        return desktop.now_playing()
+    seek = SEEK.search(t)
+    if seek:
+        seconds = int(seek.group("n"))
+        if seek.group("dir").lower() in ("back", "backward", "rewind"):
+            seconds = -seconds
+        return desktop.media_seek(seconds)
 
     # --- media (playerctl) ------------------------------------------------- #
     action = _media_action(t)
@@ -257,6 +378,25 @@ def try_local(text):
     if DATE_WORD.search(t):
         return f"Today is {datetime.now().strftime('%A, %d %B %Y')}"
 
+    # --- windows ------------------------------------------------------------ #
+    # Before the open branch so "what windows are open" lists windows instead of
+    # hunting for an app called "what windows are".
+    if LIST_WINDOWS.search(t):
+        return desktop.list_windows()
+
+    # --- screen reading (vision) ------------------------------------------- #
+    # Handled before the open/close branches so "show me what's on my screen"
+    # asks the vision model instead of hunting for an app called "what's on my
+    # screen".
+    if SCREEN_READ.search(t):
+        return vision.look(t)
+
+    # --- clipboard ---------------------------------------------------------- #
+    if CLIP_READ.search(t):
+        return desktop.clipboard("read")
+    if CLIP_ACTION.match(t):
+        return desktop.clipboard(t.split()[0].lower())
+
     # --- close / quit / kill / stop <target> ------------------------------- #
     # Handled before YouTube so "close youtube" can never become a search query.
     if CLOSE_WORD.search(t):
@@ -284,9 +424,16 @@ def try_local(text):
             return desktop.open_youtube()
         return None  # bare "youtube" -> agent
 
-    # --- open an application ----------------------------------------------- #
+    # --- open an application, folder, file or path ------------------------- #
     if OPEN_VERB.search(t):
-        return desktop.open_app(_clean(t, OPEN_STRIP) or t)
+        target = _clean(t, OPEN_STRIP)
+        if target:
+            folder = desktop.resolve_folder(target)
+            if folder:                       # "open downloads", "open my home folder"
+                return desktop.open_path(folder)
+            if re.match(r"^(?:~|/|\./|\.\./)", target):   # "open ~/notes.txt"
+                return desktop.open_path(target)
+        return desktop.open_app(target or t)
     bare = re.sub(r"\s+", "", t.lower()).strip("!?.,")
     if bare in _BARE:
         return desktop.open_app(t)

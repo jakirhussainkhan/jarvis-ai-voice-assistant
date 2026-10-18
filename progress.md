@@ -14,47 +14,172 @@ GUI.
 | --- | --- |
 | CLI loop (`main.py`) | Working |
 | Voice I/O (STT + TTS) | Working, English-only (STT via `arecord` + Google) |
-| Local command router | Working |
-| Groq agent + tools | Working (needs `GROQ_API_KEY`) |
+| Local command router (offline-first) | Working (apps, folders, windows, media, volume, brightness, clipboard, screenshot, lock, status, time, dictated commands) |
+| Groq agent + 40 tools | Working (needs `GROQ_API_KEY`) |
+| Screen vision (read + operate) | Working on the real screen (`qwen/qwen3.8-27b`) |
+| Live internet (search/page/Wikipedia/weather) | Working (keyless, verified live) |
+| Guarded terminal | Working (3-layer guard; power/session commands refused in code) |
+| Offline mode (`main.py --offline`) | Working |
 | Conversation memory | Working |
-| GUI widget (`gui.py`) | Working |
+| GUI widget + system tray (`gui.py`) | Working (offscreen-tested) |
 | Microphone diagnostic | Working |
-| Desktop control (apps/YouTube/media/volume/brightness/screenshot/lock) | Working (see *Desktop control pass*) |
-| Confirmation-gated power actions | Working (ask "Are you sure?") |
-| Tests | `pytest` suite — 110 tests (1 opt-in WAV test skipped by default) |
-| Published | GitHub, tag `v1.0.0` (README + MIT LICENSE) |
+| Desktop control (apps/YouTube/media/volume/brightness/screenshot/lock) | Working |
+| Confirmation-gated actions | Working (power, risky terminal, risky screen goals) |
+| Timers / reminders | Working |
+| Tests | `pytest` suite — **244 passed, 1 skipped** |
+| Published | GitHub, tag **`v1.0.1`** (README + MIT LICENSE) |
 
 ## Repository & releases
 
 - Remote: <https://github.com/jakirhussainkhan/jarvis-voice-assistant>
 - Default branch: `main`
-- Release tag: **`v1.0.0`** — contains the full project, `README.md`, and `LICENSE`.
+- Release tags: **`v1.0.0`** (initial) and **`v1.0.1`** (screen vision, live
+  internet, guarded terminal, offline-first, terminal hardening).
 - Secrets are **not** committed (see *Security* below).
+
+## Screen vision, live internet, guarded terminal & offline-first (2026-10-18, v1.0.1)
+
+The "super intelligent" pass the user asked for: Jarvis can now *see* the screen,
+*use* the internet, *run* the terminal, and still works **perfectly with no
+internet** for everything that does not need it.
+
+### What was added
+
+- **`vision.py` — screen vision.**
+  - `look(question)` screenshots the screen, downscales it (`JARVIS_SCREEN_MAX_WIDTH`,
+    default 1280) and asks the multimodal model `qwen/qwen3.8-27b` for an answer.
+    The offline router routes pure screen-reading phrases ("what's on my screen",
+    "read this", "describe the screen") straight to it, so reading the screen is
+    fast and deterministic.
+  - `act(goal)` is a bounded **perceive → decide → act** loop for operating the
+    UI ("click the login button"): each step screenshots at full resolution, asks
+    for exactly one JSON action, executes it through whitelisted `desktop.py`
+    calls (move/click/type/key/scroll/wait only), and stops on `done`, `fail`, or
+    `JARVIS_SCREEN_STEPS` (default 6).
+  - Verified live on the real screen: `main.py --screen "what is on my screen?"`
+    correctly read the terminal contents.
+- **`net.py` — live internet, keyless.** DuckDuckGo HTML search
+  (`fn_web_lookup`), full-page reading (`fn_fetch_page`), Wikipedia summaries
+  (`fn_wikipedia`) and weather via wttr.in (`fn_weather`). All use `urllib` with
+  timeouts and never raise. Verified live: web search returned the current Python
+  release, Wikipedia returned the kernel summary, weather returned Tokyo's.
+  (`fn_web_search` still opens the results page in a browser.)
+- **`shell.py` — a guarded terminal.** `fn_run_command` (hidden, output returned)
+  and `fn_run_in_terminal` (visible) with a three-layer guard (see *Terminal
+  hardening* below). The system prompt teaches the model to use it like an expert
+  (`ls`, `grep`, `df`, `git`, `ffmpeg`, …).
+- **Offline-first.** The router now also handles, with no network: folders/paths
+  ("open downloads", "open ~/notes.txt"), window listing, clipboard
+  (copy/cut/paste/read), "what's playing" and "go back 10 seconds" (media seek),
+  and dictated commands. A spoken **capability list** ("help", "what can you do
+  offline") is answered locally, and `main.py --offline` (or `JARVIS_OFFLINE=1`)
+  disables the agent entirely. When the network is genuinely down, a failed agent
+  call degrades to the offline list instead of a raw error.
+- **`timers.py` — timers and reminders** (`fn_set_timer`, `fn_set_reminder`) on
+  daemon threads; they speak through the registered speaker.
+- **GUI as a real desktop app.** `gui.py` is now a floating reactor **plus a
+  system tray icon**: click the icon to talk, `Esc` / closing hides to the tray,
+  and only *Quit* in the menu exits. Launched with `main.py --gui`.
+- **`main.py` flags:** `--text`, `--offline`, `--screen "<question>"`, `--gui`,
+  `--check`, `--version`.
+- **`doctor.py` updates:** shows the vision model, the offline/terminal
+  guarantees, a PyQt5 + clipboard-read check, and how to try every mode. It no
+  longer suggests `sudo` anywhere (the user asked for a sudo-free assistant).
+
+### Terminal hardening (the safety-critical part)
+
+The guard lives in `shell.py` and is enforced in code, not in the prompt:
+
+1. **Refused outright.** `sudo`/`su`/`pkexec`/`doas`; every way to power off,
+   reboot, suspend, hibernate or end the session — `shutdown`/`reboot`/`poweroff`/
+   `halt`/`telinit`, `power off` in any separator spelling, `systemctl` power
+   verbs, `loginctl` session termination, the session-logout binaries
+   (`gnome-session-quit --power-off`, `xfce4-session-logout`, …), kernel
+   `sysrq`/`kexec`, writes to `/sys/power/` or `/proc/sysrq-trigger`, and
+   `kill`/`pkill` of init/systemd (pid 1); plus recursive force-deletes
+   (`rm -rf` in every spelling, via a token walk), disk formatting/partitioning,
+   `dd of=/dev/…`, fork bombs, piping *or chaining* a download into a shell, and
+   account/credential changes. Quotes and backslashes are stripped before
+   matching, so `s\hutdown` and `sh'utdown'` are still caught.
+2. **Confirmed first.** `rm`, `mv`, `chmod`, `kill`, package managers,
+   `systemctl`, `ssh`/`scp`/`rsync`, `docker`, `git push`, and writes with `>`
+   are read back and only run after a spoken "yes" (15 s expiry).
+3. **Runs.** Everything else, with `JARVIS_SHELL_TIMEOUT` and a capped output.
+
+**The terminal can never shut down, restart or power off the device.** A probe of
+39 dangerous spellings was refused with zero false denials (see Verification).
+
+### Bugs found and fixed in this pass
+
+- **`media_seek` did nothing.** `playerctl position -10` is parsed as an option
+  flag (returns rc 0), so seeking silently failed and Jarvis falsely said
+  "Seeked back 10 seconds." Fixed to the correct suffix form (`10-`/`30+`) and now
+  reports honestly when no player exists.
+- **`weather` returned raw HTML.** wttr.in serves a web page to browser-like
+  agents; the fetch now uses a curl-style `User-Agent`, falls back to
+  `format=3`, and rejects HTML. (Also defaults to Dhaka for an empty city.)
+- **Clipboard read was impossible** with no `xclip`/`xsel`. Added a lazy
+  **PyQt5** clipboard fallback (reusing the GUI's `QApplication` when present).
+- **Volume/brightness always claimed success** even when `pactl`/`brightnessctl`
+  failed; they now check the result and say so.
+- **Routing collision:** "run &lt;command&gt;" was mistaken for "launch an app called
+  &lt;command&gt;". Commands with an explicit marker ("terminal ls", "run the command
+  df -h") now run locally through the guarded terminal; a bare "run firefox" still
+  reaches the agent (which opens the app).
+
+### Verification
+
+- `pytest`: **244 passed, 1 skipped**.
+  New: `test_vision.py`, `test_screen.py`, `test_screen_routing.py`, `test_tools_extra.py`,
+  `test_net.py`, `test_timers.py`, `test_offline.py`, `test_gui.py` (offscreen), plus
+  a much larger `test_shell.py` (power/session bypasses, quoted commands,
+  `rm` spellings, download-into-shell, redirection).
+- **Live on this machine (real network, real screen):** `net.search` /
+  `net.wikipedia` / `net.weather` returned real data; the full agent answered
+  "latest python version" → *Python 3.15.0*, "weather in Tokyo" → *23 °C light
+  rain*, "about the linux kernel" → Wikipedia summary; `main.py --screen` read the
+  actual desktop; the offline battery (`--offline`) handled help / time / date /
+  status / battery / windows / now-playing / clipboard / dictated commands with
+  zero agent calls; the terminal guard refused a battery of 39 destructive forms.
+- **GUI** validated offscreen (`make_icon`, widget, state label, quit path) and by
+  import; the tray itself was not clicked in this session.
+
+**Not verified live (honest).** Screen *automation* (`vision.act`) was not run
+end-to-end against a real UI, because it would move the real mouse and click real
+things on the user's screen; the action parsing/whitelist and the risky-goal
+confirmation gate are unit-tested and the perceive step (`look`) was verified
+live. Clicking the tray icon, a real media seek with a player, and the real
+microphone capture likewise remain for the user's own run.
 
 ## How it works
 
 ```
-listen() ──► try_local() ──hit──► speak()
+listen() ─► confirm.resolve() ─► try_local() ──► speak()
    (voice.py)   (router.py)          (voice.py)
                     │
                    miss
                     ▼
-             run_agent() ──► Groq (agent.py) ──► tools.py
+             run_agent() ─► Groq (agent.py) ─► tools.py ─┬─► desktop.py (apps/windows/media/screen)
+                                                          ├─► vision.py  (see / operate the screen)
+                                                          ├─► net.py     (search / wiki / weather)
+                                                          ├─► shell.py   (guarded terminal)
+                                                          └─► timers.py  (timers / reminders)
                     │
                     ▼
              memory.add() (memory.py)
 ```
 
-`main.handle()` is the single dispatch path: it tries the router first and only
-sends a miss to the agent.
+`main.handle()` is the single dispatch path: it resolves any pending
+confirmation first, then tries the router and only sends a miss to the agent.
 
 Two front ends share the same brain:
 
 - `main.py` — terminal loop. Prints `[STAT]` lines with token counts, and tracks
-  local vs. agent vs. cache hits.
-- `gui.py` — floating Arc Reactor widget. Left-click talks, drag moves,
-  right-click/Esc quits. The listen/think/speak cycle runs on a `QThread` so the
-  UI never freezes.
+  local vs. agent vs. cache hits. Flags: `--text`, `--offline`, `--screen`,
+  `--gui`, `--check`, `--version`.
+- `gui.py` — floating Arc Reactor widget **plus a system tray icon**. Left-click
+  talks, drag moves, right-click/Esc hides to the tray, and only *Quit* exits.
+  The listen/think/speak cycle runs on a `QThread` so the UI never freezes.
 
 ## Module map
 
@@ -90,15 +215,23 @@ Two front ends share the same brain:
   brightness, screenshot, lock, and confirmed power actions. Holds the protected
   list (Jarvis + ancestors, display server, session manager, systemd, shell).
   X11/Cinnamon here; on Wayland window ops degrade to "Which window?".
+- `vision.py` — screen vision: `capture_png`, `look(question)` (ask about the
+  screen) and `act(goal)` (bounded perceive→act loop). Only whitelisted
+  move/click/type/key/scroll/wait actions; no shell.
+- `net.py` — keyless internet: DuckDuckGo search, page fetch, Wikipedia, weather.
+- `shell.py` — the guarded terminal: `run()`, `explain_refusal()`, `_is_risky()`,
+  and `_recursive_force_rm()`. Enforces the three-layer guard.
+- `timers.py` — in-process timers/reminders on daemon threads, speaking through a
+  registered speaker.
 - `confirm.py` — tiny pending-action state machine for "Are you sure?": a "yes"
   runs the action, anything else cancels, and it expires after 15 s.
 - `agent.py` — Groq chat orchestration over the OpenAI-compatible client, md5
   response cache, token accounting, tool schemas built from function signatures,
   and an English-only system instruction.
-- `tools.py` — tool functions the model can call: open app, close app, list
-  running, YouTube, media, volume, brightness, screenshot, lock, system status,
-  web search, save note, read file. Signatures + docstrings become the schema (no
-  hand-written schema).
+- `tools.py` — the **40** tool functions the model can call: apps/windows, media,
+  screen (screenshot/see/act/click/type/keys/scroll), internet, terminal, files,
+  clipboard, notifications, system info, notes and timers. Signatures +
+  docstrings become the schema (no hand-written schema).
 - `memory.py` — rolling `deque` window of recent turns, rendered as a transcript.
 - `main.py` — terminal entry point and `handle()` dispatch (confirmation first,
   then router, then agent). `--text` / `JARVIS_TEXT=1` reads typed commands and
@@ -583,7 +716,7 @@ by compiling `gui.py`; the PyQt GUI itself was not launched here.
 - The response cache is in-memory only and keyed by lowercased query, so it is
   lost on restart and ignores conversation context.
 - The agent path needs network access; the router fast-path works offline.
-- `MAX_OUTPUT_TOKENS = 400` keeps the assistant brief while leaving reasoning
+- `MAX_OUTPUT_TOKENS = 600` keeps the assistant brief while leaving reasoning
   headroom; raise it if long answers are ever cut off.
 - The arecord rewrite was verified against a *recorded* speech WAV and the local
   device's ambient noise, not the real voice: run `main.py` once on the actual
@@ -602,13 +735,16 @@ python -m venv venv
 ./venv/bin/pip install -r requirements.txt
 echo "GROQ_API_KEY=your-key" > .env   # Groq key, starts with gsk_
 
-./venv/bin/python main.py       # terminal voice loop
-./venv/bin/python main.py --text    # type commands instead of speaking
-./venv/bin/python main.py --check   # readiness report (tools, apps, config)
-./venv/bin/python doctor.py     # readiness report
-./venv/bin/python gui.py        # floating reactor widget
-./venv/bin/python test_mic.py   # mic diagnostic (add --list to only list devices)
-./venv/bin/python -m pytest     # test suite
+./venv/bin/python main.py             # terminal voice loop
+./venv/bin/python main.py --text      # type commands instead of speaking
+./venv/bin/python main.py --offline   # router only (no network, no agent)
+./venv/bin/python main.py --screen "what is on my screen?"   # one screen answer
+./venv/bin/python main.py --gui       # floating widget + system tray
+./venv/bin/python main.py --check     # readiness report (tools, apps, config)
+./venv/bin/python main.py --version   # print the version
+./venv/bin/python doctor.py           # readiness report
+./venv/bin/python test_mic.py         # mic diagnostic (add --list to only list devices)
+./venv/bin/python -m pytest           # test suite
 ```
 
 Requires a working microphone and, for the agent path, network access plus a

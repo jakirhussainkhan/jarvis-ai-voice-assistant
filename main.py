@@ -6,9 +6,10 @@ import sys
 
 import confirm
 from voice import listen, speak
-from router import try_local
+from router import try_local, CAPABILITIES, OFFLINE_REPLY
 from agent import run_agent
 from memory import Memory
+import timers
 
 EXIT_WORDS = ["exit", "quit", "bye", "stop"]
 
@@ -26,6 +27,25 @@ _EXIT_FILLER = re.compile(
 # for trying every command when the microphone is unavailable or noisy. Combine
 # with JARVIS_MUTE=1 for fast, silent testing.
 _TEXT = os.getenv("JARVIS_TEXT", "").strip().lower() not in ("", "0", "false", "no")
+
+# Offline mode (JARVIS_OFFLINE=1 or `main.py --offline`) never calls the agent:
+# every command goes through the local router, so the assistant keeps working
+# with no connection. Without it, a network failure still degrades gracefully to
+# the offline capability list instead of a raw error.
+_OFFLINE = os.getenv("JARVIS_OFFLINE", "").strip().lower() not in ("", "0", "false", "no")
+
+# Substrings that identify a network/connection failure (as opposed to a real
+# bug), so Jarvis can answer with the offline capability list.
+_OFFLINE_ERRORS = (
+    "connection", "connect", "timed out", "timeout", "network", "getaddrinfo",
+    "unreachable", "name resolution", "temporary failure", "offline", "ssl",
+)
+
+
+def _looks_offline(exc) -> bool:
+    """True if ``exc`` looks like the network being unavailable."""
+    text = f"{type(exc).__name__}: {exc}".lower()
+    return any(key in text for key in _OFFLINE_ERRORS)
 
 total_tokens = 0
 local_count = 0
@@ -73,27 +93,52 @@ def handle(text, memory):
     local = try_local(text)
     if local is not None:
         return local, "local", 0
+    if _OFFLINE:
+        return CAPABILITIES, "local", 0
     try:
         reply, tokens = run_agent(text, memory)
     except Exception as exc:                     # never let a network error kill us
+        if _looks_offline(exc):
+            return OFFLINE_REPLY, "local", 0
         return f"Sorry, I couldn't reach the assistant: {exc}", "local", 0
     return reply, ("cache" if tokens == 0 else "agent"), tokens
 
 
 def main():
-    global total_tokens, local_count, agent_count, _TEXT
+    global total_tokens, local_count, agent_count, _TEXT, _OFFLINE
 
     args = sys.argv[1:]
     if "--check" in args:
         from doctor import report
         print(report())
         return
+    if "--version" in args or "-v" in args:
+        from config import __version__
+        print(f"Jarvis {__version__}")
+        return
+    if "--gui" in args:
+        from gui import main as gui_main
+        gui_main()
+        return
+    for flag in ("--screen", "--see", "--look"):
+        if flag in args:
+            index = args.index(flag)
+            words = [a for a in args[index + 1:] if not a.startswith("-")]
+            from vision import look
+            print(look(" ".join(words) or None))
+            return
     if "--text" in args or "-t" in args:
         _TEXT = True
+    if "--offline" in args:
+        _OFFLINE = True
 
+    timers.set_speaker(speak)
     mem = Memory()
     if _TEXT:
         print("Text mode: type a command and press Enter ('exit' to quit).",
+              flush=True)
+    if _OFFLINE:
+        print("Offline mode: the agent is disabled; only local commands run.",
               flush=True)
     speak("Jarvis online.")
 
