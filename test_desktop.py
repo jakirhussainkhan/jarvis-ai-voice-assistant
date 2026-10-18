@@ -429,7 +429,7 @@ def test_play_youtube_nudges_playback_in_the_background(monkeypatch):
     """Autoplay is usually blocked, so start the video ourselves -- off-thread,
     so the spoken reply is never delayed."""
     monkeypatch.setattr(desktop, "has",
-                        lambda tool: tool in ("yt-dlp", "xdotool", "playerctl"))
+                        lambda tool: tool in ("yt-dlp", "playerctl"))
     monkeypatch.setattr(desktop, "_run", lambda args, timeout=25: (0, "dQw4w9WgXcQ"))
     monkeypatch.setattr(desktop, "_open_url", lambda url: True)
     started = threading.Event()
@@ -438,6 +438,53 @@ def test_play_youtube_nudges_playback_in_the_background(monkeypatch):
 
     assert desktop.play_youtube("despacito") == "Playing despacito on YouTube."
     assert started.wait(3.0), "the playback nudge should run in the background"
+
+
+def test_play_youtube_reuses_the_open_youtube_tab(monkeypatch):
+    """A YouTube tab that is already open must be used, never a second one."""
+    monkeypatch.setattr(desktop, "has", lambda tool: tool in ("yt-dlp", "xdotool"))
+    monkeypatch.setattr(desktop, "_youtube_window", lambda: "555")
+    calls = []
+
+    def fake_run(args, timeout=25):
+        calls.append(tuple(args))
+        args = tuple(args)
+        if args[0] == "yt-dlp":
+            return 0, "dQw4w9WgXcQ"
+        if args[:2] == ("xdotool", "getwindowfocus"):
+            return 0, "555"
+        if args[:2] == ("xdotool", "getwindowname"):
+            # the first call is "before", the second "after" the navigation
+            fake_run.names.append(args[-1])
+            name = "YouTube - Brave" if len(fake_run.names) == 1 \
+                else "Despacito - YouTube"
+            return 0, name
+        return 0, ""
+
+    fake_run.names = []
+
+    monkeypatch.setattr(desktop, "_run", fake_run)
+    monkeypatch.setattr(desktop.time, "sleep", lambda _s: None)
+    opened = []
+    monkeypatch.setattr(desktop, "_open_url", lambda url: opened.append(url) or True)
+    nudged = []
+    monkeypatch.setattr(desktop, "ensure_browser_playing",
+                        lambda timeout=9.0: nudged.append(1) or True)
+
+    reply = desktop.play_youtube("despacito")
+    assert reply == "Playing despacito in your open YouTube tab."
+    assert opened == [], "no second tab may open"
+
+    address_bar = [c for c in calls if c[:2] == ("xdotool", "key")
+                   and "ctrl+l" in c]
+    typed = [c for c in calls if c[:2] == ("xdotool", "type")]
+    enter = [c for c in calls if c[:2] == ("xdotool", "key") and "Return" in c]
+    activated = [c for c in calls if c[:2] == ("xdotool", "windowactivate")]
+    assert len(address_bar) == 1
+    assert len(enter) == 1
+    assert any("watch?v=dQw4w9WgXcQ" in c[-1] for c in typed), typed
+    assert any("555" in c for c in activated), calls
+    assert nudged, "the playback nudge must still run for the reused tab"
 
 
 def test_play_youtube_without_ytdlp_opens_search(monkeypatch):
@@ -451,6 +498,7 @@ def test_play_youtube_without_ytdlp_opens_search(monkeypatch):
 
 
 def test_search_and_open_youtube(monkeypatch):
+    monkeypatch.setattr(desktop, "_youtube_window", lambda: None)
     opened = []
     monkeypatch.setattr(desktop, "_open_url", lambda url: opened.append(url) or True)
     assert desktop.open_youtube() == "Opening YouTube."
@@ -459,10 +507,106 @@ def test_search_and_open_youtube(monkeypatch):
     assert "results?search_query=cats" in opened[1]
 
 
-def test_close_youtube_asks_when_it_cannot_target(monkeypatch):
+def test_open_youtube_brings_the_existing_tab_to_the_front(monkeypatch):
+    """"Open YouTube" while YouTube is open must not spawn a second tab."""
+    monkeypatch.setattr(desktop, "_youtube_window", lambda: "555")
+    opened = []
+    monkeypatch.setattr(desktop, "_open_url", lambda url: opened.append(url) or True)
+    called = []
+
+    def fake_run(args, timeout=6):
+        called.append(tuple(args))
+        args = tuple(args)
+        if args[:2] == ("xdotool", "getwindowfocus"):
+            return 0, "555"          # the focus really moved
+        return 0, ""
+
+    monkeypatch.setattr(desktop, "_run", fake_run)
+
+    assert desktop.open_youtube() == "YouTube is already open -- I brought it up."
+    assert opened == []
+    assert any("555" in c for c in called), called
+
+
+def test_open_youtube_falls_back_when_activation_is_refused(monkeypatch):
+    """Cinnamon may refuse to raise the window: then open a new tab instead."""
+    monkeypatch.setattr(desktop, "_youtube_window", lambda: "555")
+    opened = []
+    monkeypatch.setattr(desktop, "_open_url", lambda url: opened.append(url) or True)
+    monkeypatch.setattr(
+        desktop, "_run",
+        lambda args, timeout=6: (0, {("xdotool", "getwindowfocus"): "999"}
+                                 .get(tuple(args[:2]), "")))
+
+    assert desktop.open_youtube() == "Opening YouTube."
+    assert opened == ["https://www.youtube.com"]
+
+
+def test_search_youtube_reuses_the_open_youtube_tab(monkeypatch):
+    monkeypatch.setattr(desktop, "has", lambda tool: tool == "xdotool")
+    monkeypatch.setattr(desktop, "_youtube_window", lambda: "555")
+    calls = []
+
+    def fake_run(args, timeout=6):
+        calls.append(tuple(args))
+        args = tuple(args)
+        if args[:2] == ("xdotool", "getwindowfocus"):
+            return 0, "555"
+        if args[:2] == ("xdotool", "getwindowname"):
+            fake_run.names.append(args[-1])
+            return 0, ("YouTube - Brave" if len(fake_run.names) == 1
+                       else "cats - YouTube")
+        return 0, ""
+
+    fake_run.names = []
+    monkeypatch.setattr(desktop, "_run", fake_run)
+    monkeypatch.setattr(desktop.time, "sleep", lambda _s: None)
+    opened = []
+    monkeypatch.setattr(desktop, "_open_url", lambda url: opened.append(url) or True)
+
+    assert desktop.search_youtube("cats") == "Searching YouTube for cats."
+    assert opened == []
+    typed = [c for c in calls if c[:2] == ("xdotool", "type")]
+    assert any("results?search_query=cats" in c[-1] for c in typed), typed
+
+
+def test_close_youtube_closes_the_open_youtube_tab_anywhere(monkeypatch):
+    """The YouTube tab is closed from any window -- no "which window" nag."""
     monkeypatch.setattr(desktop, "is_wayland", lambda: False)
-    monkeypatch.setattr(desktop, "has", lambda tool: False)  # no xdotool
-    assert desktop.close_youtube() == "Which window?"
+    monkeypatch.setattr(desktop, "has", lambda tool: tool == "xdotool")
+    monkeypatch.setattr(desktop, "_youtube_window", lambda: "555")
+    pressed = []
+    monkeypatch.setattr(desktop, "_press_in_window",
+                        lambda wid, key, **kw: pressed.append((wid, key)) or True)
+
+    assert desktop.close_youtube() == "Closing the YouTube tab."
+    assert pressed == [("555", "ctrl+w")]
+
+
+def test_close_youtube_never_closes_a_random_focused_tab(monkeypatch):
+    """A browser focused on something else must be left alone, not ctrl+w'd."""
+    monkeypatch.setattr(desktop, "is_wayland", lambda: False)
+    monkeypatch.setattr(desktop, "has", lambda tool: tool == "xdotool")
+    monkeypatch.setattr(desktop, "_youtube_window", lambda: None)
+    monkeypatch.setattr(desktop, "_browser_media_player", lambda: False)
+    monkeypatch.setattr(
+        desktop, "_run",
+        lambda args, timeout=6: (0, "My important essay - Brave"))
+
+    assert desktop.close_youtube() == "There is no YouTube tab open."
+
+
+def test_close_youtube_closes_a_focused_playing_tab(monkeypatch):
+    """No "- YouTube" suffix in the title, but the browser is playing: close it."""
+    monkeypatch.setattr(desktop, "is_wayland", lambda: False)
+    monkeypatch.setattr(desktop, "has", lambda tool: tool == "xdotool")
+    monkeypatch.setattr(desktop, "_youtube_window", lambda: None)
+    monkeypatch.setattr(desktop, "_browser_media_player", lambda: True)
+    monkeypatch.setattr(
+        desktop, "_run",
+        lambda args, timeout=6: (0, "Never Gonna Give You Up - Brave"))
+
+    assert desktop.close_youtube() == "Closing the YouTube tab."
 
 
 # --------------------------------------------------------------------------- #

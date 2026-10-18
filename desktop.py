@@ -579,7 +579,63 @@ def _yt_url_search(query):
     return f"https://www.youtube.com/results?search_query={query.replace(' ', '+')}"
 
 
+def _window_has_input_focus(wid):
+    """True when ``wid`` really owns the X input focus (X11)."""
+    if not wid:
+        return False
+    rc, current = _run(["xdotool", "getwindowfocus"])
+    return rc == 0 and current.strip() == str(wid)
+
+
+def _reuse_youtube_tab(url):
+    """Type ``url`` into the address bar of the already-open YouTube tab (X11).
+
+    A browser opens a *new* tab for every ``open_url``, which is exactly what
+    the user dislikes: "I already have YouTube open -- use that window". So
+    when a visible YouTube window exists we focus it, press ctrl+l (address
+    bar), type the url and hit Return, replacing that tab in place.
+
+    This is only ever done with VERIFIED input focus: Cinnamon's focus-stealing
+    prevention can silently refuse activation, and typing into whatever
+    *actually* has focus is unacceptable (it could be any application). The
+    window is activated, ``windowfocus`` is our fallback, and if the focus
+    probe still does not confirm the window we refuse to type and the caller
+    falls back to opening a normal tab. Returns False for anything except a
+    confirmed navigation.
+    """
+    if is_wayland() or not has("xdotool") or not url:
+        return False
+    wid = _youtube_window()
+    if not wid or _run(["xdotool", "windowactivate", "--sync", str(wid)])[0] != 0:
+        return False
+    time.sleep(0.3)
+    if not _window_has_input_focus(wid):
+        _run(["xdotool", "windowfocus", str(wid)])
+        time.sleep(0.3)
+        if not _window_has_input_focus(wid):
+            _dbg(f"window {wid} does not have input focus; refusing to type")
+            return False
+    before = _run(["xdotool", "getwindowname", str(wid)])[1].strip()
+    _run(["xdotool", "key", "--clearmodifiers", "ctrl+l"])
+    time.sleep(0.2)
+    _run(["xdotool", "type", "--", url])
+    time.sleep(0.15)
+    rc, _ = _run(["xdotool", "key", "--clearmodifiers", "Return"])
+    time.sleep(2.5)
+    after = _run(["xdotool", "getwindowname", str(wid)])[1].strip()
+    # The page title must change: anything else means the keys never landed.
+    if rc != 0 or after == before:
+        _dbg("navigation did not reach the browser; falling back")
+        return False
+    return True
+
+
 def open_youtube():
+    """Open YouTube -- or bring the existing YouTube tab to the front."""
+    wid = _youtube_window()
+    if wid and _run(["xdotool", "windowactivate", "--sync", str(wid)])[0] == 0 \
+            and _window_has_input_focus(wid):
+        return "YouTube is already open -- I brought it up."
     if _open_url("https://www.youtube.com"):
         return "Opening YouTube."
     return "I couldn't open the browser."
@@ -588,6 +644,8 @@ def open_youtube():
 def search_youtube(query):
     if not query:
         return open_youtube()
+    if _reuse_youtube_tab(_yt_url_search(query)):
+        return f"Searching YouTube for {query}."
     if _open_url(_yt_url_search(query)):
         return f"Here are the YouTube results for {query}."
     return "I couldn't open the browser."
@@ -621,7 +679,16 @@ def play_youtube(query):
                 vid = line
                 break
         if rc == 0 and vid:
-            if _open_url(f"https://www.youtube.com/watch?v={vid}"):
+            watch_url = f"https://www.youtube.com/watch?v={vid}"
+            if _reuse_youtube_tab(watch_url):
+                # Playing in the tab the user already had open. Autoplay is
+                # normally blocked without a user gesture, but our typed
+                # address bar keypresses *are* gestures -- nudge anyway, in the
+                # background, so the spoken reply is never delayed.
+                threading.Thread(target=ensure_browser_playing,
+                                 daemon=True).start()
+                return f"Playing {query} in your open YouTube tab."
+            if _open_url(watch_url):
                 # Autoplay is normally blocked for a freshly opened tab, which
                 # would leave the video paused with no MPRIS session; nudge it in
                 # the background so the spoken reply is never delayed.
@@ -638,21 +705,30 @@ def play_youtube(query):
 
 
 def close_youtube():
-    """Close the current browser tab (ctrl+w) only when it is focused.
+    """Close the YouTube tab, wherever the browser currently is (X11).
 
-    Needs ``xdotool`` and X11. Otherwise we cannot safely target the tab, so we
-    ask which window instead of closing the whole browser.
+    The visible YouTube window is targeted directly: it is activated and
+    ctrl+w closes that tab, with focus restored to whatever was there before
+    (``_press_in_window``). Only when no YouTube tab is visible do we fall
+    back to the focused window -- never guessing outside a browser.
     """
     if is_wayland() or not has("xdotool"):
         return "Which window?"
-    rc, active = _run(["xdotool", "getactivewindow", "getwindowname"])
-    if rc != 0 or not active:
-        return "Which window?"
-    if re.search(r"(youtube|chrome|chromium|firefox|brave|edge)", active, re.I):
-        rc, _ = _run(["xdotool", "key", "--clearmodifiers", "ctrl+w"])
-        if rc == 0:
-            return "Closing the YouTube tab."
-    return "Which window?"
+    wid = _youtube_window()
+    if wid and _press_in_window(wid, "ctrl+w"):
+        return "Closing the YouTube tab."
+    # Fallback for titles without the " - YouTube" suffix: only close the
+    # focused browser tab when a browser media session is live -- Chromium only
+    # publishes MPRIS for the tab that is playing, so then that tab *is* the
+    # one to close. A stopped browser is never touched.
+    if _browser_media_player():
+        rc, active = _run(["xdotool", "getactivewindow", "getwindowname"])
+        if rc == 0 and active and \
+                re.search(r"(youtube|chrome|chromium|firefox|brave|edge)", active, re.I):
+            rc, _ = _run(["xdotool", "key", "--clearmodifiers", "ctrl+w"])
+            if rc == 0:
+                return "Closing the YouTube tab."
+    return "There is no YouTube tab open."
 
 
 # --------------------------------------------------------------------------- #
@@ -692,7 +768,11 @@ def _press_in_window(wid, key, restore=True):
     """Focus ``wid``, send ``key``, then restore the previous focus (X11).
 
     Chromium ignores synthetic key events sent to an unfocused window, so the
-    window genuinely has to be activated for the key to reach the page.
+    window genuinely has to own input focus. ``windowactivate`` is asked first,
+    ``windowfocus`` (a direct input-focus set that bypasses Cinnamon's
+    focus-stealing prevention) is the fallback, and the focus is *verified*
+    before any key is sent -- keys are never sprayed blind into whatever else
+    may be focused. Returns False whenever the key could not be delivered.
     """
     if not wid or is_wayland() or not has("xdotool"):
         return False
@@ -701,6 +781,12 @@ def _press_in_window(wid, key, restore=True):
     if _run(["xdotool", "windowactivate", "--sync", str(wid)])[0] != 0:
         return False
     time.sleep(0.3)
+    if not _window_has_input_focus(wid):
+        _run(["xdotool", "windowfocus", str(wid)])
+        time.sleep(0.3)
+        if not _window_has_input_focus(wid):
+            _dbg(f"window {wid} never took input focus; key not sent")
+            return False
     rc, _ = _run(["xdotool", "key", "--clearmodifiers", key])
     time.sleep(0.2)
     if restore and previous and previous != str(wid):

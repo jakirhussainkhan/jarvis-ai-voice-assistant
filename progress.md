@@ -29,7 +29,7 @@ is installed.
 | Timers / reminders | Working |
 | Offline wake word ("Hey Jarvis") | **Built + unit-tested; NOT yet verified live** (needs `pip install openwakeword onnxruntime`) |
 | Desktop launcher (`run.sh` + app-menu entry) | Working (verified: `desktop-file-validate` clean, GUI starts) |
-| Tests | `pytest` suite — **355 passed, 1 skipped** |
+| Tests | `pytest` suite — **361 passed, 1 skipped** |
 | Spoken voice | `en-GB-RyanNeural` (British male); override with `JARVIS_TTS_VOICE` |
 | Published | GitHub, tags **`v1.0.1`**…**`v1.0.7`** (README + MIT LICENSE) |
 
@@ -49,8 +49,38 @@ is installed.
   **`v1.0.8`** (continuous conversation: Jarvis keeps the mic open after every
   reply until you go quiet, say "bye", press Stop or mute) and **`v1.0.9`**
   (an Iron Man arc-reactor icon: gunmetal housing, ten glowing coil slots and
-  a white-hot core, regenerated into all `assets/*.png`).
+  a white-hot core, regenerated into all `assets/*.png`) and
+  **`v1.0.10`** (YouTube tab intelligence: reuse the open tab in place,
+  close it from anywhere, and verified-focus keyboard delivery).
 - Secrets are **not** committed (see *Security* below).
+
+## YouTube tab intelligence (2026-10-19, v1.0.10)
+
+The user's media complaints were about *tab hygiene*: with YouTube already
+open, "play X" opened yet another tab, and "close YouTube" answered "Which
+window?" instead of just closing the tab.
+
+- **Reuse in place.** `_reuse_youtube_tab(url)` focuses the visible YouTube
+  window, presses ctrl+l, types the url and hits Return -- so "play despacito"
+  replaces the tab the user was browsing (play and search reuse it; "open
+  youtube" brings the tab up). Fallbacks keep the old `open_url` behaviour
+  whenever this is not possible, so nothing ever regresses to silence.
+- **Found on the live machine:** Cinnamon's focus-stealing prevention silently
+  swallowed `xdotool windowactivate` -- the activation rc was 0 but input focus
+  stayed on the terminal, and the typed URL landed nowhere. Typing *without*
+  verified focus is unacceptable, so every keyboard action now verifies
+  `xdotool getwindowfocus` (with `windowfocus` as the direct-X fallback probe)
+  and refuses honestly when the window never took focus.
+- **Close from anywhere.** `close_youtube()` targets the visible YouTube window
+  directly; without a visible YouTube tab it closes the focused browser tab
+  only when a browser media session is live there (MPRIS is published by the
+  playing tab alone), and answers "There is no YouTube tab open." otherwise.
+  A regression test pins that a browser focused on an essay is never ctrl+w'd.
+- Live-verified on the machine: the YouTube window is found and the test tab
+  was opened and closed through the new code paths; the typed navigation is
+  stub-tested (7 unit tests) because focusing another window from a test run
+  is inherently machine-valid only.
+- `pytest`: **361 passed, 1 skipped** (was 355).
 
 ## An Iron Man arc-reactor icon (2026-10-19, v1.0.9)
 

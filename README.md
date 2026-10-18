@@ -1,6 +1,6 @@
 # Jarvis — Voice Assistant for Linux
 
-**Version 1.0.9**
+**Version 1.0.10**
 
 A voice-controlled desktop assistant for Linux that can *see* your screen, use the
 internet, and operate the terminal. You speak a command; Jarvis either handles it
@@ -17,6 +17,22 @@ confirmation-gated everywhere. When a tool is missing it will *print* a
 copy-paste install command for you to run yourself, but it never executes one.
 
 ---
+
+## What's new in 1.0.10
+
+- **Jarvis uses the YouTube tab you already had open.** "Play X" (or a search)
+  with YouTube on screen now navigates *that tab* in place — no pile of extra
+  tabs — and falls back to a normal tab when it can't take input safely.
+  "Open YouTube" brings the existing tab up instead of opening another.
+- **"Close YouTube" closes the YouTube tab from anywhere.** The visible
+  YouTube window is closed directly; when the title has no "YouTube" suffix it
+  only closes the focused tab if a browser media session is actually playing
+  there, and it never presses ctrl+w blind: without verified input focus it
+  says "There is no YouTube tab open." A browser focused on other work is
+  always left alone.
+- Keyboard/window actions (play nudge, next/previous, close tab) now verify
+  real X input focus before sending keys, so nothing is ever typed into the
+  wrong application under Cinnamon's focus-stealing prevention.
 
 ## What's new in 1.0.9
 
