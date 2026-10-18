@@ -30,7 +30,8 @@ is installed.
 | Offline wake word ("Hey Jarvis") | **Built + unit-tested; NOT yet verified live** (needs `pip install openwakeword onnxruntime`) |
 | Desktop launcher (`run.sh` + app-menu entry) | Working (verified: `desktop-file-validate` clean, GUI starts) |
 | Tests | `pytest` suite — **350 passed, 1 skipped** |
-| Published | GitHub, tags **`v1.0.1`**…**`v1.0.6`** (README + MIT LICENSE) |
+| Spoken voice | `en-GB-RyanNeural` (British male); override with `JARVIS_TTS_VOICE` |
+| Published | GitHub, tags **`v1.0.1`**…**`v1.0.7`** (README + MIT LICENSE) |
 
 ## Repository & releases
 
@@ -42,9 +43,31 @@ is installed.
   **`v1.0.3`** (play a song by name / pick one off the screen; 30 s listen window;
   Stop cancels a wait; copy-paste install hints), **`v1.0.4`** (no more
   mid-sentence cut-offs; silent screen reading, no flash), **`v1.0.5`**
-  (optional offline "Hey Jarvis" wake word) and **`v1.0.6`** (desktop launcher:
-  `run.sh`, an application-menu entry and autostart).
+  (optional offline "Hey Jarvis" wake word), **`v1.0.6`** (desktop launcher:
+  `run.sh`, an application-menu entry and autostart) and **`v1.0.7`** (a stronger,
+  Iron-Man voice: the British male `en-GB-RyanNeural`, env-switchable).
 - Secrets are **not** committed (see *Security* below).
+
+## A stronger, Iron-Man voice (2026-10-19, v1.0.7)
+
+The spoken voice is the assistant's personality, and it was a woman. The user
+asked for a "strong man voice like Iron Man's Jarvis", so it is now **British
+male Ryan (`en-GB-RyanNeural`)** — the closest neural match to Iron Man's Jarvis
+(a British English accent, as in the films).
+
+- **An audition, not a guess.** Four male candidates (Ryan, Thomas, Guy, Davis)
+  were rendered with the same line both natural and pitch-shifted (−25/−30 Hz)
+  and **played through the speakers**; Davis turned out to be unavailable
+  (`NoAudioReceived`). The user picked **Ryan, natural** — deepened clips read as
+  slightly artificial, so the chosen voice ships with no pitch shift.
+- **It is now configurable.** `TTS_VOICE` was hardcoded to `en-US-AriaNeural`;
+  it reads `JARVIS_TTS_VOICE` (default `en-GB-RyanNeural`), consistent with
+  `MODEL_NAME`/`VISION_MODEL`, so any other edge-tts voice is a one-line `.env`
+  change, e.g. `JARVIS_TTS_VOICE=en-US-AriaNeural` to go back.
+- **Verified live through the real path:** `voice.speak(...)` ran end to end with
+  the new voice (synthesis, envelope, pygame playback) with no error.
+- Tests unchanged (350 passed, 1 skipped): speech helpers test the envelope and
+  interruption, not the voice name.
 
 ## Desktop launcher: `run.sh` + an app-menu entry (2026-10-18, v1.0.6)
 

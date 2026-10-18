@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-__version__ = "1.0.6"
+__version__ = "1.0.7"
 
 # Groq (https://console.groq.com) exposes an OpenAI-compatible Chat Completions
 # API. The key is read from GROQ_API_KEY in .env; Groq keys start with "gsk_".
@@ -20,7 +20,9 @@ MODEL_NAME = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
 VISION_MODEL = os.getenv("GROQ_VISION_MODEL", "qwen/qwen3.8-27b")
 
 STT_LANG = "en-US"  # English-only by design.
-TTS_VOICE = "en-US-AriaNeural"
+# The Iron-Man Jarvis voice: a British male neural voice ("Ryan"). Override it
+# (or go back to a female voice) from .env, e.g. JARVIS_TTS_VOICE=en-US-AriaNeural.
+TTS_VOICE = os.getenv("JARVIS_TTS_VOICE", "en-GB-RyanNeural")
 MAX_HISTORY_MSGS = 8
 # Headroom so a reasoning model's thinking tokens never crowd out the answer
 # (too low a cap makes it return empty and Jarvis says "I couldn't finish that").

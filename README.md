@@ -1,6 +1,6 @@
 # Jarvis — Voice Assistant for Linux
 
-**Version 1.0.6**
+**Version 1.0.7**
 
 A voice-controlled desktop assistant for Linux that can *see* your screen, use the
 internet, and operate the terminal. You speak a command; Jarvis either handles it
@@ -17,6 +17,13 @@ confirmation-gated everywhere. When a tool is missing it will *print* a
 copy-paste install command for you to run yourself, but it never executes one.
 
 ---
+
+## What's new in 1.0.7
+
+- **A stronger, Iron-Man voice.** Jarvis now speaks with **`en-GB-RyanNeural`** —
+  a British male neural voice, the closest match to Iron Man's Jarvis — instead of
+  the female `en-US-AriaNeural`. Change it without touching code:
+  `JARVIS_TTS_VOICE=…` in `.env` (any edge-tts voice name).
 
 ## What's new in 1.0.6
 
@@ -118,7 +125,8 @@ copy-paste install command for you to run yourself, but it never executes one.
 ## Features
 
 - **Voice I/O** — speech-to-text via SpeechRecognition (Google STT, `en-US`) and
-  text-to-speech via `edge-tts` (`en-US-AriaNeural`) played through `pygame`.
+  text-to-speech via `edge-tts` (`en-GB-RyanNeural` — a British male voice) played
+  through `pygame`.
 - **Local fast-path router** — offline handling for power, media (incl. seeking by
   seconds and "what's playing"), volume, brightness, screenshot, lock, battery,
   system status, time, date, windows, clipboard, folders, YouTube (including
@@ -275,6 +283,7 @@ All configuration lives in `config.py` and can be overridden from `.env`:
 | `JARVIS_PTT` | *(unset)* | `1` for push-to-talk (Enter to start/stop) |
 | `JARVIS_TEXT` | *(unset)* | `1` to type commands instead of speaking |
 | `JARVIS_MUTE` | *(unset)* | `1` to skip text-to-speech (replies still print) |
+| `JARVIS_TTS_VOICE` | `en-GB-RyanNeural` | Spoken voice (any edge-tts name; restart Jarvis to apply) |
 | `JARVIS_WAKE` | *(on if installed)* | `0` disables the "Hey Jarvis" wake word |
 | `JARVIS_WAKE_MODEL` | `hey jarvis` | Wake phrase/model name (`alexa`, `hey_mycroft`, … or `off`) |
 | `JARVIS_WAKE_THRESHOLD` | `0.5` | Score (0-1) a frame needs to count — raise if it triggers too easily |
@@ -282,7 +291,7 @@ All configuration lives in `config.py` and can be overridden from `.env`:
 | `JARVIS_WAKE_VAD` | *(off)* | Voice-activity threshold to ignore non-speech noise |
 | `JARVIS_WAKE_SPEEX` | *(off)* | `1` enables Speex noise suppression (needs the extra speexdsp wheel) |
 
-STT language (`en-US`), TTS voice (`en-US-AriaNeural`), history window, output
+STT language (`en-US`), TTS voice (`en-GB-RyanNeural`), history window, output
 token cap and tool-round limit are constants in `config.py`.
 
 ---
