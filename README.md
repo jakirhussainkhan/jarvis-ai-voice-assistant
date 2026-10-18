@@ -1,6 +1,6 @@
 # Jarvis — Voice Assistant for Linux
 
-**Version 1.0.10**
+**Version 1.0.11**
 
 A voice-controlled desktop assistant for Linux that can *see* your screen, use the
 internet, and operate the terminal. You speak a command; Jarvis either handles it
@@ -17,6 +17,17 @@ confirmation-gated everywhere. When a tool is missing it will *print* a
 copy-paste install command for you to run yourself, but it never executes one.
 
 ---
+
+## What's new in 1.0.11
+
+- **The clickable orb is an Iron Man arc reactor too.** The Reactor widget now
+  paints the *same* artwork as the launcher icon — dark gunmetal housing, ten
+  glowing coil slots and a white-hot core — through one shared painter
+  (`gui._draw_reactor_face`), so the icon and the orb can never drift apart.
+  All behaviour survives: the "breathing" shimmer, the live mic/TTS energy
+  pulse, and the per-state colour (the light tints green while listening,
+  amber while thinking, purple while speaking, grey when muted, red slash
+  badge included).
 
 ## What's new in 1.0.10
 
@@ -498,7 +509,7 @@ confirmation first, then tries the router, and only sends a miss to the agent.
 | `tools.py` | The tool functions (see the list below). |
 | `memory.py` | Rolling `deque` window of recent turns. |
 | `main.py` | Entry point and `handle()` dispatch (`--text`, `--offline`, `--screen`, `--gui`, `--check`, `--version`). |
-| `gui.py` | PyQt5 Arc Reactor widget + system tray; the listen/think/speak cycle runs on a `QThread` — and with continuous chat on, that thread loops turn after turn until you go quiet, say an exit word, press Stop or mute. The orb is fed live mic levels (listening) and the TTS loudness envelope (speaking); the widget adds a mic mute/unmute button and a Stop button. Owns the wake listener's lifecycle (start/pause/resume/stop). |
+| `gui.py` | PyQt5 Arc Reactor widget + system tray; the listen/think/speak cycle runs on a `QThread` — and with continuous chat on, that thread loops turn after turn until you go quiet, say an exit word, press Stop or mute. The orb and the launcher icon share one reactor painter (`_draw_reactor_face`), tinted by state and driven by live mic levels / the TTS loudness envelope; the widget adds a mic mute/unmute button and a Stop button. Owns the wake listener's lifecycle (start/pause/resume/stop). |
 | `wake.py` | Optional offline **"Hey Jarvis"** wake word (openWakeWord ONNX). `Detector` re-frames audio into 80 ms frames and applies the threshold; `Listener` streams the mic on a daemon thread, hands the device over before any listen cycle, and stays silent while the mic is muted. Importable without openWakeWord. |
 | `doctor.py` | Readiness self-check. Prints a copy-paste install line for missing tools (never runs it), and the wake-word status. |
 | `install_desktop.py` | Adds/removes the application-menu entry (and optionally autostart), pointing at this checkout. Writes only inside your own home directory; `--uninstall` is exact. |

@@ -468,6 +468,37 @@ def test_icon_has_a_margin_so_it_is_never_clipped(app):
     assert center.alpha() > 0, "the core must be painted"
 
 
+def test_reactor_face_shares_the_iron_man_look(app):
+    """The live orb must be the same artwork as the icons, tinted by state."""
+    orb = gui.Reactor(150)
+    orb.set_state(gui.LISTENING)
+    orb.set_energy(0.6)
+    orb._phase = 0.9                       # freeze the breathe at an open pose
+    image = orb.grab().toImage()
+
+    # The top coil slot reads green: listening state, not the icon's cyan.
+    slot = image.pixelColor(75, 18)
+    assert slot.green() > slot.blue() + 20 and slot.green() > slot.red(), \
+        f"the listening orb must glow green, got {slot.name()}"
+
+    # The core is still white-hot.
+    center = image.pixelColor(75, 75)
+    assert min(center.red(), center.green(), center.blue()) > 200, \
+        f"the core must stay white-hot, got {center.name()}"
+
+
+def test_reactor_muted_greys_out(app):
+    """Muted must stop reading as any active colour."""
+    orb = gui.Reactor(150)
+    orb.set_state(gui.MUTED)
+    image = orb.grab().toImage()
+
+    slot = image.pixelColor(75, 18)
+    saturation = (max(slot.red(), slot.green(), slot.blue())
+                  - min(slot.red(), slot.green(), slot.blue()))
+    assert saturation < 60, f"muted orb must be desaturated, got {slot.name()}"
+
+
 def test_icon_looks_like_a_lit_reactor(app):
     """The Iron Man look: glowing coil slots around a white-hot core."""
     image = gui.make_icon(256).pixmap(256, 256).toImage()

@@ -69,24 +69,23 @@ QPushButton:checked {
 """
 
 
-def make_icon(size=64):
-    """Paint the Iron Man arc-reactor as a QIcon (window, tray and menu PNGs).
+def _draw_reactor_face(painter, center, radius, glow, core_light,
+                       energy=1.0, breathe=1.0):
+    """Paint the arc-reactor face: the one source of the Iron Man look.
 
-    Built the way Tony Stark's reactor reads on screen: a machined titanium
-    housing with ten glowing coil segments around a white-hot core, all over a
-    dark recessed backplate with a soft bloom. Everything is drawn inside the
-    proportional ``radius`` margin so the housing is never clipped, and the
-    corners stay transparent so it sits cleanly on any panel.
+    Shared by the static launcher icon (:func:`make_icon`) and the live Orb
+    (``Reactor.paintEvent``), so they can never drift apart.
+
+    ``glow`` tints the halo of light around the core; ``core_light`` is the
+    colour the coil light cools towards (both are the widget's per-state
+    colours, so the face still signals Listening/Thinking/Speaking/Muted).
+    ``energy`` (0..1) brightens the light and breath, ``breathe`` scales the
+    glow and core radius for the resting shimmer. Everything is drawn inside
+    ``radius`` and is transparent outside, so corners stay clean at any size.
     """
     import math
+    from PyQt5.QtGui import QPainterPath
 
-    pixmap = QPixmap(size, size)
-    pixmap.fill(Qt.transparent)
-    painter = QPainter(pixmap)
-    painter.setRenderHint(QPainter.Antialiasing)
-    center = QPointF(size / 2.0, size / 2.0)
-    # Keep a proportional margin so the housing is not clipped at large sizes.
-    radius = size / 2.0 - max(1.5, size * 0.04)
     painter.setPen(Qt.NoPen)
 
     # --- backplate: the recessed carbon disc the whole reactor sits on ------
@@ -99,8 +98,8 @@ def make_icon(size=64):
 
     # a whisper of bloom just inside the rim so the metal reads as "powered"
     bloom = QRadialGradient(center, radius * 0.85)
-    bloom.setColorAt(0.0, QColor(96, 180, 255, 28))
-    bloom.setColorAt(1.0, QColor(96, 180, 255, 0))
+    bloom.setColorAt(0.0, QColor(glow.red(), glow.green(), glow.blue(), 28))
+    bloom.setColorAt(1.0, QColor(glow.red(), glow.green(), glow.blue(), 0))
     painter.setBrush(QBrush(bloom))
     painter.drawEllipse(center, radius * 0.85, radius * 0.85)
 
@@ -119,15 +118,13 @@ def make_icon(size=64):
     ):
         housing.setColorAt(stop, color)
 
-    from PyQt5.QtGui import QPainterPath
-
-    path = QPainterPath()
-    path.addEllipse(center, radius * 0.98, radius * 0.98)
-    path.addEllipse(center, radius * 0.60, radius * 0.60)
+    housing_path = QPainterPath()
+    housing_path.addEllipse(center, radius * 0.98, radius * 0.98)
+    housing_path.addEllipse(center, radius * 0.60, radius * 0.60)
     painter.setBrush(QBrush(housing))
-    painter.drawPath(path)
+    painter.drawPath(housing_path)
 
-    # --- ten coil slots cut into the housing, glowing white-hot to cyan ------
+    # --- ten coil slots cut into the housing, glowing white-hot to tint ------
     slot_path = QPainterPath()
     half_angle = math.radians(10.5)           # wide slots, thin dark separators
     inner, outer = radius * 0.615, radius * 0.96
@@ -149,21 +146,22 @@ def make_icon(size=64):
 
     slot_gradient = QRadialGradient(center, outer)
     slot_gradient.setColorAt(inner / outer - 0.001, QColor(238, 250, 255))
-    slot_gradient.setColorAt(0.72, QColor(150, 220, 255))
-    slot_gradient.setColorAt(1.0, QColor(66, 175, 255))
+    slot_gradient.setColorAt(0.72, core_light)
+    slot_gradient.setColorAt(1.0, glow)
     painter.fillPath(slot_path, QBrush(slot_gradient))
     # two slim translucent strokes just kiss the slot edges with light; wide
     # ones would flood the gaps and wash the ring into a uniform band
     painter.setBrush(Qt.NoBrush)      # drawPath strokes AND fills: no fill wanted
     for width, alpha in ((0.038, 66), (0.016, 120)):
-        halo_pen = QPen(QColor(40, 170, 255, alpha), max(0.8, size * width))
+        halo_pen = QPen(QColor(glow.red(), glow.green(), glow.blue(), alpha),
+                        max(0.8, radius * 2 * width))
         painter.setPen(halo_pen)
         painter.drawPath(slot_path)
     painter.setPen(Qt.NoPen)
 
     # thin machining seams; dim, so they read as shadow lines not chrome
     rim_pen = QPen(QColor(158, 186, 208, 120))
-    rim_pen.setWidthF(max(0.8, size * 0.010))
+    rim_pen.setWidthF(max(0.8, radius * 0.020))
     painter.setPen(rim_pen)
     painter.setBrush(Qt.NoBrush)
     painter.drawEllipse(center, radius * 0.618, radius * 0.618)
@@ -171,19 +169,23 @@ def make_icon(size=64):
     painter.setPen(Qt.NoPen)
 
     # --- the palladium core: a solid light disc with a glow halo -------------
-    glow_radius = radius * 0.58
-    glow = QRadialGradient(center, glow_radius)
-    glow.setColorAt(0.0, QColor(205, 242, 255, 235))
-    glow.setColorAt(0.42, QColor(130, 214, 255, 130))
-    glow.setColorAt(1.0, QColor(40, 150, 255, 0))
-    painter.setBrush(QBrush(glow))
+    glow_radius = radius * (0.58 + 0.10 * energy) * breathe
+    halo = QRadialGradient(center, glow_radius)
+    base = max(0.60, min(1.0, 0.65 + 0.35 * energy))
+    halo.setColorAt(0.0, QColor(core_light.red(), core_light.green(),
+                                core_light.blue(), int(235 * base)))
+    halo.setColorAt(0.42, QColor(glow.red(), glow.green(), glow.blue(),
+                                 int(130 * base)))
+    halo.setColorAt(1.0, QColor(glow.red(), glow.green(), glow.blue(), 0))
+    painter.setBrush(QBrush(halo))
     painter.drawEllipse(center, glow_radius, glow_radius)
 
-    core_radius = radius * 0.37
+    core_radius = radius * (0.37 + 0.05 * energy) * breathe
     core = QRadialGradient(center, core_radius)
     core.setColorAt(0.0, QColor(255, 255, 255))
-    core.setColorAt(0.70, QColor(250, 253, 255))
-    core.setColorAt(1.0, QColor(168, 224, 255))
+    core.setColorAt(0.70, QColor(core_light.red(), core_light.green(),
+                                 core_light.blue()).lighter(115))
+    core.setColorAt(1.0, core_light)
     painter.setBrush(QBrush(core))
     painter.drawEllipse(center, core_radius, core_radius)
 
@@ -196,6 +198,26 @@ def make_icon(size=64):
     painter.setBrush(QBrush(glint_gradient))
     painter.drawEllipse(glint, core_radius * 0.40, core_radius * 0.40)
 
+
+def make_icon(size=64):
+    """Paint the Iron Man arc-reactor as a QIcon (window, tray and menu PNGs).
+
+    The static face of :func:`_draw_reactor_face` at full energy: a machined
+    titanium housing with ten glowing coil segments around a white-hot core,
+    all over a dark recessed backplate. Everything is drawn inside the
+    proportional ``radius`` margin so the housing is never clipped, and the
+    corners stay transparent so it sits cleanly on any panel.
+    """
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+    center = QPointF(size / 2.0, size / 2.0)
+    # Keep a proportional margin so the housing is not clipped at large sizes.
+    radius = size / 2.0 - max(1.5, size * 0.04)
+    _draw_reactor_face(painter, center, radius,
+                       glow=QColor(60, 180, 255), core_light=QColor(160, 222, 255),
+                       energy=1.0)
     painter.end()
     return QIcon(pixmap)
 
@@ -248,41 +270,17 @@ class Reactor(QWidget):
 
         center = QPointF(self.width() / 2.0, self.height() / 2.0)
         radius = min(center.x(), center.y()) - 2
-        energy = self._energy
         # Quiet: the gentle breathe. Loud: a bigger, springier pulse.
-        pulse = 1.0 + (0.03 + 0.18 * energy) * math.sin(self._phase)
-        scale = pulse * (1.0 + 0.12 * energy)
-        glow, core = _COLORS.get(self._state, _COLORS[IDLE])
+        breathe = 1.0 + (0.03 + 0.18 * self._energy) * math.sin(self._phase)
+        glow, core_light = _COLORS.get(self._state, _COLORS[IDLE])
 
-        # 1. outer glow (brightens with the live level)
-        grad = QRadialGradient(center, radius * scale)
-        grad.setColorAt(0.00, QColor(glow.red(), glow.green(), glow.blue(), 235))
-        grad.setColorAt(0.55, QColor(glow.red(), glow.green(), glow.blue(),
-                                     int(120 + 90 * energy)))
-        grad.setColorAt(1.00, QColor(glow.red(), glow.green(), glow.blue(), 0))
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(QBrush(grad))
-        painter.drawEllipse(center, radius * scale, radius * scale)
+        # The Iron Man face: gunmetal housing, ten glowing coil slots and a
+        # white-hot core -- tinted by the state colour, energy-driven.
+        _draw_reactor_face(painter, center, radius,
+                           glow=glow, core_light=core_light,
+                           energy=self._energy, breathe=breathe)
 
-        # 2. concentric rings
-        ring_pen = QPen(QColor(150, 235, 255, 150))
-        ring_pen.setWidthF(1.5)
-        painter.setPen(ring_pen)
-        painter.setBrush(Qt.NoBrush)
-        for frac in (0.86, 0.72):
-            painter.drawEllipse(center, radius * frac, radius * frac)
-
-        # 3. bright core
-        core_r = radius * (0.55 + 0.12 * energy) * pulse
-        core_grad = QRadialGradient(center, core_r)
-        core_grad.setColorAt(0.0, QColor(255, 255, 255, 245))
-        core_grad.setColorAt(0.45, core)
-        core_grad.setColorAt(1.0, core.darker(190))
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(QBrush(core_grad))
-        painter.drawEllipse(center, core_r, core_r)
-
-        # 4. muted badge: a small dark disc with a slash
+        # muted badge: a small dark disc with a slash
         if self._state == MUTED:
             badge_r = radius * 0.28
             bx = center.x() + radius * 0.60

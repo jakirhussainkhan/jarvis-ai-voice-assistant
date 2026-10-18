@@ -29,7 +29,7 @@ is installed.
 | Timers / reminders | Working |
 | Offline wake word ("Hey Jarvis") | **Built + unit-tested; NOT yet verified live** (needs `pip install openwakeword onnxruntime`) |
 | Desktop launcher (`run.sh` + app-menu entry) | Working (verified: `desktop-file-validate` clean, GUI starts) |
-| Tests | `pytest` suite — **361 passed, 1 skipped** |
+| Tests | `pytest` suite — **363 passed, 1 skipped** |
 | Spoken voice | `en-GB-RyanNeural` (British male); override with `JARVIS_TTS_VOICE` |
 | Published | GitHub, tags **`v1.0.1`**…**`v1.0.7`** (README + MIT LICENSE) |
 
@@ -51,8 +51,34 @@ is installed.
   (an Iron Man arc-reactor icon: gunmetal housing, ten glowing coil slots and
   a white-hot core, regenerated into all `assets/*.png`) and
   **`v1.0.10`** (YouTube tab intelligence: reuse the open tab in place,
-  close it from anywhere, and verified-focus keyboard delivery).
+  close it from anywhere, verified-focus keyboard delivery) and
+  **`v1.0.11`** (the clickable orb now paints the same Iron Man reactor
+  as the icon, through one shared painter, tinted per state).
 - Secrets are **not** committed (see *Security* below).
+
+## The clickable orb becomes the Iron Man reactor (2026-10-19, v1.0.11)
+
+The icon was Iron Man, but the orb the user actually clicks still painted its
+own old flat-blue look -- two artists for one robot, and they had drifted.
+
+- **One painter for both.** The whole treatment (carbon backplate, gunmetal
+  housing annulus, ten coil slots, rims, halo, white-hot core, specular glint)
+  moved into `gui._draw_reactor_face(painter, center, radius, glow,
+  core_light, energy, breathe)`. `make_icon()` calls it statically at full
+  energy; `Reactor.paintEvent()` calls it every frame with the state colours
+  and the live breathe/energy values. (Done with the manually verified state
+  renders for all five states -- idle, listening, thinking, speaking, muted --
+  eyeballed before anything shipped.)
+- **State signalling survived the redesign.** `glow` tints the coil light and
+  the halo, `core_light` cools the core edge, so Listening still reads green,
+  Thinking amber, Speaking purple, Muted a desaturated grey -- plus the same
+  slash badge. The breathing shimmer and the energy pulse now scale the halo
+  and core radius instead of an old-style background glow.
+- Also caught: the truncation step for this extraction initially left the old
+  make_icon body behind after its `return`; the dead block was removed and the
+  module re-compiled. Pixel tests pin the orb: the listening slot is
+  green-dominant, the core white-hot, and the muted orb desaturated.
+- `pytest`: **363 passed, 1 skipped** (was 361).
 
 ## YouTube tab intelligence (2026-10-19, v1.0.10)
 
