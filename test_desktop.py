@@ -265,6 +265,24 @@ def test_extract_media_query_keeps_a_word_like_mean():
     assert desktop.extract_media_query("play mean on youtube") == "mean"
 
 
+def test_extract_media_query_keeps_song_titles_intact():
+    """Regression: title words ('the', 'like', 'hey', 'just', 'on', ...) are not
+    filler -- stripping them played the wrong song (e.g. "Hey Jude" -> "jude")."""
+    assert desktop.extract_media_query("play Hey Jude on youtube") == "Hey Jude"
+    assert desktop.extract_media_query("play Like a Prayer on youtube") == "Like a Prayer"
+    assert desktop.extract_media_query(
+        "play Just the Way You Are on youtube") == "Just the Way You Are"
+    assert desktop.extract_media_query("play The Nights on youtube") == "The Nights"
+    assert desktop.extract_media_query("play on the floor on youtube") == "on the floor"
+    assert desktop.extract_media_query("play Video Games on youtube") == "Video Games"
+
+
+def test_extract_media_query_still_drops_filler_phrases():
+    """A clear filler phrase is removed, but the title after it survives."""
+    assert desktop.extract_media_query("play the song udi udi") == "udi udi"
+    assert desktop.extract_media_query("play some music udi udi") == "udi udi"
+
+
 def test_play_youtube_asks_when_query_is_empty(monkeypatch):
     monkeypatch.setattr(desktop, "has", lambda tool: True)
     assert desktop.play_youtube("play the song on youtube") == "What should I play?"

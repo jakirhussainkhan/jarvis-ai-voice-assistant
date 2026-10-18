@@ -458,14 +458,37 @@ def list_running():
 
 # Spoken-request extraction. STT frequently returns a whole messy sentence for
 # "play X on YouTube"; only the song/video name should reach yt-dlp.
-_PLAY_VERB = re.compile(r"\b(play|watch|listen to)\b", re.I)
-_MEDIA_FILLER = re.compile(
-    r"\b(what do you mean|i mean|i meant|you know the song|you know|"
-    r"please|just|"
-    r"i am|i'm|im|"
-    r"on youtube|youtube|"
+# Spoken-request extraction. STT often returns a whole messy sentence for
+# "play X on YouTube"; only the song/video name should reach yt-dlp. Crucially,
+# words that can be part of a real title ("the", "like", "hey", "just", "now",
+# "on", "song", ...) are NEVER stripped on their own -- "Hey Jude" must not
+# become "jude". Only unambiguous STT noise and clear filler *phrases*
+# ("the song", "music player") are removed.
+_PLAY_VERB = re.compile(r"\b(play|watch|listen to|listen)\b", re.I)
+
+# STT noise that is extremely unlikely to be part of a song/video title.
+_MEDIA_NOISE = re.compile(
+    r"\b(what do you mean|i mean|i meant|you know|i am|i'm|im|"
+    r"please|jarvis|uh+|um+|hmm+)\b",
+    re.I,
+)
+
+# Filler *phrases* (an article + a media noun, or "<medium> player"). These are
+# removed as a unit so a bare "the song"/"some music" disappears, while a title
+# like "The Nights" or "Like a Prayer" is left alone.
+_MEDIA_FILLER_PHRASE = re.compile(
+    r"\b(?:just\s+)?(?:the|a|an|some|any|this|that)\s+"
+    r"(?:song|songs|music|video|videos|track|tracks|tune|tunes|player|media|clip)s?\b"
+    r"|\b(?:music|media|video)\s+player\b",
+    re.I,
+)
+
+# Words that carry no song information by themselves. If only these remain,
+# there is no song to play, so the caller is asked "What should I play?".
+_MEDIA_FILLER_WORD = re.compile(
+    r"\b(the|a|an|this|that|some|any|my|"
     r"song|songs|music|video|videos|track|tracks|tune|tunes|player|media|clip|"
-    r"the|a|an|some|any|on|like|jarvis|now|hey|okay|ok)\b",
+    r"on|to|like|now|just|hey|ok|okay|please|jarvis|it|me|i|am|you|youtube)\b",
     re.I,
 )
 
@@ -473,20 +496,26 @@ _MEDIA_FILLER = re.compile(
 def extract_media_query(text):
     """Pull just the song/video name out of a spoken "play ... on YouTube".
 
-    Takes the text after an explicit play/watch/listen verb, drops a trailing
-    "on YouTube" and strips spoken filler / STT noise ("please", "the song",
-    "music", "just", "what do you mean", "i am", ...). Returns "" when nothing
-    usable is left, so the caller can ask "What should I play?".
+    Drops the play/watch/listen verb, a trailing "on YouTube", unambiguous STT
+    noise ("what do you mean", "i am", "please", ...) and filler phrases like
+    "the song" / "music player". Words that could belong to a title are kept, so
+    "Hey Jude", "Like a Prayer" and "The Nights" survive. Returns "" when only
+    filler is left, so the caller can ask "What should I play?".
     """
     if not text:
         return ""
     match = _PLAY_VERB.search(text)
     tail = text[match.end():] if match else text
-    # Strip a trailing "on youtube" (and any other "youtube" mention).
+    # Drop a trailing "on YouTube" (and any other "youtube" mention).
     tail = re.sub(r"\bon\s+youtube\b", " ", tail, flags=re.I)
     tail = re.sub(r"\byoutube\b", " ", tail, flags=re.I)
-    tail = _MEDIA_FILLER.sub(" ", tail)
-    return re.sub(r"\s+", " ", tail).strip(" .,!?;:-'\" ")
+    tail = _MEDIA_NOISE.sub(" ", tail)
+    tail = _MEDIA_FILLER_PHRASE.sub(" ", tail)
+    tail = re.sub(r"\s+", " ", tail).strip(" .,!?;:-'\"")
+    # Nothing but filler -> no song requested.
+    if not re.sub(r"[^A-Za-z0-9]+", "", _MEDIA_FILLER_WORD.sub(" ", tail)):
+        return ""
+    return tail
 
 
 def _yt_url_search(query):
