@@ -1,0 +1,13 @@
+.env
+venv/
+__pycache__/
+.pytest_cache/
+
+# secrets / local-only files (never commit)
+acccces token
+*access token*
+*token file*
+
+# generated audio artifacts
+*.wav
+*.mp3

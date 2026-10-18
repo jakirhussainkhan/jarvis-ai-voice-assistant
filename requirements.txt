@@ -1,0 +1,9 @@
+openai
+SpeechRecognition
+pyaudio
+edge-tts
+pygame
+PyQt5
+psutil
+python-dotenv
+pytest
