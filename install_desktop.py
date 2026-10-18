@@ -1,0 +1,159 @@
+"""Add Jarvis to your desktop: an app-menu entry, an icon, and (optionally) autostart.
+
+Writes ``~/.local/share/applications/jarvis.desktop`` pointing at *this* checkout
+and using the arc-reactor icon in ``assets/``, so Jarvis appears in the
+Cinnamon/GNOME application menu and can be launched without a terminal. With
+``--autostart`` it also writes an entry to ``~/.config/autostart`` so Jarvis is
+already in the tray after you log in.
+
+Everything happens in **your own home directory** -- no root, no ``sudo``, and
+nothing outside the two paths below is touched:
+
+    ./venv/bin/python install_desktop.py                 # add to the app menu
+    ./venv/bin/python install_desktop.py --autostart     # ...and start at login
+    ./venv/bin/python install_desktop.py --uninstall     # remove both
+
+Reversible: ``--uninstall`` deletes exactly the two files this wrote.
+"""
+
+import argparse
+import os
+import re
+import shutil
+import subprocess
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent
+APP_ENTRY = "jarvis.desktop"
+ICON = ROOT / "assets" / "jarvis-256.png"
+LAUNCHER = ROOT / "run.sh"
+
+_TEMPLATE = """[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Jarvis
+GenericName=Voice Assistant
+Comment=Voice-controlled desktop assistant (English)
+Comment[en]=Voice-controlled desktop assistant (English)
+Exec={exec_line}
+Path={root}
+Icon={icon}
+Terminal=false
+StartupNotify=false
+Categories=Utility;Accessibility;
+Keywords=jarvis;voice;assistant;
+{extra}"""
+
+_AUTOSTART_EXTRA = "X-GNOME-Autostart-enabled=true\n"
+
+
+def quote_argument(value):
+    """Quote one ``Exec=`` argument the way the Desktop Entry spec requires."""
+    text = str(value).replace("%", "%%")          # % is the spec's escape char
+    if re.search(r'[ \t"\'\\<>~|&;$*?#`]', text):
+        text = '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    return text
+
+
+def entry_text(autostart=False):
+    """The full contents of the .desktop file for this checkout."""
+    return _TEMPLATE.format(
+        exec_line=quote_argument(LAUNCHER),
+        root=ROOT,
+        icon=ICON,
+        extra=_AUTOSTART_EXTRA if autostart else "",
+    )
+
+
+def entry_dirs(home=None):
+    """The (applications, autostart) directories under ``home``."""
+    base = Path(home) if home else Path.home()
+    return base / ".local/share/applications", base / ".config/autostart"
+
+
+def install(home=None, autostart=False):
+    """Write the app-menu entry (and the autostart entry). Returns the paths."""
+    apps_dir, autostart_dir = entry_dirs(home)
+    written = []
+
+    apps_dir.mkdir(parents=True, exist_ok=True)
+    target = apps_dir / APP_ENTRY
+    target.write_text(entry_text())
+    written.append(target)
+
+    if autostart:
+        autostart_dir.mkdir(parents=True, exist_ok=True)
+        login = autostart_dir / APP_ENTRY
+        login.write_text(entry_text(autostart=True))
+        written.append(login)
+
+    _refresh_menu_cache(apps_dir)
+    return written
+
+
+def uninstall(home=None):
+    """Delete the files :func:`install` writes. Returns the paths removed."""
+    apps_dir, autostart_dir = entry_dirs(home)
+    removed = []
+    for path in (apps_dir / APP_ENTRY, autostart_dir / APP_ENTRY):
+        if path.exists():
+            path.unlink()
+            removed.append(path)
+    _refresh_menu_cache(apps_dir)
+    return removed
+
+
+def _refresh_menu_cache(apps_dir):
+    """Best effort: tell the desktop that the menu changed."""
+    tool = shutil.which("update-desktop-database")
+    if tool:
+        subprocess.run([tool, str(apps_dir)], check=False,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(
+        description="Add Jarvis to the application menu (and optionally autostart).",
+    )
+    parser.add_argument("--uninstall", action="store_true",
+                        help="remove the entries this script created")
+    parser.add_argument("--autostart", action="store_true",
+                        help="also start Jarvis automatically at login")
+    parser.add_argument("--home", default=None,
+                        help="install into this home directory instead of ~")
+    return parser
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+    home = os.path.expanduser(args.home) if args.home else None
+
+    if args.uninstall:
+        removed = uninstall(home)
+        if removed:
+            print("Removed:")
+            for path in removed:
+                print(f"  {path}")
+        else:
+            print("Nothing to remove.")
+        return 0
+
+    if not LAUNCHER.exists():
+        print(f"Jarvis: {LAUNCHER} is missing; cannot build a launcher.")
+        return 1
+    if not ICON.exists():
+        print(f"Jarvis: {ICON} is missing; the menu entry will have no icon.")
+
+    written = install(home, autostart=args.autostart)
+    print("Installed:")
+    for path in written:
+        print(f"  {path}")
+    print()
+    print("Jarvis should now be in your application menu"
+          + (" and will start at login." if args.autostart else "."))
+    print(f"Undo with: {Path(__file__).name} --uninstall")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

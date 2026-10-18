@@ -28,8 +28,9 @@ is installed.
 | Confirmation-gated actions | Working (power, risky terminal, risky screen goals) |
 | Timers / reminders | Working |
 | Offline wake word ("Hey Jarvis") | **Built + unit-tested; NOT yet verified live** (needs `pip install openwakeword onnxruntime`) |
-| Tests | `pytest` suite — **328 passed, 1 skipped** |
-| Published | GitHub, tags **`v1.0.1`**, **`v1.0.2`**, **`v1.0.3`**, **`v1.0.4`**, **`v1.0.5`** (README + MIT LICENSE) |
+| Desktop launcher (`run.sh` + app-menu entry) | Working (verified: `desktop-file-validate` clean, GUI starts) |
+| Tests | `pytest` suite — **350 passed, 1 skipped** |
+| Published | GitHub, tags **`v1.0.1`**…**`v1.0.6`** (README + MIT LICENSE) |
 
 ## Repository & releases
 
@@ -40,9 +41,44 @@ is installed.
   **`v1.0.2`** (voice-chat widget: mic mute/unmute, Stop, live reactive orb),
   **`v1.0.3`** (play a song by name / pick one off the screen; 30 s listen window;
   Stop cancels a wait; copy-paste install hints), **`v1.0.4`** (no more
-  mid-sentence cut-offs; silent screen reading, no flash) and **`v1.0.5`**
-  (optional offline "Hey Jarvis" wake word).
+  mid-sentence cut-offs; silent screen reading, no flash), **`v1.0.5`**
+  (optional offline "Hey Jarvis" wake word) and **`v1.0.6`** (desktop launcher:
+  `run.sh`, an application-menu entry and autostart).
 - Secrets are **not** committed (see *Security* below).
+
+## Desktop launcher: `run.sh` + an app-menu entry (2026-10-18, v1.0.6)
+
+Starting the GUI needed `cd /home/jakir/my-project/jarvis && ./venv/bin/python
+main.py --gui` every time, with no icon in the menu. Now:
+
+- **`run.sh`** — resolves its own directory, checks the virtualenv exists (and
+  prints the exact `python3 -m venv` + `pip install -r requirements.txt` lines if
+  it does not), then `exec`s `main.py --gui`, so Ctrl+C works and no shell is left
+  hanging. It is `chmod +x`, so `./run.sh` just works.
+- **`install_desktop.py`** — writes
+  `~/.local/share/applications/jarvis.desktop` pointing at *this* checkout
+  (`Exec`, `Path` and `Icon` are all absolute), so Jarvis appears in the Cinnamon
+  application menu. `--autostart` also writes `~/.config/autostart/jarvis.desktop`
+  so it is already in the tray after login; `--uninstall` deletes **exactly** the
+  two files it wrote and nothing else. It only ever touches the user's own home
+  directory — no root, no `sudo` — and it can be pointed elsewhere with `--home`,
+  which is what makes it testable without touching the real `~`.
+- **`assets/jarvis-{32,48,64,128,256}.png`** — the arc-reactor icon, rendered from
+  the same `gui.make_icon()` the tray uses, so the menu icon and the tray icon can
+  never drift apart.
+- **Icon fix found meanwhile:** `make_icon()` used a fixed `1.5 px` margin, which
+  is fine at 64 px but visibly **clipped the sphere at 256 px**. The margin is now
+  proportional (`max(1.5, size * 0.04)`), and a test asserts the corners and edge
+  midpoints stay transparent.
+
+### Verification
+
+- `pytest`: **350 passed, 1 skipped** (was 328). New `test_launcher.py` (21 tests)
+  plus an icon-clipping test in `test_gui.py`. Installs go to a `tmp_path` "home"
+  and the menu-cache refresh is stubbed, so the suite still never touches `~`.
+- `desktop-file-validate` reports **no errors** on the generated entry.
+- `./run.sh` really starts the GUI (checked offscreen), and with no `venv/` it
+  exits 1 with a copy-paste fix instead of a traceback.
 
 ## Offline "Hey Jarvis" wake word (2026-10-18, v1.0.5)
 
@@ -526,6 +562,10 @@ Two front ends share the same brain:
   `--check` prints the readiness report; `handle()` catches agent/network errors.
 - `doctor.py` — read-only readiness self-check (`main.py --check`): session type,
   installed tools and what each missing one costs, apps indexed, API-key status.
+- `install_desktop.py` — app-menu launcher entry (`--autostart`, `--uninstall`,
+  `--home`); writes only inside the user's own home directory.
+- `run.sh` — starts the GUI through the venv without needing `cd`.
+- `assets/jarvis-*.png` — the arc-reactor icon, rendered from `gui.make_icon()`.
 - `gui.py` — PyQt5 Arc Reactor widget (`QThread` worker); shares `main.handle()`
   so confirmations work in the GUI too. Owns the wake listener's lifecycle
   (start / pause / resume / stop) and exposes a checkable **Hey Jarvis** item in

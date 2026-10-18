@@ -1,6 +1,6 @@
 # Jarvis — Voice Assistant for Linux
 
-**Version 1.0.5**
+**Version 1.0.6**
 
 A voice-controlled desktop assistant for Linux that can *see* your screen, use the
 internet, and operate the terminal. You speak a command; Jarvis either handles it
@@ -17,6 +17,24 @@ confirmation-gated everywhere. When a tool is missing it will *print* a
 copy-paste install command for you to run yourself, but it never executes one.
 
 ---
+
+## What's new in 1.0.6
+
+- **Launch it like a real app.** `./run.sh` starts the GUI with the right
+  virtualenv, no typing and no `cd`. Prefer a click? `install_desktop.py` adds
+  Jarvis to your **application menu** (with the arc-reactor icon) and can
+  optionally start it at login:
+
+  ```bash
+  ./venv/bin/python install_desktop.py              # add to the app menu
+  ./venv/bin/python install_desktop.py --autostart  # ...and start at login
+  ./venv/bin/python install_desktop.py --uninstall   # undo, exactly
+  ```
+
+  It only writes inside your own home directory (`~/.local/share/applications`
+  and `~/.config/autostart`) — no root, no `sudo`, nothing else touched.
+- **A crisper orb icon.** The icon margin is now proportional, so the reactor is
+  no longer clipped when rendered large (it is shipped at 32-256 px in `assets/`).
 
 ## What's new in 1.0.5
 
@@ -160,13 +178,13 @@ copy-paste install command for you to run yourself, but it never executes one.
   abandons a pending wait. Playing media is paused while Jarvis listens and
   resumed afterwards (best effort), and `JARVIS_PTT=1` switches to push-to-talk
   for noisy rooms.
-- **Tests** — a `pytest` suite of **328 tests** (1 skipped) covering routing, app
+- **Tests** — a `pytest` suite of **350 tests** (1 skipped) covering routing, app
   matching, the protected list, the confirmation flow, the terminal guardrails,
   screen routing, clipboard fallbacks, offline behaviour, the internet tools,
   vision parsing, timers, the YouTube path (play-by-name and on-screen picks),
   text mode, the doctor, the GUI (offscreen), the wake word (framing, threshold
-  and the mic hand-over), the live mic-level/TTS-envelope hooks and the real
-  router→agent dispatch path.
+  and the mic hand-over), the desktop launcher, the live mic-level/TTS-envelope
+  hooks and the real router→agent dispatch path.
 
 ---
 
@@ -272,6 +290,7 @@ token cap and tool-round limit are constants in `config.py`.
 ## Usage
 
 ```bash
+./run.sh                                     # the GUI (floating widget + tray)
 ./venv/bin/python main.py                    # terminal voice loop
 ./venv/bin/python main.py --text             # type commands instead of speaking
 ./venv/bin/python main.py --offline          # router only (no network)
@@ -279,6 +298,7 @@ token cap and tool-round limit are constants in `config.py`.
 ./venv/bin/python main.py --version          # print the version
 ./venv/bin/python main.py --screen "what is on my screen?"   # one screen answer
 ./venv/bin/python main.py --gui              # floating widget + system tray
+./venv/bin/python install_desktop.py         # add Jarvis to the app menu
 ./venv/bin/python doctor.py                  # readiness report
 ./venv/bin/python test_mic.py                # microphone diagnostic
 ./venv/bin/python -m pytest                  # run the test suite
@@ -297,6 +317,16 @@ instantly (also `M` or the tray's *Mute mic* — and it silences the wake word t
 and **Stop** (or `Space`) cuts a reply off mid-sentence — or abandons a listen that
 is still waiting for you. The **Hey Jarvis** menu item (in both the widget and the
 tray menu) switches the wake word off and on while Jarvis is running.
+
+**Desktop launcher.** `./run.sh` starts the GUI with the right virtualenv, and
+`./venv/bin/python install_desktop.py` adds Jarvis to your application menu with
+the arc-reactor icon (`--autostart` also starts it at login; `--uninstall` removes
+exactly what it wrote). To keep it running after you close the terminal:
+
+```bash
+nohup ./run.sh >/tmp/jarvis.log 2>&1 &     # start in the background
+pkill -f "main.py --gui"                   # stop it again
+```
 
 ### Voice commands
 
@@ -416,6 +446,9 @@ confirmation first, then tries the router, and only sends a miss to the agent.
 | `gui.py` | PyQt5 Arc Reactor widget + system tray; the listen/think/speak cycle runs on a `QThread`. The orb is fed live mic levels (listening) and the TTS loudness envelope (speaking); the widget adds a mic mute/unmute button and a Stop button. Owns the wake listener's lifecycle (start/pause/resume/stop). |
 | `wake.py` | Optional offline **"Hey Jarvis"** wake word (openWakeWord ONNX). `Detector` re-frames audio into 80 ms frames and applies the threshold; `Listener` streams the mic on a daemon thread, hands the device over before any listen cycle, and stays silent while the mic is muted. Importable without openWakeWord. |
 | `doctor.py` | Readiness self-check. Prints a copy-paste install line for missing tools (never runs it), and the wake-word status. |
+| `install_desktop.py` | Adds/removes the application-menu entry (and optionally autostart), pointing at this checkout. Writes only inside your own home directory; `--uninstall` is exact. |
+| `run.sh` | Starts the GUI through the project's virtualenv without needing `cd`. |
+| `assets/jarvis-*.png` | The arc-reactor icon at 32-256 px, generated from `gui.make_icon()`. |
 | `test_mic.py` | Standalone mic diagnostic. |
 
 ### Tools (40)

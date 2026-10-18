@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-__version__ = "1.0.5"
+__version__ = "1.0.6"
 
 # Groq (https://console.groq.com) exposes an OpenAI-compatible Chat Completions
 # API. The key is read from GROQ_API_KEY in .env; Groq keys start with "gsk_".

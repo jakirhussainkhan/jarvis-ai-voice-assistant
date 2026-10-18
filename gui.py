@@ -71,7 +71,8 @@ def make_icon(size=64):
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.Antialiasing)
     center = QPointF(size / 2.0, size / 2.0)
-    radius = size / 2.0 - 1.5
+    # Keep a proportional margin so the sphere is not clipped at large sizes.
+    radius = size / 2.0 - max(1.5, size * 0.04)
 
     glow = QRadialGradient(center, radius)
     glow.setColorAt(0.0, QColor(120, 205, 255))

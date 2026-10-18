@@ -343,3 +343,15 @@ def test_quit_stops_the_wake_listener(app, fake_wake):
     widget.quit()
 
     assert fake_wake.stops == 1
+
+
+def test_icon_has_a_margin_so_it_is_never_clipped(app):
+    """The launcher renders this at 256 px, where a fixed 1.5 px margin clipped."""
+    image = gui.make_icon(256).pixmap(256, 256).toImage()
+
+    edges = [(0, 0), (255, 0), (0, 255), (255, 255), (0, 128), (255, 128)]
+    for x, y in edges:
+        assert image.pixelColor(x, y).alpha() == 0, f"({x}, {y}) is painted"
+
+    center = image.pixelColor(128, 128)
+    assert center.alpha() > 0, "the core must be painted"
