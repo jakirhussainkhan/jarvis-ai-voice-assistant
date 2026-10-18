@@ -29,6 +29,7 @@ import voice
 from main import handle
 from memory import Memory
 from voice import listen, speak
+import wake
 
 IDLE = "Idle"
 LISTENING = "Listening..."
@@ -278,6 +279,10 @@ class JarvisTray(QSystemTrayIcon):
         self.mute_action = menu.addAction("Mute mic")
         self.mute_action.setCheckable(True)
         self.mute_action.triggered.connect(widget.toggle_mute)
+        self.wake_action = menu.addAction("Hey Jarvis")
+        self.wake_action.setCheckable(True)
+        self.wake_action.setChecked(widget._wake is not None)
+        self.wake_action.triggered.connect(widget.toggle_wake)
         self.toggle_action = menu.addAction("Hide window")
         self.toggle_action.triggered.connect(widget.toggle_visible)
         menu.addSeparator()
@@ -297,9 +302,15 @@ class JarvisTray(QSystemTrayIcon):
     def sync_mute(self, muted):
         self.mute_action.setChecked(muted)
 
+    def sync_wake(self, on):
+        self.wake_action.setChecked(on)
+
 
 class JarvisWidget(QWidget):
     """The floating window: reactor + status + mic/stop buttons."""
+
+    # Emitted by the wake-word thread (never touch Qt from that thread).
+    wake_heard = pyqtSignal()
 
     def __init__(self):
         super().__init__()
@@ -323,6 +334,10 @@ class JarvisWidget(QWidget):
         self._drag_offset = None
         self._quitting = False
         self._menu = QMenu(self)
+        self._wake = None
+        # The wake-word listener runs on its own thread, so it signals us instead
+        # of touching Qt: Qt then delivers it here on the GUI thread.
+        self.wake_heard.connect(self._on_wake_heard)
 
         self.reactor = Reactor(150)
         self.reactor.clicked.connect(self.trigger)
@@ -375,6 +390,9 @@ class JarvisWidget(QWidget):
             self.tray = JarvisTray(self)
             self.tray.show()
 
+        # Started last so both menus already exist and can show the right state.
+        self._start_wake()
+
         self.resize(self.sizeHint())
         self._center()
 
@@ -384,6 +402,10 @@ class JarvisWidget(QWidget):
         self.mute_action = self._menu.addAction("Mute mic")
         self.mute_action.setCheckable(True)
         self.mute_action.triggered.connect(self.toggle_mute)
+        self.wake_action = self._menu.addAction("Hey Jarvis")
+        self.wake_action.setCheckable(True)
+        self.wake_action.setChecked(self._wake is not None)
+        self.wake_action.triggered.connect(self.toggle_wake)
         self.toggle_action = self._menu.addAction("Hide to tray")
         self.toggle_action.triggered.connect(self.toggle_visible)
         self._menu.addSeparator()
@@ -405,6 +427,8 @@ class JarvisWidget(QWidget):
         self.stop_button.setEnabled(state in (LISTENING, SPEAKING))
         if state == IDLE:
             self.reactor.set_energy(0.0)
+            # Jarvis is done with the microphone, so let "Hey Jarvis" have it back.
+            self._resume_wake()
         if self.tray is not None:
             self.tray.setToolTip(f"Jarvis — {state}")
 
@@ -421,9 +445,16 @@ class JarvisWidget(QWidget):
         if self.tray is not None:
             self.tray.sync_mute(muted)
         if muted:
+            # Muting the mic must also silence the wake word -- no mic, no audio.
+            if self._wake is not None:
+                self._wake.pause()
             self.set_state(MUTED)
         elif self.status.text() == MUTED:
             self.set_state(IDLE)
+        else:
+            # A cycle already moved the label off "Muted" (e.g. muted mid-listen),
+            # so set_state(IDLE) above will not run: hand the mic back here.
+            self._resume_wake()
 
     # -- stop ------------------------------------------------------------- #
     def _stop(self):
@@ -439,12 +470,69 @@ class JarvisWidget(QWidget):
         self.transcript.setText(text)
         QTimer.singleShot(2000, lambda: self.transcript.setText(""))
 
-    def trigger(self):
-        """Start one listen/process/speak cycle (ignored if already busy)."""
-        if voice.is_mic_muted():
-            self._flash("Mic is muted — click “Mic On” to talk")
+    # -- wake word ("Hey Jarvis") ----------------------------------------- #
+    def _start_wake(self):
+        """Begin listening for the wake word, if it is installed and enabled."""
+        if self._wake is not None or not wake.enabled():
+            return
+        listener = wake.Listener(self._wake_heard)
+        listener.start()
+        self._wake = listener
+        self._sync_wake(True)
+
+    def _wake_heard(self):
+        """Called on the wake-word thread the moment it hears "Hey Jarvis"."""
+        # Never touch Qt from that thread; hop onto the GUI thread instead.
+        self.wake_heard.emit()
+
+    def _on_wake_heard(self):
+        """GUI-thread slot: run a normal cycle, exactly as if clicked."""
+        self.trigger()
+
+    def _resume_wake(self):
+        """Hand the microphone back to the wake listener, but only when idle."""
+        if self._wake is None or voice.is_mic_muted():
             return
         if self.worker is not None and self.worker.isRunning():
+            return
+        self._wake.resume()
+
+    def toggle_wake(self, _checked=False):
+        """Turn the wake word off or on at runtime (menu action)."""
+        if self._wake is not None:
+            self._wake.stop()
+            self._wake = None
+            self._sync_wake(False)
+            self._flash("Wake word off")
+            return
+        if not wake.available():
+            self._sync_wake(False)
+            self._flash(f"Wake word: {wake.install_hint()}")
+            return
+        self._start_wake()
+        self._flash("Wake word on — say “Hey Jarvis”")
+
+    def _sync_wake(self, on):
+        """Reflect the wake-word state in both menus."""
+        action = getattr(self, "wake_action", None)
+        if action is not None:
+            action.setChecked(on)
+        tray = getattr(self, "tray", None)
+        if tray is not None:
+            tray.sync_wake(on)
+
+    def trigger(self):
+        """Start one listen/process/speak cycle (ignored if already busy)."""
+        # Give the microphone up first: the wake listener and listen() must never
+        # hold it at the same time.
+        if self._wake is not None:
+            self._wake.pause()
+        if voice.is_mic_muted():
+            self._flash("Mic is muted — click “Mic On” to talk")
+            self._resume_wake()
+            return
+        if self.worker is not None and self.worker.isRunning():
+            # A cycle is already running: leave the mic with it.
             return
         if not self.isVisible():
             self.show()
@@ -467,6 +555,8 @@ class JarvisWidget(QWidget):
     def quit(self):
         """Really exit: stop the tray and the Qt event loop."""
         self._quitting = True
+        if self._wake is not None:
+            self._wake.stop()
         voice.stop_speaking()
         if self.tray is not None:
             self.tray.hide()

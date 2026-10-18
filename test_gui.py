@@ -170,3 +170,176 @@ def test_worker_reports_heard_and_speaks(app, monkeypatch):
     assert heard == ["hello"]
     assert spoken == ["hi there"]
     assert states[-1] == gui.IDLE
+
+# --------------------------------------------------------------------------- #
+# wake word ("Hey Jarvis") wiring (v1.0.5)
+# --------------------------------------------------------------------------- #
+
+class Signal:
+    """Minimal stand-in for a bound pyqtSignal (we only need ``connect``)."""
+
+    def connect(self, _slot):
+        pass
+
+
+class FakeWorker:
+    """A JarvisWorker that never touches a microphone or the network."""
+
+    def __init__(self, memory, parent=None):
+        self.state_changed = Signal()
+        self.message = Signal()
+        self.heard = Signal()
+        self.level = Signal()
+        self.running = False
+
+    def isRunning(self):
+        return self.running
+
+    def start(self):
+        self.running = True
+
+    def wait(self, _ms=None):
+        return True
+
+
+class FakeWake:
+    """Stand-in for wake.Listener: records calls without a mic or a thread."""
+
+    def __init__(self):
+        self.starts = self.pauses = self.resumes = self.stops = 0
+
+    def start(self):
+        self.starts += 1
+
+    def pause(self, timeout=2.0):
+        self.pauses += 1
+
+    def resume(self):
+        self.resumes += 1
+
+    def stop(self):
+        self.stops += 1
+
+
+@pytest.fixture
+def fake_wake(monkeypatch):
+    """Install a fake wake listener *and* a fake worker.
+
+    A real worker would run listen() for real, and a real wake listener would
+    open arecord -- neither belongs in a test.
+    """
+    listener = FakeWake()
+    monkeypatch.setattr(gui.wake, "enabled", lambda: True)
+    monkeypatch.setattr(gui.wake, "available", lambda: True)
+    monkeypatch.setattr(gui.wake, "Listener", lambda on_wake: listener)
+    monkeypatch.setattr(gui, "JarvisWorker", FakeWorker)
+    return listener
+
+
+def test_no_wake_listener_when_the_engine_is_missing(app, monkeypatch):
+    monkeypatch.setattr(gui.wake, "enabled", lambda: False)
+    widget = gui.JarvisWidget()
+    assert widget._wake is None
+    assert widget.wake_action.isChecked() is False
+
+
+def test_wake_listener_starts_and_the_menu_shows_it(app, fake_wake):
+    widget = gui.JarvisWidget()
+
+    assert widget._wake is fake_wake
+    assert fake_wake.starts == 1
+    assert widget.wake_action.isChecked() is True
+
+
+def test_trigger_gives_the_microphone_to_the_wake_listener(app, fake_wake):
+    widget = gui.JarvisWidget()
+
+    widget.trigger()
+
+    assert fake_wake.pauses == 1, "trigger must release the wake listener first"
+    assert isinstance(widget.worker, FakeWorker)
+
+
+def test_returning_to_idle_hands_the_microphone_back(app, fake_wake):
+    widget = gui.JarvisWidget()
+
+    widget.set_state(gui.THINKING)
+    widget.set_state(gui.IDLE)
+
+    assert fake_wake.resumes == 1
+
+
+def test_the_mic_is_not_handed_back_while_a_cycle_runs(app, fake_wake):
+    """Resume must be refused while a worker is still using the mic."""
+    widget = gui.JarvisWidget()
+
+    class Busy:
+        def isRunning(self):
+            return True
+
+    widget.worker = Busy()
+    widget.set_state(gui.IDLE)
+
+    assert fake_wake.resumes == 0
+
+
+def test_muting_silences_the_wake_word_too(app, fake_wake):
+    widget = gui.JarvisWidget()
+
+    widget.set_mic_muted(True)
+    assert fake_wake.pauses >= 1
+
+    widget.set_state(gui.IDLE)                 # must not reopen the mic
+    assert fake_wake.resumes == 0
+
+    widget.set_mic_muted(False)
+    assert fake_wake.resumes == 1
+
+
+def test_wake_word_runs_the_same_path_as_a_click(app, fake_wake):
+    widget = gui.JarvisWidget()
+
+    widget._wake_heard()                       # what the listener thread calls
+
+    assert isinstance(widget.worker, FakeWorker)
+    assert widget.worker.isRunning() is True
+
+
+def test_menu_action_turns_the_wake_word_off_and_on(app, fake_wake, monkeypatch):
+    widget = gui.JarvisWidget()
+    assert widget._wake is fake_wake
+
+    widget.toggle_wake()
+
+    assert widget._wake is None
+    assert fake_wake.stops == 1
+    assert widget.wake_action.isChecked() is False
+    assert "off" in widget.transcript.text().lower()
+
+    second = FakeWake()
+    monkeypatch.setattr(gui.wake, "Listener", lambda on_wake: second)
+    widget.toggle_wake()
+
+    assert widget._wake is second
+    assert widget.wake_action.isChecked() is True
+
+
+def test_menu_action_explains_when_the_engine_is_missing(app, monkeypatch):
+    monkeypatch.setattr(gui.wake, "enabled", lambda: False)
+    monkeypatch.setattr(gui.wake, "available", lambda: False)
+    widget = gui.JarvisWidget()
+
+    widget.toggle_wake()
+
+    assert widget._wake is None
+    assert "pip install" in widget.transcript.text()
+    assert widget.wake_action.isChecked() is False
+
+
+def test_quit_stops_the_wake_listener(app, fake_wake):
+    widget = gui.JarvisWidget()
+    widget._quitting = True
+
+    widget.quit()
+
+    assert fake_wake.stops == 1

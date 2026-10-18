@@ -6,7 +6,8 @@ A voice-controlled Linux desktop assistant. You speak a command; Jarvis either
 handles it locally (regex, offline) or forwards it to a Groq-backed agent that
 can call tools, then answers out loud in English. STT and replies are
 English-only by design. A PyQt5 "Arc Reactor" widget provides a click-to-talk
-GUI.
+GUI — or a hands-free **"Hey Jarvis"** wake word once the optional offline engine
+is installed.
 
 ## Status at a glance
 
@@ -21,13 +22,14 @@ GUI.
 | Guarded terminal | Working (3-layer guard; power/session commands refused in code) |
 | Offline mode (`main.py --offline`) | Working |
 | Conversation memory | Working |
-| GUI widget + system tray (`gui.py`) | Working (offscreen-tested); **mic mute/unmute, Stop, and an orb that reacts to live voice + speech** |
+| GUI widget + system tray (`gui.py`) | Working (offscreen-tested); **mic mute/unmute, Stop, an orb that reacts to live voice + speech, and the "Hey Jarvis" wake word** |
 | Microphone diagnostic | Working |
 | Desktop control (apps/YouTube/media/volume/brightness/screenshot/lock) | Working |
 | Confirmation-gated actions | Working (power, risky terminal, risky screen goals) |
 | Timers / reminders | Working |
-| Tests | `pytest` suite — **286 passed, 1 skipped** |
-| Published | GitHub, tags **`v1.0.1`**, **`v1.0.2`**, **`v1.0.3`**, **`v1.0.4`** (README + MIT LICENSE) |
+| Offline wake word ("Hey Jarvis") | **Built + unit-tested; NOT yet verified live** (needs `pip install openwakeword onnxruntime`) |
+| Tests | `pytest` suite — **328 passed, 1 skipped** |
+| Published | GitHub, tags **`v1.0.1`**, **`v1.0.2`**, **`v1.0.3`**, **`v1.0.4`**, **`v1.0.5`** (README + MIT LICENSE) |
 
 ## Repository & releases
 
@@ -37,9 +39,110 @@ GUI.
   internet, guarded terminal, offline-first, terminal hardening),
   **`v1.0.2`** (voice-chat widget: mic mute/unmute, Stop, live reactive orb),
   **`v1.0.3`** (play a song by name / pick one off the screen; 30 s listen window;
-  Stop cancels a wait; copy-paste install hints) and **`v1.0.4`** (no more
-  mid-sentence cut-offs; silent screen reading, no flash).
+  Stop cancels a wait; copy-paste install hints), **`v1.0.4`** (no more
+  mid-sentence cut-offs; silent screen reading, no flash) and **`v1.0.5`**
+  (optional offline "Hey Jarvis" wake word).
 - Secrets are **not** committed (see *Security* below).
+
+## Offline "Hey Jarvis" wake word (2026-10-18, v1.0.5)
+
+The GUI no longer needs a click to start talking: say **"Hey Jarvis"**.
+
+### How it works
+
+- **Engine:** `openWakeWord` — a small ONNX model from a purpose-built
+  wake-word project (`dscripka/openWakeWord`). It scores 80 ms frames of 16 kHz
+  audio between 0 and 1 and runs **entirely on this machine**: no network, no
+  account, no API key, ~1-2 % of one CPU core. The pretrained `hey_jarvis` model
+  is English, which matches Jarvis's English-only rule.
+- **`wake.py`** holds both pieces, and neither imports the engine until it is
+  actually used, so `import wake` works on a machine without it:
+  - `Detector` — re-frames the raw mic bytes into the model's 80 ms frames
+    (`1280` samples = `2560` bytes), applies `JARVIS_WAKE_THRESHOLD` (default
+    `0.5`, the value the models are trained for), and drops the rest of the
+    buffer on a hit so one phrase means exactly one wake.
+  - `Listener` — a daemon thread that streams `arecord` into the detector and
+    calls `on_wake()` on a hit.
+- **The microphone is never fought over.** `voice.listen()` spawns its own
+  `arecord`, so the two must never hold the device at once. The listener
+  therefore **closes its stream before calling `on_wake`**, and then waits (up to
+  90 s) for the GUI to hand the device back when the cycle returns to *Idle*.
+  `pause()` blocks until the stream is really closed, so `listen()` can never
+  start while the wake listener still owns the mic. Symmetrically, `trigger()`
+  pauses the listener **first** — whether the cycle came from the wake word or a
+  click.
+- **Muting means muting.** The listener also stops on its own while
+  `voice.is_mic_muted()` is true, and the mic button calls `pause()`, so a muted
+  microphone is genuinely silent (no wake word).
+- **Feedback:** a soft two-tone chime (generated in memory with `wave` and played
+  through the existing `pygame` mixer — no new asset, no new dependency),
+  `JARVIS_WAKE_DING=0` to silence it.
+- **GUI wiring (`gui.py`):** the listener runs on its own thread, so it must
+  never touch Qt — it emits a `wake_heard` signal that Qt delivers on the GUI
+  thread, and that slot simply calls `trigger()`. So the wake word path is
+  *identical* to a click: same `JarvisWorker`, same confirmation, same routing.
+  Both menus (widget and tray) get a checkable **Hey Jarvis** item that starts or
+  stops the listener at runtime; a failed microphone or a missing model only
+  prints a hint and leaves click-to-talk working.
+
+### Honesty about the state
+
+- **Written and unit-tested on this machine, never run live.** `openwakeword` +
+  `onnxruntime` are a few hundred MB and are **not** in `requirements.txt`; the
+  user installs them with
+  `./venv/bin/pip install openwakeword onnxruntime`. Until then, `wake.available()`
+  is False, `doctor.py` prints that exact line, and nothing else changes.
+- What the tests *do* cover (37 new tests): the framing/threshold logic against a
+  fake scoring backend, the hit-drops-the-buffer rule, a broken backend, and the
+  whole `Listener` thread against a fake microphone — including the two rules that
+  matter most: **the mic is released before `on_wake`** and **a muted mic is never
+  opened**. The GUI wiring is covered offscreen with a fake listener and a fake
+  worker. The one thing only the real machine can prove is whether the model
+  recognises *your* voice — `JARVIS_WAKE_THRESHOLD` tunes that.
+- The pretrained models are **CC-BY-NC-SA 4.0** (non-commercial). openWakeWord's
+  code is Apache-2.0. Neither is bundled here; `pip` fetches them.
+
+### Bugs found and fixed while building it
+
+1. **`threading.Thread` already has a private `_stop` method**, so naming the
+   shutdown event `self._stop` made `join()` raise `TypeError: 'Event' object is
+   not callable`. Renamed to `_stop_event`.
+2. **A typo in `.env` could stop Jarvis starting.** `float(os.getenv(...))` on the
+   threshold ran at import time, so `JARVIS_WAKE_THRESHOLD=loud` would have
+   crashed `import wake` → `import gui` → Jarvis. Added `_env_float()`, which falls
+   back to the default.
+3. **Unmuting could leave the wake word dead.** Muting mid-cycle moves the status
+   label off *Muted* (the worker resets it to *Idle*), so the unmute branch's
+   `set_state(IDLE)` never ran and the mic was never handed back. Unmuting now
+   always calls `_resume_wake()`.
+4. **A wedged caller could kill the wake word for good.** After a hit the listener
+   waits for `resume()`; a 90 s timeout used to leave it paused *forever*. It now
+   re-arms itself and keeps listening.
+5. **An empty read could hot-spin the thread.** A stalled or fd-less stream now
+   naps 20 ms instead of spinning the loop at 100 % CPU.
+6. **`openwakeword.utils` is not imported by the package's `__init__`** — relying
+   on `openwakeword.utils.download_models()` was luck. It now imports
+   `from openwakeword.utils import download_models` explicitly.
+
+### Verification
+
+- `pytest`: **328 passed, 1 skipped** (was 286). New `test_wake.py` (29 tests) and
+  8 new wake-word tests in `test_gui.py` + 3 in `test_doctor.py`.
+- The API was read from the installed-shape source, not guessed: `openWakeWord`'s
+  `Model(wakeword_models=[...], inference_framework="onnx")` resolves `"hey jarvis"`
+  to `hey_jarvis_v0.1` by replacing the space, `predict()` takes a numpy `int16`
+  array and returns `{name: score}`, and `reset()` exists.
+- `main.py --version` → `Jarvis 1.0.5`; `doctor.py` prints the wake-word line and
+  the copy-paste `pip install openwakeword onnxruntime` when it is missing.
+- **Live on this machine, real microphone** (the model faked, everything else
+  real): the listener streamed a real `arecord` (3 × 3200-byte chunks), the mic
+  was **provably free the moment `on_wake` fired** — a *second* real `arecord`
+  captured 3200 bytes while it was paused — `resume()` made it take the device
+  back (the detector saw a 4th chunk), `stop()` ended the thread cleanly, and the
+  chime played without raising.
+- **Still not run live:** the pretrained model recognising a real voice (needs the
+  ~hundreds-of-MB `pip install`), i.e. whether *your* "Hey Jarvis" scores above
+  the threshold.
 
 ## No more cut-offs, and silent screen reading (2026-10-18, v1.0.4)
 
@@ -424,13 +527,21 @@ Two front ends share the same brain:
 - `doctor.py` — read-only readiness self-check (`main.py --check`): session type,
   installed tools and what each missing one costs, apps indexed, API-key status.
 - `gui.py` — PyQt5 Arc Reactor widget (`QThread` worker); shares `main.handle()`
-  so confirmations work in the GUI too.
+  so confirmations work in the GUI too. Owns the wake listener's lifecycle
+  (start / pause / resume / stop) and exposes a checkable **Hey Jarvis** item in
+  both menus.
+- `wake.py` — optional offline **"Hey Jarvis"** wake word (`openWakeWord` ONNX).
+  `Detector` re-frames raw mic bytes into the model's 80 ms frames and applies the
+  threshold; `Listener` streams `arecord` on a daemon thread, releases the mic
+  *before* a listen cycle and takes it back when Jarvis is idle, and stays silent
+  while the mic is muted. Imports fine without openWakeWord installed.
 - `test_mic.py` — standalone mic diagnostic (arecord-based): lists capture
   devices/PCMs with `arecord -l` / `-L`, records a WAV with the same
   `arecord_command()` as `listen()`, reports RMS/peak, plays it back with `aplay`,
   recognises it, and checks the gate in `voice.py`. No PyAudio.
 - `test_routing.py`, `test_desktop.py`, `test_confirm.py`, `test_exit.py`,
-  `test_memory.py`, `test_agent_cache.py`, `test_flow.py`, `test_voice_capture.py`
+  `test_memory.py`, `test_agent_cache.py`, `test_flow.py`, `test_voice_capture.py`,
+  `test_wake.py`
   — pytest suite (see Verification).
 - `README.md`, `LICENSE` — docs and MIT license.
 

@@ -1,13 +1,14 @@
 # Jarvis — Voice Assistant for Linux
 
-**Version 1.0.4**
+**Version 1.0.5**
 
 A voice-controlled desktop assistant for Linux that can *see* your screen, use the
 internet, and operate the terminal. You speak a command; Jarvis either handles it
 **locally and offline** (regex router — no API call) or hands it to a
 **Groq-backed agent** that can call 40 tools, then answers out loud in English.
 Speech recognition and replies are **English-only by design**. A PyQt5 "Arc
-Reactor" widget lives in the system tray and talks when you click it.
+Reactor" widget lives in the system tray and talks when you click it — or when you
+just say **"Hey Jarvis"**, once the optional offline wake word is installed.
 
 Jarvis **never runs `sudo`** and never runs arbitrary shell from speech — except
 through a guarded terminal tool that refuses anything that could power the device
@@ -16,6 +17,24 @@ confirmation-gated everywhere. When a tool is missing it will *print* a
 copy-paste install command for you to run yourself, but it never executes one.
 
 ---
+
+## What's new in 1.0.5
+
+- **"Hey Jarvis" — hands-free, fully offline.** The GUI no longer needs a click:
+  say the wake phrase and it starts listening, with a short chime to confirm it
+  heard you. It uses `openWakeWord`'s pretrained model, which runs entirely on
+  this machine (no network, no account, ~1-2% of one CPU core). Optional, so
+  nothing changes until you install it:
+  `./venv/bin/pip install openwakeword onnxruntime`. It is on by default once
+  installed — turn it off with `JARVIS_WAKE=0` or the **Hey Jarvis** menu item.
+- **The microphone is never fought over.** Only one thing records at a time: the
+  wake listener releases the mic *before* a listen cycle starts and takes it back
+  the moment Jarvis is idle again. Muting the mic stops the wake word too, so a
+  muted microphone really is silent.
+- **It explains itself.** `doctor.py` reports whether the wake word is available,
+  listening, or switched off, and prints the exact `pip install` line when it is
+  missing. Tune the sensitivity with `JARVIS_WAKE_THRESHOLD` if it fires too
+  eagerly (or misses you), and `JARVIS_WAKE_DING=0` silences the chime.
 
 ## What's new in 1.0.4
 
@@ -113,6 +132,16 @@ copy-paste install command for you to run yourself, but it never executes one.
   `main.handle()`, so confirmation and routing behave identically in each. The
   widget is a mini voice-chat console: it reacts to your voice, moves while it
   speaks, and has a mic mute button and a Stop button.
+- **Optional offline wake word** — say **"Hey Jarvis"** instead of clicking. The
+  GUI listens through `openWakeWord`'s pretrained ONNX model: no network, no
+  account, no API key, ~1-2% of one CPU core, and English-only like everything
+  else. It is *optional*: install it with
+  `./venv/bin/pip install openwakeword onnxruntime` and it switches on by itself
+  (off with `JARVIS_WAKE=0`, or the checkable **Hey Jarvis** menu item). The wake
+  listener and `voice.listen` **never hold the microphone at the same time** — the
+  listener hands it over before recording starts — and muting the mic stops the
+  wake word too. A short chime confirms it heard you (`JARVIS_WAKE_DING=0` mutes
+  the chime), and `JARVIS_WAKE_THRESHOLD` tunes how easily it triggers.
 - **Usable without a microphone** — `JARVIS_TEXT=1 ./venv/bin/python main.py`
   (or `main.py --text`) takes *typed* commands through the exact same
   router/agent path.
@@ -131,12 +160,13 @@ copy-paste install command for you to run yourself, but it never executes one.
   abandons a pending wait. Playing media is paused while Jarvis listens and
   resumed afterwards (best effort), and `JARVIS_PTT=1` switches to push-to-talk
   for noisy rooms.
-- **Tests** — a `pytest` suite of **286 tests** (1 skipped) covering routing, app
+- **Tests** — a `pytest` suite of **328 tests** (1 skipped) covering routing, app
   matching, the protected list, the confirmation flow, the terminal guardrails,
   screen routing, clipboard fallbacks, offline behaviour, the internet tools,
   vision parsing, timers, the YouTube path (play-by-name and on-screen picks),
-  text mode, the doctor, the GUI (offscreen), the live mic-level/TTS-envelope
-  hooks and the real router→agent dispatch path.
+  text mode, the doctor, the GUI (offscreen), the wake word (framing, threshold
+  and the mic hand-over), the live mic-level/TTS-envelope hooks and the real
+  router→agent dispatch path.
 
 ---
 
@@ -177,6 +207,18 @@ notify-send  xdg-utils  yt-dlp  xclip (or xsel, optional — Qt is the fallback)
 > window control report that plainly; app control falls back to process-based
 > closing and media to `playerctl`.
 
+**Optional: the "Hey Jarvis" wake word.** A second, separate install — it is not
+in `requirements.txt` because it is a few hundred MB of ONNX runtime and only the
+GUI uses it. Nothing else changes if you skip it:
+
+```bash
+./venv/bin/pip install openwakeword onnxruntime   # ~1-2% CPU, fully offline
+```
+
+The first run downloads the pretrained model (a one-time network fetch); after
+that it never touches the network. `doctor.py` prints this exact line for you when
+the wake word is missing, and Jarvis itself never installs anything.
+
 ---
 
 ## Setup
@@ -215,6 +257,12 @@ All configuration lives in `config.py` and can be overridden from `.env`:
 | `JARVIS_PTT` | *(unset)* | `1` for push-to-talk (Enter to start/stop) |
 | `JARVIS_TEXT` | *(unset)* | `1` to type commands instead of speaking |
 | `JARVIS_MUTE` | *(unset)* | `1` to skip text-to-speech (replies still print) |
+| `JARVIS_WAKE` | *(on if installed)* | `0` disables the "Hey Jarvis" wake word |
+| `JARVIS_WAKE_MODEL` | `hey jarvis` | Wake phrase/model name (`alexa`, `hey_mycroft`, … or `off`) |
+| `JARVIS_WAKE_THRESHOLD` | `0.5` | Score (0-1) a frame needs to count — raise if it triggers too easily |
+| `JARVIS_WAKE_DING` | *(on)* | `0` silences the "I heard you" chime |
+| `JARVIS_WAKE_VAD` | *(off)* | Voice-activity threshold to ignore non-speech noise |
+| `JARVIS_WAKE_SPEEX` | *(off)* | `1` enables Speex noise suppression (needs the extra speexdsp wheel) |
 
 STT language (`en-US`), TTS voice (`en-US-AriaNeural`), history window, output
 token cap and tool-round limit are constants in `config.py`.
@@ -240,12 +288,15 @@ In the CLI loop, `[STAT]` lines show token counts and track local vs. agent vs.
 cache hits. Say **"exit"**, **"quit"**, **"bye"** or **"stop"** (on their own) to
 end a session.
 
-**GUI:** left-click the reactor (or the tray icon) to talk, drag to move it,
-right-click for the menu, `Esc` or closing the window hides it to the tray, and
-only **Quit** in the tray menu really exits. The orb **reacts to your voice** while
-it listens and **moves while it speaks**; the **Mic** button mutes/unmutes the
-microphone instantly (also `M` or the tray's *Mute mic*), and **Stop** (or `Space`)
-cuts a reply off mid-sentence — or abandons a listen that is still waiting for you.
+**GUI:** left-click the reactor (or the tray icon) to talk — or just say **"Hey
+Jarvis"** once the wake word is installed — drag to move it, right-click for the
+menu, `Esc` or closing the window hides it to the tray, and only **Quit** in the
+tray menu really exits. The orb **reacts to your voice** while it listens and
+**moves while it speaks**; the **Mic** button mutes/unmutes the microphone
+instantly (also `M` or the tray's *Mute mic* — and it silences the wake word too),
+and **Stop** (or `Space`) cuts a reply off mid-sentence — or abandons a listen that
+is still waiting for you. The **Hey Jarvis** menu item (in both the widget and the
+tray menu) switches the wake word off and on while Jarvis is running.
 
 ### Voice commands
 
@@ -362,8 +413,9 @@ confirmation first, then tries the router, and only sends a miss to the agent.
 | `tools.py` | The tool functions (see the list below). |
 | `memory.py` | Rolling `deque` window of recent turns. |
 | `main.py` | Entry point and `handle()` dispatch (`--text`, `--offline`, `--screen`, `--gui`, `--check`, `--version`). |
-| `gui.py` | PyQt5 Arc Reactor widget + system tray; the listen/think/speak cycle runs on a `QThread`. The orb is fed live mic levels (listening) and the TTS loudness envelope (speaking); the widget adds a mic mute/unmute button and a Stop button. |
-| `doctor.py` | Readiness self-check. Prints a copy-paste install line for missing tools (never runs it). |
+| `gui.py` | PyQt5 Arc Reactor widget + system tray; the listen/think/speak cycle runs on a `QThread`. The orb is fed live mic levels (listening) and the TTS loudness envelope (speaking); the widget adds a mic mute/unmute button and a Stop button. Owns the wake listener's lifecycle (start/pause/resume/stop). |
+| `wake.py` | Optional offline **"Hey Jarvis"** wake word (openWakeWord ONNX). `Detector` re-frames audio into 80 ms frames and applies the threshold; `Listener` streams the mic on a daemon thread, hands the device over before any listen cycle, and stays silent while the mic is muted. Importable without openWakeWord. |
+| `doctor.py` | Readiness self-check. Prints a copy-paste install line for missing tools (never runs it), and the wake-word status. |
 | `test_mic.py` | Standalone mic diagnostic. |
 
 ### Tools (40)
@@ -435,6 +487,16 @@ Notes & timers: `fn_save_note`, `fn_read_file`, `fn_set_timer`, `fn_set_reminder
 - **Agent replies are cut off:** raise `MAX_OUTPUT_TOKENS` in `config.py`.
 - **`RequestError` from STT:** speech-to-text needs network access; the local
   router fast-path still works offline.
+- **"Hey Jarvis" does nothing.** Check `./venv/bin/python doctor.py`: it says
+  whether the wake word is installed, listening or switched off, and prints the
+  exact `pip install` line when it is missing. If it is installed but Jarvis never
+  reacts, say the phrase a little closer to the mic, or lower the bar:
+  `JARVIS_WAKE_THRESHOLD=0.35 ./venv/bin/python main.py --gui`. Run with
+  `JARVIS_DEBUG=1` to see each detection and its score.
+- **It wakes up when it shouldn't** (e.g. the TV says something similar): raise it,
+  `JARVIS_WAKE_THRESHOLD=0.7`, add voice-activity gating with `JARVIS_WAKE_VAD=0.5`,
+  or switch the wake word off entirely with `JARVIS_WAKE=0`.
+- **The chime is annoying:** `JARVIS_WAKE_DING=0`.
 
 ---
 
@@ -449,9 +511,18 @@ Notes & timers: `fn_save_note`, `fn_read_file`, `fn_set_timer`, `fn_set_reminder
   untrusted input.
 - Screen actions are an explicit, whitelisted set (move/click/type/key/scroll);
   there is no path from a screenshot to arbitrary code execution.
+- The optional wake word runs entirely on this machine (`openWakeWord`, ONNX): the
+  microphone is only opened while Jarvis is idle, nothing is sent anywhere, and
+  muting the mic stops it listening. It is your choice to install it, and
+  `JARVIS_WAKE=0` (or the menu item) turns it off.
 - Never commit `.env`, API keys or `TOKEN.txt`. `.gitignore` covers `.env`,
   `venv/`, caches, audio artifacts and token files.
 
 ## License
 
 MIT © 2026 Jakir Hussain Khan. See [LICENSE](LICENSE).
+
+The optional wake word uses [`openWakeWord`](https://github.com/dscripka/openWakeWord)
+(Apache-2.0) with its pretrained models, which are licensed **CC-BY-NC-SA 4.0**
+(non-commercial use only) by their authors. They are fetched by `pip`/at first run,
+never bundled in this repository.

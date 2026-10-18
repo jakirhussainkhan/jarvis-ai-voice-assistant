@@ -49,6 +49,23 @@ def _has_module(name):
         return False
 
 
+def _wake_status():
+    """One line describing the optional "Hey Jarvis" wake word."""
+    try:
+        import wake
+    except Exception as exc:                      # never fail the whole check
+        return f"Wake word: error ({exc})"
+    if not wake.available():
+        return ("Wake word: OFF -- \"Hey Jarvis\" needs openWakeWord. "
+                "Install it yourself with:\n  " + wake.install_hint())
+    phrase = wake.model_name()
+    if not wake.enabled():
+        return (f"Wake word: installed but switched off (JARVIS_WAKE=0) -- "
+                f"remove that to listen for \"{phrase}\"")
+    return (f"Wake word: ON -- listening for \"{phrase}\" (offline, "
+            f"JARVIS_WAKE=0 disables it, 'quit' stops it)")
+
+
 def report():
     """Return the readiness report as a string."""
     out = ["Jarvis readiness check", "=" * 46]
@@ -102,6 +119,7 @@ def report():
     clip = shutil.which("xclip") or shutil.which("xsel")
     out.append("Clipboard read: " + ("xclip/xsel" if clip else
                ("Qt fallback" if qt else "unavailable")))
+    out.append(_wake_status())
     out.append("")
 
     if missing:
@@ -117,7 +135,8 @@ def report():
     out.append("Ask about the current screen once:")
     out.append("  ./venv/bin/python main.py --screen \"what is on my screen?\"")
     out.append("Floating widget + system tray:")
-    out.append("  ./venv/bin/python main.py --gui   # click the orb to talk;")
+    out.append("  ./venv/bin/python main.py --gui   # click the orb -- or, once the")
+    out.append("       wake word is installed, just say \"Hey Jarvis\" -- to talk;")
     out.append("       mic button mutes/unmutes, Stop cuts a reply or a")
     out.append("       pending listen, and the orb reacts to your voice and")
     out.append("       to Jarvis's own speech")
