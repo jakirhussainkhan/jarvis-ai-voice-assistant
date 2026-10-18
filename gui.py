@@ -70,35 +70,132 @@ QPushButton:checked {
 
 
 def make_icon(size=64):
-    """Paint the arc-reactor as a QIcon (used for the window and tray)."""
+    """Paint the Iron Man arc-reactor as a QIcon (window, tray and menu PNGs).
+
+    Built the way Tony Stark's reactor reads on screen: a machined titanium
+    housing with ten glowing coil segments around a white-hot core, all over a
+    dark recessed backplate with a soft bloom. Everything is drawn inside the
+    proportional ``radius`` margin so the housing is never clipped, and the
+    corners stay transparent so it sits cleanly on any panel.
+    """
+    import math
+
     pixmap = QPixmap(size, size)
     pixmap.fill(Qt.transparent)
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.Antialiasing)
     center = QPointF(size / 2.0, size / 2.0)
-    # Keep a proportional margin so the sphere is not clipped at large sizes.
+    # Keep a proportional margin so the housing is not clipped at large sizes.
     radius = size / 2.0 - max(1.5, size * 0.04)
-
-    glow = QRadialGradient(center, radius)
-    glow.setColorAt(0.0, QColor(120, 205, 255))
-    glow.setColorAt(1.0, QColor(0, 80, 190))
     painter.setPen(Qt.NoPen)
-    painter.setBrush(QBrush(glow))
+
+    # --- backplate: the recessed carbon disc the whole reactor sits on ------
+    plate = QRadialGradient(center, radius)
+    plate.setColorAt(0.0, QColor(24, 34, 43))
+    plate.setColorAt(0.75, QColor(13, 20, 27))
+    plate.setColorAt(1.0, QColor(3, 6, 10))
+    painter.setBrush(QBrush(plate))
     painter.drawEllipse(center, radius, radius)
 
-    ring = QPen(QColor(185, 240, 255))
-    ring.setWidthF(max(1.0, size * 0.03))
-    painter.setPen(ring)
-    painter.setBrush(Qt.NoBrush)
-    painter.drawEllipse(center, radius * 0.82, radius * 0.82)
+    # a whisper of bloom just inside the rim so the metal reads as "powered"
+    bloom = QRadialGradient(center, radius * 0.85)
+    bloom.setColorAt(0.0, QColor(96, 180, 255, 28))
+    bloom.setColorAt(1.0, QColor(96, 180, 255, 0))
+    painter.setBrush(QBrush(bloom))
+    painter.drawEllipse(center, radius * 0.85, radius * 0.85)
 
-    core_radius = radius * 0.5
+    # --- titanium housing: an annulus with a machined bevel ------------------
+    # The gradient radius spans the whole disc, so each colour stop is a
+    # fraction of `radius`; the ring runs from 0.60 to 0.98. Dark gunmetal:
+    # the glowing slots must be the brightest thing in the icon.
+    housing = QRadialGradient(center, radius)
+    for stop, color in (
+        (0.60, QColor(57, 66, 78)),     # inner bore: shadowed metal
+        (0.645, QColor(107, 122, 140)), # bevel catches the light
+        (0.70, QColor(43, 51, 61)),     # flat of the ring: dark
+        (0.92, QColor(38, 45, 54)),     # flat of the ring
+        (0.965, QColor(92, 103, 116)),  # outer bevel
+        (0.99, QColor(20, 26, 34)),     # dark outer edge
+    ):
+        housing.setColorAt(stop, color)
+
+    from PyQt5.QtGui import QPainterPath
+
+    path = QPainterPath()
+    path.addEllipse(center, radius * 0.98, radius * 0.98)
+    path.addEllipse(center, radius * 0.60, radius * 0.60)
+    painter.setBrush(QBrush(housing))
+    painter.drawPath(path)
+
+    # --- ten coil slots cut into the housing, glowing white-hot to cyan ------
+    slot_path = QPainterPath()
+    half_angle = math.radians(10.5)           # wide slots, thin dark separators
+    inner, outer = radius * 0.615, radius * 0.96
+    # Walk the inner rail left-to-right, then the outer rail right-to-left,
+    # so each polygon goes around its sector exactly once.
+    for segment in range(10):
+        base = math.radians(segment * 36.0) - math.pi / 2.0
+        corners = []
+        for level, sides in ((inner, (-1, 1)), (outer, (1, -1))):
+            for side in sides:
+                theta = base + side * half_angle
+                corners.append(QPointF(
+                    center.x() + level * math.cos(theta),
+                    center.y() + level * math.sin(theta)))
+        slot_path.moveTo(corners[0])
+        for corner in corners[1:]:
+            slot_path.lineTo(corner)
+        slot_path.closeSubpath()
+
+    slot_gradient = QRadialGradient(center, outer)
+    slot_gradient.setColorAt(inner / outer - 0.001, QColor(238, 250, 255))
+    slot_gradient.setColorAt(0.72, QColor(150, 220, 255))
+    slot_gradient.setColorAt(1.0, QColor(66, 175, 255))
+    painter.fillPath(slot_path, QBrush(slot_gradient))
+    # two slim translucent strokes just kiss the slot edges with light; wide
+    # ones would flood the gaps and wash the ring into a uniform band
+    painter.setBrush(Qt.NoBrush)      # drawPath strokes AND fills: no fill wanted
+    for width, alpha in ((0.038, 66), (0.016, 120)):
+        halo_pen = QPen(QColor(40, 170, 255, alpha), max(0.8, size * width))
+        painter.setPen(halo_pen)
+        painter.drawPath(slot_path)
+    painter.setPen(Qt.NoPen)
+
+    # thin machining seams; dim, so they read as shadow lines not chrome
+    rim_pen = QPen(QColor(158, 186, 208, 120))
+    rim_pen.setWidthF(max(0.8, size * 0.010))
+    painter.setPen(rim_pen)
+    painter.setBrush(Qt.NoBrush)
+    painter.drawEllipse(center, radius * 0.618, radius * 0.618)
+    painter.drawEllipse(center, radius * 0.975, radius * 0.975)
+    painter.setPen(Qt.NoPen)
+
+    # --- the palladium core: a solid light disc with a glow halo -------------
+    glow_radius = radius * 0.58
+    glow = QRadialGradient(center, glow_radius)
+    glow.setColorAt(0.0, QColor(205, 242, 255, 235))
+    glow.setColorAt(0.42, QColor(130, 214, 255, 130))
+    glow.setColorAt(1.0, QColor(40, 150, 255, 0))
+    painter.setBrush(QBrush(glow))
+    painter.drawEllipse(center, glow_radius, glow_radius)
+
+    core_radius = radius * 0.37
     core = QRadialGradient(center, core_radius)
     core.setColorAt(0.0, QColor(255, 255, 255))
-    core.setColorAt(1.0, QColor(90, 185, 255))
-    painter.setPen(Qt.NoPen)
+    core.setColorAt(0.70, QColor(250, 253, 255))
+    core.setColorAt(1.0, QColor(168, 224, 255))
     painter.setBrush(QBrush(core))
     painter.drawEllipse(center, core_radius, core_radius)
+
+    # a single specular glint, top-left, like glass over the reactor
+    glint = QPointF(center.x() - core_radius * 0.30,
+                    center.y() - core_radius * 0.30)
+    glint_gradient = QRadialGradient(glint, core_radius * 0.40)
+    glint_gradient.setColorAt(0.0, QColor(255, 255, 255, 110))
+    glint_gradient.setColorAt(1.0, QColor(255, 255, 255, 0))
+    painter.setBrush(QBrush(glint_gradient))
+    painter.drawEllipse(glint, core_radius * 0.40, core_radius * 0.40)
+
     painter.end()
     return QIcon(pixmap)
 

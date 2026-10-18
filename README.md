@@ -1,6 +1,6 @@
 # Jarvis — Voice Assistant for Linux
 
-**Version 1.0.8**
+**Version 1.0.9**
 
 A voice-controlled desktop assistant for Linux that can *see* your screen, use the
 internet, and operate the terminal. You speak a command; Jarvis either handles it
@@ -17,6 +17,14 @@ confirmation-gated everywhere. When a tool is missing it will *print* a
 copy-paste install command for you to run yourself, but it never executes one.
 
 ---
+
+## What's new in 1.0.9
+
+- **An Iron Man face for Jarvis.** The icon is now a proper arc reactor, built
+  the way Tony Stark's reads on screen: a dark gunmetal housing, **ten glowing
+  coil slots** around a **white-hot core** with a light halo. Rendered with the
+  same code for the widget, the tray, the app-menu and every committed
+  `assets/jarvis-*.png`, so they can never drift apart. Legible down to 32 px.
 
 ## What's new in 1.0.8
 
@@ -479,7 +487,7 @@ confirmation first, then tries the router, and only sends a miss to the agent.
 | `doctor.py` | Readiness self-check. Prints a copy-paste install line for missing tools (never runs it), and the wake-word status. |
 | `install_desktop.py` | Adds/removes the application-menu entry (and optionally autostart), pointing at this checkout. Writes only inside your own home directory; `--uninstall` is exact. |
 | `run.sh` | Starts the GUI through the project's virtualenv without needing `cd`. |
-| `assets/jarvis-*.png` | The arc-reactor icon at 32-256 px, generated from `gui.make_icon()`. |
+| `assets/jarvis-*.png` | The Iron Man arc-reactor icon at 32-256 px, generated from `gui.make_icon()`. |
 | `test_mic.py` | Standalone mic diagnostic. |
 
 ### Tools (40)

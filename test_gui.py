@@ -466,3 +466,26 @@ def test_icon_has_a_margin_so_it_is_never_clipped(app):
 
     center = image.pixelColor(128, 128)
     assert center.alpha() > 0, "the core must be painted"
+
+
+def test_icon_looks_like_a_lit_reactor(app):
+    """The Iron Man look: glowing coil slots around a white-hot core."""
+    image = gui.make_icon(256).pixmap(256, 256).toImage()
+    radius = 128.0 - max(1.5, 256 * 0.04)
+
+    # The core: white-hot, not pale blue.
+    core = image.pixelColor(128, 128)
+    assert min(core.red(), core.green(), core.blue()) > 230, \
+        f"the core centre must be white-hot, got {core.name()}"
+
+    # The coil slot that points straight up, sampled halfway along its length.
+    slot = image.pixelColor(128, round(128 - 0.787 * radius))
+    assert slot.alpha() == 255 and slot.blue() > 190, \
+        f"the top slot must glow electric blue, got {slot.name()}"
+
+    # Half a pitch away (between two slots) the housing must be darker: the
+    # glowing wedges only read as Iron Man when the metal is gunmetal.
+    gap = image.pixelColor(157, 40)
+    assert gap.alpha() > 0
+    assert gap.value() < slot.value() - 30, \
+        f"the slot must out-glow the housing, slot {slot.name()} vs gap {gap.name()}"

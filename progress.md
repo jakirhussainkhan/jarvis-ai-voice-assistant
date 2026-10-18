@@ -29,7 +29,7 @@ is installed.
 | Timers / reminders | Working |
 | Offline wake word ("Hey Jarvis") | **Built + unit-tested; NOT yet verified live** (needs `pip install openwakeword onnxruntime`) |
 | Desktop launcher (`run.sh` + app-menu entry) | Working (verified: `desktop-file-validate` clean, GUI starts) |
-| Tests | `pytest` suite — **354 passed, 1 skipped** |
+| Tests | `pytest` suite — **355 passed, 1 skipped** |
 | Spoken voice | `en-GB-RyanNeural` (British male); override with `JARVIS_TTS_VOICE` |
 | Published | GitHub, tags **`v1.0.1`**…**`v1.0.7`** (README + MIT LICENSE) |
 
@@ -47,8 +47,35 @@ is installed.
   `run.sh`, an application-menu entry and autostart), **`v1.0.7`** (a stronger,
   Iron-Man voice: the British male `en-GB-RyanNeural`, env-switchable) and
   **`v1.0.8`** (continuous conversation: Jarvis keeps the mic open after every
-  reply until you go quiet, say "bye", press Stop or mute).
+  reply until you go quiet, say "bye", press Stop or mute) and **`v1.0.9`**
+  (an Iron Man arc-reactor icon: gunmetal housing, ten glowing coil slots and
+  a white-hot core, regenerated into all `assets/*.png`).
 - Secrets are **not** committed (see *Security* below).
+
+## An Iron Man arc-reactor icon (2026-10-19, v1.0.9)
+
+The user asked for an icon with a real "Iron Man vibe" — to look at it and feel
+like Tony Stark. The old icon was a flat blue orb with a silver ellipse: it read
+as a porthole. The new one is a cinematic arc reactor, drawn by `gui.make_icon()`:
+
+- **A dark gunmetal housing** (a machined bevelled annulus, painted as a
+  `QPainterPath` with an interpolated radial-gradient ring) so the only bright
+  pixels are light, not metal.
+- **Ten glowing coil slots** — true annular sectors (0.615–0.96 of the radius,
+  10.5 degree half-angles) filled white-hot to electric blue, plus two slim
+  translucent edge strokes that read as light bleeding off the coils.
+- **A white-hot core**: a solid white disc inside a fading light halo, with a
+  small specular glint.
+- **One real bug found while iterating:** `QPainter.drawPath()` both strokes and
+  fills, and the painter was still holding the housing brush when the slot
+  strokes were drawn — the housing gradient was painting over the slot fill,
+  which is why earlier renders read as dark tiles. `setBrush(Qt.NoBrush)` before
+  the strokes fixed it.
+- All five `assets/jarvis-*.png` regenerated and `install_desktop.py` re-run, so
+  the app-menu entry shows the new icon immediately. New pixel tests pin the
+  look: a white-hot core (min(R,G,B) > 230), an electric-blue top slot
+  (B > 190) and a slot that clearly out-glows its housing gap.
+- `pytest`: **355 passed, 1 skipped** (was 354).
 
 ## Continuous conversation, like ChatGPT's voice mode (2026-10-19, v1.0.8)
 
