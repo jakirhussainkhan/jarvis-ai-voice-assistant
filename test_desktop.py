@@ -178,9 +178,92 @@ def test_media_reports_missing_playerctl(monkeypatch):
     assert "playerctl is not installed" in desktop.media_control("pause")
 
 
+def test_pause_media_if_playing_uses_playerctl(monkeypatch):
+    monkeypatch.setattr(desktop, "has", lambda tool: tool == "playerctl")
+    calls = []
+
+    def fake_run(args, timeout=6):
+        calls.append(args)
+        return (0, "Playing") if args == ["playerctl", "status"] else (0, "")
+
+    monkeypatch.setattr(desktop, "_run", fake_run)
+
+    token = desktop.pause_media_if_playing()
+    assert token == ("playerctl",)
+    assert ["playerctl", "pause"] in calls
+
+    desktop.resume_media(token)
+    assert ["playerctl", "play"] in calls
+
+
+def test_pause_media_skips_when_nothing_is_playing(monkeypatch):
+    monkeypatch.setattr(desktop, "has", lambda tool: tool == "playerctl")
+    calls = []
+
+    def fake_run(args, timeout=6):
+        calls.append(args)
+        return (0, "Paused") if args == ["playerctl", "status"] else (0, "")
+
+    monkeypatch.setattr(desktop, "_run", fake_run)
+
+    assert desktop.pause_media_if_playing() is None
+    assert ["playerctl", "pause"] not in calls
+
+
+def test_pause_media_falls_back_to_pactl(monkeypatch):
+    monkeypatch.setattr(desktop, "has", lambda tool: tool == "pactl")
+    calls = []
+
+    def fake_run(args, timeout=6):
+        calls.append(args)
+        if args == ["pactl", "list", "sink-inputs"]:
+            return 0, "Sink Input #9\n\tState: RUNNING\n"
+        return 0, ""
+
+    monkeypatch.setattr(desktop, "_run", fake_run)
+
+    token = desktop.pause_media_if_playing()
+    assert token == ("pactl",)
+    assert ["pactl", "suspend-sink", "@DEFAULT_SINK@", "1"] in calls
+
+    desktop.resume_media(token)
+    assert ["pactl", "suspend-sink", "@DEFAULT_SINK@", "0"] in calls
+
+
+def test_pause_and_resume_media_never_raise(monkeypatch):
+    monkeypatch.setattr(desktop, "has", lambda tool: False)
+    assert desktop.pause_media_if_playing() is None
+    desktop.resume_media(None)           # no token -> no-op, must not raise
+
+
 # --------------------------------------------------------------------------- #
 # YouTube
 # --------------------------------------------------------------------------- #
+
+def test_extract_media_query_basic():
+    assert desktop.extract_media_query("play despacito on youtube") == "despacito"
+    assert desktop.extract_media_query("listen to lo-fi on youtube") == "lo-fi"
+    assert desktop.extract_media_query("watch Bohemian Rhapsody") == "Bohemian Rhapsody"
+    assert desktop.extract_media_query("despacito") == "despacito"
+
+
+def test_extract_media_query_from_messy_sentence():
+    """Regression: a whole misheard sentence must collapse to the song name."""
+    messy = ("play what do you mean music player i am i am just please the song "
+             "udi udi on youtube")
+    assert desktop.extract_media_query(messy) == "udi udi"
+
+
+def test_extract_media_query_empty_when_only_filler():
+    assert desktop.extract_media_query("play the song on youtube") == ""
+    assert desktop.extract_media_query("play some music") == ""
+    assert desktop.extract_media_query("") == ""
+
+
+def test_play_youtube_asks_when_query_is_empty(monkeypatch):
+    monkeypatch.setattr(desktop, "has", lambda tool: True)
+    assert desktop.play_youtube("play the song on youtube") == "What should I play?"
+
 
 def test_play_youtube_uses_top_ytdlp_result(monkeypatch):
     monkeypatch.setattr(desktop, "has", lambda tool: tool == "yt-dlp")
@@ -188,7 +271,7 @@ def test_play_youtube_uses_top_ytdlp_result(monkeypatch):
     opened = []
     monkeypatch.setattr(desktop, "_open_url", lambda url: opened.append(url) or True)
 
-    assert desktop.play_youtube("a song") == "Playing a song on YouTube."
+    assert desktop.play_youtube("despacito") == "Playing despacito on YouTube."
     assert opened == ["https://www.youtube.com/watch?v=dQw4w9WgXcQ"]
 
 
@@ -197,9 +280,9 @@ def test_play_youtube_without_ytdlp_opens_search(monkeypatch):
     opened = []
     monkeypatch.setattr(desktop, "_open_url", lambda url: opened.append(url) or True)
 
-    reply = desktop.play_youtube("a song")
+    reply = desktop.play_youtube("despacito")
     assert "yt-dlp is not installed" in reply
-    assert opened and "results?search_query=a+song" in opened[0]
+    assert opened and "results?search_query=despacito" in opened[0]
 
 
 def test_search_and_open_youtube(monkeypatch):

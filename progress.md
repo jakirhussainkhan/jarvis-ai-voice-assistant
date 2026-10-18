@@ -21,7 +21,7 @@ GUI.
 | Microphone diagnostic | Working |
 | Desktop control (apps/YouTube/media/volume/brightness/screenshot/lock) | Working (see *Desktop control pass*) |
 | Confirmation-gated power actions | Working (ask "Are you sure?") |
-| Tests | `pytest` suite — 80 tests (1 opt-in WAV test skipped by default) |
+| Tests | `pytest` suite — 94 tests (1 opt-in WAV test skipped by default) |
 | Published | GitHub, tag `v1.0.0` (README + MIT LICENSE) |
 
 ## Repository & releases
@@ -69,11 +69,13 @@ Two front ends share the same brain:
   is then **auto-calibrated** to `1.5 × median(background)` clamped to
   **150–300**. Speech starts on RMS > **300**, a ~0.3 s **pre-roll** keeps quiet
   onsets, **hysteresis** keeps recording while RMS stays above the calibrated
-  floor, the phrase ends after ~**1.2 s** below it, caps phrases at 8 s, and waits
-  at most 4 s for speech to start. Bytes are wrapped in
-  `sr.AudioData(data, 16000, 2)` and sent to Google STT (`en-US`). `speak()` is
-  edge-tts + pygame (`en-US-AriaNeural`). Device defaults to `default`; override
-  with `JARVIS_MIC_DEVICE`.
+  floor, the phrase ends after ~**1.2 s** below it, caps phrases at **6 s**, and
+  waits at most 4 s for speech to start. Playing media is paused before the mic
+  opens and resumed after capture (best effort, `playerctl` then `pactl`), and
+  `JARVIS_PTT=1` switches to push-to-talk (Enter to start, Enter/silence to
+  stop). Bytes are wrapped in `sr.AudioData(data, 16000, 2)` and sent to Google
+  STT (`en-US`). `speak()` is edge-tts + pygame (`en-US-AriaNeural`). Device
+  defaults to `default`; override with `JARVIS_MIC_DEVICE`.
 - `router.py` — `try_local()`: offline regex handling for **power (confirmation-
   gated)**, media (`playerctl`), volume (`pactl`), brightness (`brightnessctl`),
   screenshot, lock, battery, system status, time, date, YouTube (open/play),
@@ -257,7 +259,8 @@ fallbacks. `close youtube` therefore answers **"Which window?"** here.
 | "close telegram" / "quit files" / "kill calculator" | graceful close, then SIGKILL after ~3 s |
 | "close youtube" | closes the focused tab via Ctrl+W if possible, else "Which window?" |
 | "open youtube" | opens the YouTube homepage |
-| "play lo-fi on youtube" | plays the top `yt-dlp` result, says what is playing |
+| "play lo-fi on youtube" | extracts just the song name, plays the top `yt-dlp` result, says what is playing |
+| "play … on youtube" with no song name | asks "What should I play?" |
 | "search cats on youtube" | opens the results page (via the agent) |
 | "pause" / "resume" / "next song" / "previous track" / "stop the music" | media control (`playerctl`) |
 | "volume up" / "volume down" / "set volume to 40" / "mute" / "unmute" | volume (`pactl`, clamped 0–100) |
@@ -290,8 +293,14 @@ fallbacks. `close youtube` therefore answers **"Which window?"** here.
   bounded at 0.5 s) without cutting a phrase that starts immediately.
 - The stop floor is auto-calibrated per listen: `1.5 × median(background)`
   clamped to **150–300**, replacing the fixed 150.
-- `JARVIS_DEBUG` keeps the per-chunk trace (now showing `state=warmup|waiting|
-  recording` and the live `floor=`).
+- Phrases are capped at **6 s** (was 8 s).
+- Playing media is paused before the mic opens and resumed after capture (best
+  effort via `playerctl`, falling back to `pactl`), so music does not leak in.
+- `JARVIS_PTT=1` enables push-to-talk: press Enter to start, press Enter again
+  (or pause speaking) to end the phrase — the escape hatch for noisy rooms.
+- `JARVIS_DEBUG` keeps the per-chunk trace (showing `state=warmup|waiting|
+  recording` and the live `floor=`) and now also prints the chosen
+  `background_median` / `floor`, warning when the median is above 200.
 
 ### Honest limitations (not verified on the real machine)
 
@@ -309,6 +318,75 @@ fallbacks. `close youtube` therefore answers **"Which window?"** here.
 - App matching was checked against this machine's 125 `.desktop` entries
   (`telegram`, `files`, `terminal`, `settings`, `calculator`, `browser` all
   resolve correctly); other apps were not individually verified.
+
+## Bug fixes: YouTube query extraction & capture hardening (2026-10-18)
+
+Two bugs reported from the real machine while saying *"play &lt;song&gt; on
+YouTube"*.
+
+### 1. The whole sentence was used as the search query
+
+*"play … udi udi"* was misheard as a long sentence, and the entire (messy)
+transcript was passed to `yt-dlp` / the results URL, so it opened a results page
+instead of playing the song.
+
+Fix: a single extractor, `desktop.extract_media_query(text)`, now decides what
+actually reaches `yt-dlp`:
+
+- take the text **after** an explicit verb (`play` / `watch` / `listen to`);
+- drop a trailing **"on youtube"** (and any other "youtube" mention);
+- strip spoken filler / STT noise — `please`, `the`, `a`, `song(s)`, `music`,
+  `video(s)`, `track(s)`, `tune(s)`, `player`, `media`, `i am` / `i'm` / `im`,
+  `just`, `what do you mean`, `you know`, `like`, `now`, `hey`, `ok`, …
+- collapse whitespace and trim punctuation.
+
+`router.try_local()` uses it for the local play path, and `play_youtube()`
+applies it again so the agent tool path is safe too. When the cleaned query is
+empty, Jarvis asks **"What should I play?"** instead of searching.
+
+Example: `"play what do you mean music player i am i am just please the song udi
+udi on youtube"` → `"udi udi"` → plays the top `yt-dlp` result for *udi udi*.
+
+### 2. Phrases never ended by silence when music was playing
+
+With music from the speakers leaking into the mic, background RMS sat between
+100 and 250 — above the calibrated `floor=150` — so the silence gate never
+closed and capture ran to the length cap (`reason=max_length`).
+
+Fixes:
+
+- **Push-to-talk:** `JARVIS_PTT=1` presses Enter, records, and ends on Enter
+  again (or silence). Deterministic end-of-phrase regardless of background.
+- **Pause playback while listening:** before the mic opens, if `playerctl` shows
+  a player *Playing* it is paused (else `pactl` suspend-sink when a sink-input is
+  *RUNNING*), and it is resumed after the phrase is captured. Best effort — it
+  never fails listening.
+- **Debug calibration report:** `JARVIS_DEBUG=1` now prints
+  `calibration: background_median=… floor=… samples=…` and, when the median is
+  above **200**, warns that speakers/music are probably leaking into the mic.
+- **Shorter phrases:** the max phrase length is now **6 s** (was 8 s).
+
+Verification:
+
+- `pytest`: **94 passed, 1 skipped** (the skip is the opt-in `JARVIS_TEST_WAV`
+  recorded-speech test; setting the env var makes it pass).
+- New tests: `extract_media_query` on plain and messy sentences
+  (`"… music player i am … the song udi udi"` → `"udi udi"`), the empty-query
+  "What should I play?" path, router forwarding only the song name, media
+  pause/resume (playerctl and pactl paths, and the nobody-is-playing no-op),
+  push-to-talk recording below the start gate, the same tone being ignored
+  without PTT, and the stop-event ending a phrase.
+- Manual synthetic run with `JARVIS_DEBUG=1`: a 220-RMS "music" background
+  prints the calibration line and the `background median … > 200 … leaking`
+  warning, confirming the new diagnostics.
+
+**What could not be tested on the real machine (honest).** The live microphone
+was again unavailable here, so the music-pause/resume and the push-to-talk
+Enter flow were verified with synthetic PCM and mocked subprocess calls, **not**
+a real utterance with speakers playing. `playerctl` and `pactl` behaviour on the
+user's actual PipeWire setup is untested (only the command construction is).
+The improved extraction was validated on the exact messy sentence reported plus
+hand-written variants; other obscure mishearings may still slip through.
 
 ## Verification (2026-10-18)
 
@@ -481,4 +559,5 @@ Microphone tips (this machine):
 amixer -c 1 sset Capture 40%                       # 100% clips; 40% keeps the floor under the 300 gate
 JARVIS_MIC_DEVICE=plughw:1,0 ./venv/bin/python main.py  # force an arecord -L device (default: "default")
 JARVIS_DEBUG=1 ./venv/bin/python main.py           # print per-chunk RMS / capture diagnostics
+JARVIS_PTT=1 ./venv/bin/python main.py             # push-to-talk: Enter to start, Enter to stop
 ```

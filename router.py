@@ -79,12 +79,7 @@ DATE_WORD = re.compile(r"\bdate\b|\btoday'?s date\b", re.I)
 
 # --- YouTube ---------------------------------------------------------------- #
 YT_WORD = re.compile(r"\byoutube\b", re.I)
-YT_STRIP = re.compile(
-    r"\b(youtube|play|watch|listen to|listen|open|launch|start|run|show|on)\b",
-    re.I,
-)
 YT_PLAY = re.compile(r"\b(play|watch|listen to|listen)\b", re.I)
-YT_SEARCH = re.compile(r"\b(search|find|look ?up)\b", re.I)
 
 # --- open / close ----------------------------------------------------------- #
 OPEN_VERB = re.compile(r"\b(open|launch|start|run|show)\b", re.I)
@@ -265,13 +260,13 @@ def try_local(text):
             return None  # unknown target -> let the agent decide
         return None
 
-    # --- YouTube: open, play, or search ------------------------------------ #
+    # --- YouTube: open or play (search defers to the agent) ---------------- #
     if YT_WORD.search(t):
         if YT_PLAY.search(t):
-            query = _clean(t, YT_STRIP)
-            return desktop.play_youtube(query) if query else desktop.open_youtube()
-        if YT_SEARCH.search(t):
-            return desktop.search_youtube(_clean(t, YT_STRIP))
+            query = desktop.extract_media_query(t)
+            if not query:
+                return "What should I play?"
+            return desktop.play_youtube(query)
         if OPEN_VERB.search(t):
             return desktop.open_youtube()
         return None  # bare "youtube" -> agent

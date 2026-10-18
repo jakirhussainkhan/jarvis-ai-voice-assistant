@@ -42,7 +42,10 @@ server, the session manager, systemd and the desktop shell safe from being close
   chunks and RMS-gated. The stream-open spike is discarded, the stop floor is
   auto-calibrated from the room noise (`1.5 × median`, clamped to 150–300), a
   ~0.3 s pre-roll keeps quiet onsets, and hysteresis ends the phrase after ~1.2 s
-  of silence. All bounded so a misbehaving mic can never stall the loop.
+  of silence. Phrases are capped at 6 s. Playing media is paused while Jarvis
+  listens and resumed afterwards (best effort), and `JARVIS_PTT=1` switches to
+  push-to-talk (press Enter, speak, press Enter again) for noisy rooms. All
+  bounded so a misbehaving mic can never stall the loop.
 - **Tests** — a `pytest` suite covering routing, app matching, the protected
   list, the confirmation flow, volume limits and the YouTube play path (all with
   mocked subprocess calls), plus exit detection, memory, the response cache, the
@@ -101,7 +104,8 @@ All configuration lives in `config.py` and can be overridden from `.env`:
 | `GROQ_BASE_URL` | `https://api.groq.com/openai/v1` | OpenAI-compatible endpoint |
 | `GROQ_MODEL` | `openai/gpt-oss-120b` | Model ID (must support tools) |
 | `JARVIS_MIC_DEVICE` | `default` | ALSA PCM name for `arecord -D` (any name from `arecord -L`) |
-| `JARVIS_DEBUG` | *(unset)* | Set to `1` to print per-chunk RMS / capture diagnostics |
+| `JARVIS_DEBUG` | *(unset)* | Set to `1` to print per-chunk RMS / capture diagnostics (including the calibrated background median and floor) |
+| `JARVIS_PTT` | *(unset)* | Set to `1` for push-to-talk: press Enter to record, press Enter again (or stop talking) to end the phrase |
 
 STT language (`en-US`), TTS voice (`en-US-AriaNeural`), history window, output
 token cap and tool-round limit are constants in `config.py`.
@@ -127,7 +131,7 @@ to move, and right-click / `Esc` to quit.
 | "open telegram" / "open files" / "open terminal" / "open settings" / "open calculator" | local router (fuzzy app match) |
 | "close telegram" / "quit files" / "kill calculator" | local router (graceful close) |
 | "open youtube" | local router |
-| "play lo-fi on youtube" | local router (`yt-dlp` top result) |
+| "play lo-fi on youtube" | local router (`yt-dlp` top result; only the song name is used, filler is stripped) |
 | "search cats on youtube" | Groq agent → YouTube search |
 | "pause" / "resume" / "next song" / "previous track" / "stop the music" | local router (`playerctl`) |
 | "volume up" / "volume down" / "set volume to 40" / "mute" / "unmute" | local router (`pactl`) |
@@ -205,6 +209,12 @@ confirmation first, then tries the router and only sends a miss to the agent.
 - **Input is clipping** (debug prints `peak at full scale (32768)`): lower the
   microphone gain in your system mixer (`alsamixer`, or your desktop's sound
   settings).
+- **Phrases never end / music keeps the gate open:** if speakers or music leak
+  into the mic, the background median can stay above the silence floor and the
+  phrase runs to the 6 s cap. In debug mode Jarvis prints
+  `WARNING: background median … > 200 - speakers or music are probably leaking
+  into the mic`. Move the mic away from the speakers, or set `JARVIS_PTT=1` and
+  end phrases by hand with Enter.
 - **"playerctl/brightnessctl is not installed"**: install them with
   `sudo apt install playerctl brightnessctl`.
 - **No audio / no mic found:** run `./venv/bin/python test_mic.py` to list devices

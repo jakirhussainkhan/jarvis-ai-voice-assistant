@@ -16,6 +16,13 @@ import speech_recognition as sr
 import voice
 
 
+@pytest.fixture(autouse=True)
+def _no_media_pause(monkeypatch):
+    """Never touch the real audio sink during tests: pause/resume are stubbed."""
+    monkeypatch.setattr(voice.desktop, "pause_media_if_playing", lambda: None)
+    monkeypatch.setattr(voice.desktop, "resume_media", lambda token: None)
+
+
 # --------------------------------------------------------------------------- #
 # helpers
 # --------------------------------------------------------------------------- #
@@ -249,6 +256,61 @@ def test_speech_that_starts_immediately_is_not_cut(monkeypatch):
         assert data
         onset = data[: voice._CHUNK_BYTES]
         assert voice._rms(onset) > voice._ENERGY_THRESHOLD, "the first word was cut"
+    finally:
+        pipe.close()
+
+
+def test_median_ignores_outliers():
+    assert voice._median([]) == 0
+    assert voice._median([10, 20, 30]) == 20
+    assert voice._median([100, 120, 400]) == 120
+
+
+# --------------------------------------------------------------------------- #
+# push-to-talk (JARVIS_PTT=1)
+# --------------------------------------------------------------------------- #
+
+def test_ptt_records_without_waiting_for_the_start_gate(monkeypatch):
+    """Push-to-talk records as soon as Enter is pressed, even below the gate.
+
+    A 250 tone sits above the silence floor but below the 300 start gate, so the
+    automatic mode ignores it; PTT must still capture it.
+    """
+    pipe = _Pipe()
+    try:
+        pipe.feed(_tone(0.4, 250) + _silence(1.5))
+
+        data = voice._capture_from_stream(pipe.reader, ptt=True)
+
+        assert data, "PTT should record even below the start gate"
+        assert voice._peak(data) == 250
+    finally:
+        pipe.close()
+
+
+def test_same_soft_tone_is_ignored_without_ptt(monkeypatch):
+    pipe = _Pipe()
+    try:
+        pipe.feed(_tone(0.4, 250) + _silence(0.5))
+
+        data = _capture(pipe, monkeypatch, wait=0.3)
+
+        assert data == b""                 # below the 300 gate -> never starts
+    finally:
+        pipe.close()
+
+
+def test_ptt_stop_event_ends_the_phrase():
+    """A set stop_event (second Enter) ends the phrase immediately."""
+    pipe = _Pipe()
+    try:
+        pipe.feed(_tone(3.0, 3000))
+        stop = threading.Event()
+        stop.set()
+
+        data = voice._capture_from_stream(pipe.reader, ptt=True, stop_event=stop)
+
+        assert data == b""
     finally:
         pipe.close()
 

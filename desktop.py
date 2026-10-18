@@ -448,6 +448,38 @@ def list_running():
 # YouTube
 # --------------------------------------------------------------------------- #
 
+# Spoken-request extraction. STT frequently returns a whole messy sentence for
+# "play X on YouTube"; only the song/video name should reach yt-dlp.
+_PLAY_VERB = re.compile(r"\b(play|watch|listen to)\b", re.I)
+_MEDIA_FILLER = re.compile(
+    r"\b(what do you mean|you know the song|you know|"
+    r"please|just|meant|mean|i am|i'm|im|"
+    r"on youtube|youtube|"
+    r"song|songs|music|video|videos|track|tracks|tune|tunes|player|media|clip|"
+    r"the|a|an|some|any|on|like|jarvis|now|hey|okay|ok)\b",
+    re.I,
+)
+
+
+def extract_media_query(text):
+    """Pull just the song/video name out of a spoken "play ... on YouTube".
+
+    Takes the text after an explicit play/watch/listen verb, drops a trailing
+    "on YouTube" and strips spoken filler / STT noise ("please", "the song",
+    "music", "just", "what do you mean", "i am", ...). Returns "" when nothing
+    usable is left, so the caller can ask "What should I play?".
+    """
+    if not text:
+        return ""
+    match = _PLAY_VERB.search(text)
+    tail = text[match.end():] if match else text
+    # Strip a trailing "on youtube" (and any other "youtube" mention).
+    tail = re.sub(r"\bon\s+youtube\b", " ", tail, flags=re.I)
+    tail = re.sub(r"\byoutube\b", " ", tail, flags=re.I)
+    tail = _MEDIA_FILLER.sub(" ", tail)
+    return re.sub(r"\s+", " ", tail).strip(" .,!?;:-'\" ")
+
+
 def _yt_url_search(query):
     return f"https://www.youtube.com/results?search_query={query.replace(' ', '+')}"
 
@@ -470,9 +502,13 @@ _YT_ID = re.compile(r"^[A-Za-z0-9_-]{6,}$")
 
 
 def play_youtube(query):
-    """Play the top yt-dlp result; fall back to the results page."""
+    """Play the top yt-dlp result for a song/video name; else open the results.
+
+    The argument may be a raw spoken sentence; only the song/video name is used.
+    """
+    query = extract_media_query(query)
     if not query:
-        return open_youtube()
+        return "What should I play?"
     if has("yt-dlp"):
         rc, out = _run(
             ["yt-dlp", f"ytsearch1:{query}", "--get-id", "--no-warnings", "-q"],
@@ -532,6 +568,41 @@ def media_control(action):
     if rc != 0:
         return "There is no media player to control."
     return f"Media {key if key != 'prev' else 'previous'}."
+
+
+def pause_media_if_playing():
+    """Best-effort pause of active media so it does not leak into the mic.
+
+    Returns an opaque resume token, or ``None`` when nothing was playing (or the
+    tools are missing). Never raises.
+    """
+    try:
+        if has("playerctl"):
+            rc, out = _run(["playerctl", "status"])
+            if rc == 0 and out.strip().lower() == "playing":
+                if _run(["playerctl", "pause"])[0] == 0:
+                    return ("playerctl",)
+        if has("pactl"):
+            rc, out = _run(["pactl", "list", "sink-inputs"])
+            if rc == 0 and re.search(r"State:\s*RUNNING", out):
+                if _run(["pactl", "suspend-sink", "@DEFAULT_SINK@", "1"])[0] == 0:
+                    return ("pactl",)
+    except Exception:
+        return None
+    return None
+
+
+def resume_media(token):
+    """Best-effort resume after :func:`pause_media_if_playing`. Never raises."""
+    if not token:
+        return
+    try:
+        if token[0] == "playerctl":
+            _run(["playerctl", "play"])
+        elif token[0] == "pactl":
+            _run(["pactl", "suspend-sink", "@DEFAULT_SINK@", "0"])
+    except Exception:
+        pass
 
 
 # --------------------------------------------------------------------------- #

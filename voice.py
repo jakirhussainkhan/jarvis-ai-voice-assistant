@@ -13,7 +13,9 @@ import contextlib
 import math
 import select
 import subprocess
+import sys
 import tempfile
+import threading
 import time
 from collections import deque
 
@@ -21,12 +23,13 @@ import edge_tts
 import pygame
 import speech_recognition as sr
 
+import desktop
 from config import STT_LANG, TTS_VOICE
 
 # Hard bounds so a silent, missing, busy or blocked microphone can never stall
 # the caller (and therefore the worker loop) indefinitely.
 _LISTEN_TIMEOUT = 4        # max seconds to wait for speech to *start*
-_PHRASE_TIME_LIMIT = 8     # max seconds of a single utterance
+_PHRASE_TIME_LIMIT = 6     # max seconds of a single utterance
 _RECOGNIZE_TIMEOUT = 8     # max seconds for the speech-to-text HTTP round-trip
 
 # Fixed RMS gate: no ambient auto-calibration and no dynamic threshold.
@@ -75,6 +78,14 @@ _PRE_ROLL_CHUNKS = max(1, round(_PRE_ROLL_SECONDS / _CHUNK_SECONDS))  # 3
 # Set JARVIS_DEBUG=1 to print capture / recognition diagnostics.
 _DEBUG = os.getenv("JARVIS_DEBUG", "").strip().lower() not in ("", "0", "false", "no")
 
+# Set JARVIS_PTT=1 for push-to-talk: press Enter, speak, then press Enter again
+# (or just stop talking) to end the phrase. Useful when music or noise keeps the
+# RMS above the silence floor so the automatic gate never closes.
+_PTT = os.getenv("JARVIS_PTT", "").strip().lower() not in ("", "0", "false", "no")
+
+# A background median above this suggests speakers/music are leaking into the mic.
+_LOUD_BACKGROUND = 200
+
 
 def _dbg(*parts):
     if _DEBUG:
@@ -102,16 +113,21 @@ def _peak(buf, width=2):
     return max((abs(x) for x in samples), default=0)
 
 
+def _median(samples):
+    """Median of a list of ints (0 for an empty list). Robust to outliers."""
+    if not samples:
+        return 0
+    ordered = sorted(samples)
+    return ordered[len(ordered) // 2]
+
+
 def _calibrate(samples):
     """Stop floor from background RMS: 1.5x the median, clamped to 150..300.
 
     The median ignores the odd outlier, and the clamps keep the floor sane even
     in a very quiet (or very noisy) room.
     """
-    if not samples:
-        return _SILENCE_THRESHOLD
-    ordered = sorted(samples)
-    background = ordered[len(ordered) // 2]
+    background = _median(samples)
     return int(min(_MAX_SILENCE_THRESHOLD,
                    max(_SILENCE_THRESHOLD, round(_SILENCE_FACTOR * background))))
 
@@ -207,7 +223,7 @@ def _read_chunk(stream, fd, deadline):
     return bytes(buf)
 
 
-def _capture_from_stream(stream, fd=None):
+def _capture_from_stream(stream, fd=None, ptt=False, stop_event=None):
     """Gate a raw S16_LE stream on RMS and return the captured utterance.
 
     Reads ``_CHUNK_SECONDS`` chunks. The arecord stream-open spike is discarded
@@ -217,7 +233,12 @@ def _capture_from_stream(stream, fd=None):
     above the calibrated floor resets the silence run) until
     ~``_SILENCE_SECONDS`` below that floor, the phrase hits ``_PHRASE_TIME_LIMIT``,
     or the stream ends. A ~0.3 s pre-roll is kept so a quiet onset is never
-    clipped. Returns the raw bytes captured (possibly empty).
+    clipped.
+
+    With ``ptt=True`` the caller already signalled start (Enter was pressed), so
+    recording begins immediately after the open spike, and it also ends as soon
+    as ``stop_event`` is set (Enter pressed again). Returns the raw bytes
+    captured (possibly empty).
     """
     if fd is None:
         fd = stream.fileno()
@@ -233,12 +254,45 @@ def _capture_from_stream(stream, fd=None):
     first_chunk = True
     wait_deadline = time.monotonic() + _LISTEN_TIMEOUT
     phrase_deadline = None
-    reason = "timeout"
+    reason = "ptt" if ptt else "timeout"
+    reported = False
     # Cap by chunk count as well as wall-clock, so a stream that delivers faster
     # than realtime (e.g. a file) still honours the phrase limit.
     max_phrase_chunks = max(1, round(_PHRASE_TIME_LIMIT / _CHUNK_SECONDS))
 
+    def report_calibration():
+        nonlocal reported
+        if reported or not _DEBUG or not started:
+            return
+        reported = True
+        background = _median(bg_samples)
+        _dbg(f"calibration: background_median={background} "
+             f"floor={stop_threshold} samples={len(bg_samples)}")
+        if background > _LOUD_BACKGROUND:
+            _dbg(f"WARNING: background median {background} > {_LOUD_BACKGROUND} - "
+                 "speakers or music are probably leaking into the mic")
+
+    def begin_recording():
+        nonlocal started, phrase_deadline, stop_threshold
+        started = True
+        phrase_deadline = time.monotonic() + _PHRASE_TIME_LIMIT
+        stop_threshold = _calibrate(bg_samples)
+        # Seed the utterance with the ~0.3 s leading up to the trigger.
+        chunks.extend(pre_roll)
+        pre_roll.clear()
+        report_calibration()
+        if _DEBUG:
+            _dbg(f"state=recording floor={stop_threshold}")
+
+    if ptt:
+        # The first chunk is the stream-open spike: drop it, then record at once.
+        _read_chunk(stream, fd, wait_deadline)
+        begin_recording()
+
     while True:
+        if stop_event is not None and stop_event.is_set():
+            reason = "ptt"
+            break
         deadline = phrase_deadline if started else wait_deadline
         chunk = _read_chunk(stream, fd, deadline)
         if not chunk:
@@ -273,15 +327,7 @@ def _capture_from_stream(stream, fd=None):
                              f"state=warmup spike=decay left={warm_left}")
                     continue
                 spike_rms = None
-                started = True
-                phrase_deadline = time.monotonic() + _PHRASE_TIME_LIMIT
-                stop_threshold = _calibrate(bg_samples)
-                # Seed the utterance with the ~0.3 s leading up to the trigger.
-                chunks.extend(pre_roll)
-                pre_roll.clear()
-                if _DEBUG:
-                    _dbg(f"chunk rms={rms:.0f} gate={_ENERGY_THRESHOLD} "
-                         f"state=recording floor={stop_threshold}")
+                begin_recording()
                 continue
 
             # Quiet chunk: this is background. Re-estimate the floor each time.
@@ -321,35 +367,79 @@ def _capture_from_stream(stream, fd=None):
     return b"".join(chunks)
 
 
+def _ptt_wait_for_enter():
+    """Block until Enter is pressed (push-to-talk start). False on EOF/^C."""
+    try:
+        input("🎤 Press Enter to talk... ")
+    except (EOFError, KeyboardInterrupt):
+        return False
+    return True
+
+
+def _ptt_stop_reader(stop_event):
+    """Set ``stop_event`` when Enter is pressed again (daemon thread)."""
+    def run():
+        try:
+            for _line in sys.stdin:
+                break
+        except Exception:
+            pass
+        stop_event.set()
+
+    threading.Thread(target=run, daemon=True).start()
+
+
 def listen():
     """Capture one utterance from the microphone via ``arecord``.
 
     Returns the recognised text in lower case, or "" when nothing usable was
     heard (timeout, silence, or no microphone). Bounded by the *_TIMEOUT
     constants above so it always returns instead of blocking forever.
+
+    With ``JARVIS_PTT=1`` this becomes push-to-talk: it waits for Enter, records
+    until Enter is pressed again or silence is detected, then transcribes. Media
+    that is playing is paused first (and resumed after capture) so it does not
+    leak into the mic or hold the silence gate open.
     """
     rec = sr.Recognizer()
     rec.operation_timeout = _RECOGNIZE_TIMEOUT
 
     device = _mic_device()
     _dbg(f"device={device} gate={_ENERGY_THRESHOLD} chunk={_CHUNK_SECONDS}s "
-         f"wait={_LISTEN_TIMEOUT}s phrase_max={_PHRASE_TIME_LIMIT}s")
+         f"wait={_LISTEN_TIMEOUT}s phrase_max={_PHRASE_TIME_LIMIT}s ptt={_PTT}")
+
+    if _PTT and not _ptt_wait_for_enter():
+        return ""
+
+    # Best effort: pause any playing media so it neither leaks into the mic nor
+    # keeps the silence gate open. Resumed after the phrase is captured.
+    pause_token = None
+    try:
+        pause_token = desktop.pause_media_if_playing()
+    except Exception as exc:                                   # never fatal
+        _dbg(f"media pause skipped: {type(exc).__name__}: {exc}")
 
     try:
         print("🎤 Listening...", flush=True)
         proc = _spawn_arecord(device)
     except Exception as exc:
         _dbg(f"capture error: {type(exc).__name__}: {exc}")
+        desktop.resume_media(pause_token)
         return ""
+
+    stop_event = threading.Event() if _PTT else None
+    if _PTT:
+        _ptt_stop_reader(stop_event)
 
     try:
         try:
-            data = _capture_from_stream(proc.stdout)
+            data = _capture_from_stream(proc.stdout, ptt=_PTT, stop_event=stop_event)
         except Exception as exc:
             _dbg(f"capture error: {type(exc).__name__}: {exc}")
             return ""
     finally:
         _stop_arecord(proc)
+        desktop.resume_media(pause_token)
 
     if not data:
         _dbg(f"TIMEOUT: no speech above threshold within {_LISTEN_TIMEOUT}s")

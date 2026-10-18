@@ -140,6 +140,21 @@ def test_play_on_youtube_keeps_query(monkeypatch):
     assert calls == [(("lo-fi",), {})]
 
 
+def test_play_extracts_song_from_a_messy_sentence(monkeypatch):
+    """Regression: only the song name must reach play_youtube, not the sentence."""
+    calls = _spy(monkeypatch, "play_youtube", "Playing udi udi on YouTube.")
+    messy = ("play what do you mean music player i am i am just please the song "
+             "udi udi on youtube")
+    assert router.try_local(messy) == "Playing udi udi on YouTube."
+    assert calls == [(("udi udi",), {})]
+
+
+def test_play_without_a_song_asks_instead_of_searching(monkeypatch):
+    calls = _spy(monkeypatch, "play_youtube", "SHOULD NOT HAPPEN")
+    assert router.try_local("play the song on youtube") == "What should I play?"
+    assert calls == []
+
+
 def test_search_on_youtube_defers_to_agent(monkeypatch):
     # "search" is a search verb, so the router deliberately defers; the agent
     # calls fn_youtube(action="search") to open the results page.
