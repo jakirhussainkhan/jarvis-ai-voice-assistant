@@ -149,4 +149,4 @@ sends a miss to the agent.
 
 ## License
 
-No license file is included yet. Add one (e.g. MIT) before distributing.
+MIT © 2026 Jakir Hussain Khan. See [LICENSE](LICENSE).

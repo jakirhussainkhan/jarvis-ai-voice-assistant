@@ -5,6 +5,7 @@ __pycache__/
 
 # secrets / local-only files (never commit)
 acccces token
+TOKEN.txt
 *access token*
 *token file*
 
