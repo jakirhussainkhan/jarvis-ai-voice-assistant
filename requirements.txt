@@ -11,6 +11,11 @@ pytest
 # Jarvis transcribes locally instead (see voice._local_transcribe).
 faster-whisper
 
+# Semantic response cache (all-MiniLM-L6-v2 via ONNX). Loaded lazily; if it is
+# missing or the model cannot be downloaded, Jarvis falls back to exact-match
+# caching and all other features keep working.
+fastembed
+
 # Cross-platform audio capture and window control for Windows/macOS.
 # On Linux Jarvis uses arecord/wmctrl/xdotool instead, but installing these is
 # harmless there (the adapters import them lazily and degrade gracefully).

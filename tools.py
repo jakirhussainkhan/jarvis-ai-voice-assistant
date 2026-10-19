@@ -8,10 +8,16 @@ All system actions go through :mod:`desktop`, which only ever runs whitelisted
 commands (never ``sudo``, never arbitrary shell). Destructive power actions are
 not exposed here at all -- they are handled by the router through
 :mod:`confirm`, so a stray utterance can never shut the machine down.
+
+The CodeAct tool is the one exception: it runs a user/agent-authored Python
+script in a subprocess, guarded by an AST allow/deny pass and a hard timeout.
 """
 
+import ast
 import os
 import re
+import subprocess
+import sys
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -256,6 +262,146 @@ def fn_run_in_terminal(command: str) -> str:
         return confirm.request(lambda c=command: desktop.run_in_terminal(c),
                                f"Run this in a terminal? {command}")
     return desktop.run_in_terminal(command)
+
+
+# --------------------------------------------------------------------------- #
+# CodeAct: run a self-contained Python script
+# --------------------------------------------------------------------------- #
+
+_EXEC_TIMEOUT_SECONDS = 15
+_EXEC_OUTPUT_LIMIT = 4000
+
+# This is a guardrail, not a security sandbox. It blocks the obvious escape
+# hatches (shell/process/file-tree modules and introspection) before a script is
+# allowed to run, which is enough to keep a mis-generated script from casually
+# deleting the machine while remaining useful for normal Python.
+_PY_BLOCKED_MODULES = frozenset({
+    "os", "subprocess", "shutil", "sys", "socket", "ctypes", "multiprocessing",
+    "pty", "resource", "signal", "importlib", "builtins", "pickle", "marshal",
+    "shelve", "urllib", "http", "ftplib", "telnetlib",
+})
+_PY_BLOCKED_CALLS = frozenset({
+    "eval", "exec", "compile", "__import__", "exit", "quit", "input",
+    "breakpoint", "SystemExit", "globals", "locals", "vars", "getattr",
+    "setattr", "delattr",
+})
+_PY_BLOCKED_ATTRS = frozenset({
+    "system", "popen", "rmtree", "rmdir", "unlink", "kill", "fork",
+    "execv", "execve", "spawn", "exit",
+})
+# Common harmless introspection dunders, so normal script idioms still work.
+_PY_ALLOWED_DUNDERS = frozenset({"__name__", "__file__", "__doc__"})
+
+
+def _dotted_name(node):
+    """Return ``a.b.c`` for an AST Name/Attribute chain, else an empty string."""
+    parts = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if isinstance(node, ast.Name):
+        parts.append(node.id)
+        return ".".join(reversed(parts))
+    return ""
+
+
+def _python_violation(script):
+    """Return a human-readable reason a script is unsafe, or None when allowed."""
+    try:
+        tree = ast.parse(script)
+    except SyntaxError as exc:
+        return f"syntax error at line {exc.lineno}: {exc.msg}"
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                root = alias.name.split(".")[0]
+                if root in _PY_BLOCKED_MODULES:
+                    return f"import of '{alias.name}' is not allowed"
+        elif isinstance(node, ast.ImportFrom):
+            root = (node.module or "").split(".")[0]
+            if root in _PY_BLOCKED_MODULES:
+                return f"import from '{node.module}' is not allowed"
+            for alias in node.names:
+                if alias.name in _PY_BLOCKED_CALLS:
+                    return f"import of '{alias.name}' is not allowed"
+        elif isinstance(node, ast.Call):
+            name = _dotted_name(node.func)
+            if name in _PY_BLOCKED_CALLS:
+                return f"call to '{name}' is not allowed"
+            if any(part in _PY_BLOCKED_MODULES for part in name.split(".")):
+                return f"call to '{name}' is not allowed"
+        elif isinstance(node, ast.Attribute):
+            if node.attr in _PY_BLOCKED_ATTRS:
+                return f"access to '{node.attr}' is not allowed"
+            if (node.attr.startswith("__") and node.attr.endswith("__")
+                    and node.attr not in _PY_ALLOWED_DUNDERS):
+                return f"access to '{node.attr}' is not allowed"
+            name = _dotted_name(node)
+            if any(part in _PY_BLOCKED_MODULES for part in name.split(".")):
+                return f"access to '{name}' is not allowed"
+        elif isinstance(node, ast.Name):
+            if node.id in _PY_BLOCKED_CALLS:
+                return f"use of '{node.id}' is not allowed"
+            if (node.id.startswith("__") and node.id.endswith("__")
+                    and node.id not in _PY_ALLOWED_DUNDERS):
+                return f"access to '{node.id}' is not allowed"
+    return None
+
+
+def fn_execute_python(script: str) -> str:
+    """Run a short, self-contained Python script and return its output.
+
+    Use this for genuine multi-step work -- creating several files, complex
+    calculations, transforming data or batch operations -- instead of chaining
+    many individual tools. The script runs with the current Python interpreter,
+    the normal working directory and a 15 second timeout.
+
+    Only safe standard-library code is allowed. Imports of os/subprocess/shutil/
+    sys and dangerous operations such as eval, exec, sys.exit or shell calls are
+    refused before anything executes.
+    """
+    script = "" if script is None else str(script)
+    if not script.strip():
+        return "The Python script is empty."
+
+    violation = _python_violation(script)
+    if violation:
+        return f"Refused to run the script: {violation}."
+
+    path = None
+    try:
+        fd, path = tempfile.mkstemp(prefix="jarvis-codeact-", suffix=".py")
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(script)
+        proc = subprocess.run(
+            [sys.executable, path],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=_EXEC_TIMEOUT_SECONDS,
+            env=dict(os.environ, PYTHONIOENCODING="utf-8"),
+        )
+    except subprocess.TimeoutExpired:
+        return f"Python script timed out after {_EXEC_TIMEOUT_SECONDS} seconds."
+    except OSError as exc:
+        return f"I couldn't run the Python script: {exc}"
+    finally:
+        if path:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+    output = ((proc.stdout or "") + (proc.stderr or "")).strip()
+    if proc.returncode:
+        output = f"Exit code {proc.returncode}.\n{output}".strip()
+    if not output:
+        return "Python script finished with no output."
+    if len(output) > _EXEC_OUTPUT_LIMIT:
+        output = output[:_EXEC_OUTPUT_LIMIT] + "\n...[truncated]"
+    return output
 
 
 # --------------------------------------------------------------------------- #

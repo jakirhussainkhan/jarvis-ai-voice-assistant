@@ -26,6 +26,7 @@ from openai import OpenAI
 
 import desktop
 from config import API_KEY, BASE_URL, SCREEN_MAX_WIDTH, SCREEN_STEPS, VISION_MODEL
+from digest import digest_text
 
 _client = OpenAI(api_key=API_KEY, base_url=BASE_URL) if API_KEY else None
 
@@ -145,13 +146,21 @@ def ask_image(path, question, model=None, max_tokens=500, system=_SYSTEM):
 
 
 def look(question=None, max_width=SCREEN_MAX_WIDTH):
-    """Capture the screen and answer ``question`` about it."""
+    """Capture the screen and answer ``question`` about it.
+
+    Very long answers are condensed by the cheap digest sub-agent before they
+    reach the main model, keeping the conversation context small.
+    """
     question = (question or "Describe what is on the screen, briefly.").strip()
     shot = capture_png(max_width=max_width)
     if shot is None:
         return "I couldn't capture the screen."
     try:
-        return ask_image(shot, question)
+        answer = ask_image(shot, question)
+        return digest_text(
+            answer,
+            prompt=f"Answer this screen question concisely: {question}",
+        )
     finally:
         _unlink(shot)
 

@@ -15,6 +15,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from digest import DIGEST_THRESHOLD_CHARS, digest_text
+
 _UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
        "(KHTML, like Gecko) Chrome/124 Safari/537.36")
 
@@ -149,7 +151,12 @@ def format_results(query, limit=5):
 # --------------------------------------------------------------------------- #
 
 def fetch_page(url, limit=4000):
-    """Fetch a URL and return its readable text (capped), or an error string."""
+    """Fetch a URL and return readable text, or a digest for very large pages.
+
+    Pages below the digest threshold keep the old capped behaviour. Large pages
+    are condensed by the cheap sub-agent so one article cannot flood the main
+    model's context window with thousands of tokens.
+    """
     url = (url or "").strip()
     if not url:
         return "Which URL should I read?"
@@ -160,7 +167,15 @@ def fetch_page(url, limit=4000):
     markup = _get(url)
     if markup is None:
         return f"I couldn't reach {url}."
-    text = html_to_text(markup, limit=limit)
+    text = html_to_text(markup)
+    if len(text) >= DIGEST_THRESHOLD_CHARS:
+        summary = digest_text(
+            text,
+            prompt=f"Summarize the key facts from the web page at {url}.",
+        )
+        return summary or f"{url} had no readable text."
+    if limit and len(text) > limit:
+        text = text[:limit].rstrip() + " …[truncated]"
     return text or f"{url} had no readable text."
 
 

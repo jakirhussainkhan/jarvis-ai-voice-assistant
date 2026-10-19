@@ -16,7 +16,7 @@ is installed.
 | CLI loop (`main.py`) | Working |
 | Voice I/O (STT + TTS) | Working, English-only (STT via `arecord` + Google; streaming TTS) |
 | Local command router (offline-first) | Working (apps, folders, windows, media, volume, brightness, clipboard, screenshot, lock, status, time, dictated commands) |
-| Groq agent + 40 tools | Working (needs `GROQ_API_KEY`) |
+| Groq agent + 41 tools | Working (needs `GROQ_API_KEY`) |
 | Screen vision (read + operate) | Working on the real screen (`qwen/qwen3.8-27b`) |
 | Live internet (search/page/Wikipedia/weather) | Working (keyless, verified live) |
 | Guarded terminal | Working (3-layer guard; power/session commands refused in code) |
@@ -29,9 +29,25 @@ is installed.
 | Timers / reminders | Working |
 | Offline wake word ("Hey Jarvis") | **Built + unit-tested; NOT yet verified live** (needs `pip install openwakeword onnxruntime`) |
 | Desktop launcher (`run.sh` + app-menu entry) | Working (verified: `desktop-file-validate` clean, GUI starts) |
-| Tests | `pytest` suite — **414 passed, 1 skipped** |
+| Tests | `pytest` suite — **441 passed, 1 skipped** |
 | Spoken voice | `en-GB-RyanNeural` (British male); override with `JARVIS_TTS_VOICE` |
-| Published | GitHub, tags **`v1.0.1`**…**`v1.4.0`** (README + MIT LICENSE) |
+| Published | GitHub, tags **`v1.0.1`**…**`v1.5.0`** (README + MIT LICENSE) |
+
+## Advanced Intelligence: Semantic Cache, Sub-agent & CodeAct (2026-10-19, v1.5.0)
+
+- **Semantic Cache:** Added `semantic_cache.py` using `fastembed`
+  (`all-MiniLM-L6-v2`) and SQLite. It returns cached answers for semantically
+  similar queries (cosine similarity >= 0.90) while bypassing dynamic queries
+  such as time, weather, and system status.
+- **Sub-agent Digest:** Added `digest.py` to condense large outputs (>= 12,000
+  chars) from vision and web scraping into ~50-token summaries using a cheap LLM
+  or a local extractive summary, preventing context bloat.
+- **CodeAct:** Added the `fn_execute_python` tool. Jarvis can now write and
+  execute temporary Python scripts for multi-step tasks. It is secured with an
+  AST-based safety guard that blocks dangerous imports (`os`, `subprocess`,
+  `shutil`, etc.) and `eval`/`exec`.
+- **Tests:** Expanded the suite to cover the new features and safety guards;
+  **441 passed, 1 skipped**.
 
 ## Streaming TTS & API Circuit Breaker (2026-10-19, v1.4.0)
 

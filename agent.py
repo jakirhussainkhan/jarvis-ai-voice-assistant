@@ -25,11 +25,13 @@ from config import (
     TOOL_PRUNING,
 )
 from resilience import OPEN, CircuitBreaker, CircuitOpenError
+from semantic_cache import SemanticCache
 from tools import (
     fn_brightness,
     fn_click,
     fn_clipboard,
     fn_close_app,
+    fn_execute_python,
     fn_fetch_page,
     fn_find_files,
     fn_focus_window,
@@ -110,6 +112,12 @@ SYSTEM_INSTRUCTION = (
     "ffmpeg, ...). fn_run_in_terminal opens a visible terminal for long or "
     "watchable commands. You can never use sudo; commands that change files or "
     "packages are confirmed with the user automatically, so just call the tool.\n"
+    "CodeAct: For complex, multi-step tasks (e.g., creating multiple files, "
+    "complex math, or batch operations), write a Python script and use "
+    "fn_execute_python instead of calling multiple individual tools. Always use "
+    "safe, standard Python libraries. The script runs for at most 15 seconds; "
+    "imports of os, subprocess, shutil and sys, and calls such as eval or exec, "
+    "are refused.\n"
     "Other: fn_open_path to open files/folders/URLs, fn_find_files to locate "
     "files, fn_clipboard, fn_notify, fn_save_note/fn_read_file, fn_set_timer/"
     "fn_set_reminder, fn_kill_process.\n"
@@ -144,6 +152,7 @@ _TOOLS = [
     fn_scroll,
     fn_run_command,
     fn_run_in_terminal,
+    fn_execute_python,
     fn_open_path,
     fn_find_files,
     fn_clipboard,
@@ -188,6 +197,10 @@ API_FALLBACK = "I am having trouble reaching the network right now, sir."
 # md5(query.lower()) -> reply
 _CACHE = {}
 
+# Semantic cache for paraphrased general-knowledge questions. It is a no-op when
+# fastembed is unavailable or JARVIS_SEMANTIC_CACHE=0.
+_semantic_cache = SemanticCache()
+
 
 def _cache_key(text):
     return hashlib.md5(text.encode("utf-8")).hexdigest()
@@ -230,6 +243,10 @@ _INTENT_PATTERNS = [
         r"\b(play|watch|listen|song|songs|music|video|youtube|pause|unpause|"
         r"resume|next|previous|skip|seek|now playing|what'?s playing|volume|"
         r"mute|unmute|louder|quieter|track)\b", re.I)),
+    ("CODE", re.compile(
+        r"\b(python|py|script|scripts|program|programming|code|batch|calculate|"
+        r"calculation|compute|computation|math|formula|algorithm|automate|"
+        r"automation|multiple files|execute)\b", re.I)),
     ("FILES", re.compile(
         r"\b(file|files|folder|directory|read|note|save|find|locate|run|"
         r"execute|command|terminal|shell|script|path|log)\b", re.I)),
@@ -246,6 +263,8 @@ _INTENT_PATTERNS = [
 _INTENT_TOOLS = {
     "VISION": [fn_see_screen, fn_screen_do, fn_click, fn_type_text, fn_press_keys],
     "MEDIA": [fn_youtube, fn_media, fn_media_seek, fn_now_playing, fn_volume],
+    "CODE": [fn_execute_python, fn_run_command, fn_read_file, fn_find_files,
+             fn_open_path],
     "FILES": [fn_open_path, fn_find_files, fn_read_file, fn_run_command,
               fn_run_in_terminal],
     "SYSTEM": [fn_open_app, fn_close_app, fn_list_windows, fn_focus_window,
@@ -262,7 +281,7 @@ _SCHEMAS_BY_INTENT = {
 
 
 def classify_intent(text):
-    """Return the coarse intent of ``text`` (MEDIA/SYSTEM/WEB/VISION/FILES/GENERAL).
+    """Return the coarse intent of ``text`` (VISION/MEDIA/CODE/FILES/SYSTEM/WEB/GENERAL).
 
     Pure keyword scoring: fast, offline and dependency-free. The first intent in
     ``_INTENT_PATTERNS`` wins a tie, so the priority is that list's order.
@@ -440,6 +459,14 @@ def run_agent(user_text, memory=None):
     if key in _CACHE:
         return _CACHE[key], 0  # no memory write on cache hit
 
+    # Paraphrases of stable questions ("what is the capital of France" /
+    # "which city is the capital of France") share an answer. Dynamic queries
+    # are rejected inside the cache, so time/weather/actions never go stale.
+    semantic = _semantic_cache.lookup(query)
+    if semantic is not None:
+        _CACHE[key] = semantic
+        return semantic, 0
+
     history = memory.as_text() if memory is not None else ""
     message = f"{history}\nUser: {query}" if history else query
 
@@ -464,5 +491,6 @@ def run_agent(user_text, memory=None):
     # allowed to reach the API and produce a real answer.
     if not used_fallback:
         _CACHE[key] = reply
+        _semantic_cache.store(query, reply)
         _remember(memory, query, reply)
     return reply, tokens
