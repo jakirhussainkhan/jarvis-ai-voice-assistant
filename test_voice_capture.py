@@ -229,6 +229,75 @@ def test_listen_returns_empty_when_arecord_missing(monkeypatch):
     assert voice.listen() == ""
 
 
+def _recognising_listen(monkeypatch, recognise):
+    """Drive one listen() pass over synthetic speech with a fake recogniser."""
+    pipe = _Pipe()
+    pipe.feed(_silence(0.2) + _tone(0.5, 4000) + _silence(1.2))
+
+    class FakeProc:
+        def __init__(self, stream):
+            self.stdout = stream
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            pass
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            pass
+
+    monkeypatch.setattr(voice, "_spawn_arecord", lambda device=None: FakeProc(pipe.reader))
+    monkeypatch.setattr(sr.Recognizer, "recognize_google", recognise)
+    try:
+        return voice.listen()
+    finally:
+        pipe.close()
+
+
+def test_google_failure_falls_back_to_local_stt(monkeypatch):
+    """A network error from Google STT must not lose the phrase: transcribe it
+    locally instead."""
+    def request_error(self, audio, language=None):
+        raise sr.RequestError("network is down")
+
+    monkeypatch.setattr(voice, "_local_transcribe", lambda audio: "local words")
+
+    assert _recognising_listen(monkeypatch, request_error) == "local words"
+
+
+def test_google_failure_without_local_model_returns_empty(monkeypatch):
+    def request_error(self, audio, language=None):
+        raise sr.RequestError("network is down")
+
+    monkeypatch.setattr(voice, "_local_transcribe", lambda audio: "")
+
+    assert _recognising_listen(monkeypatch, request_error) == ""
+
+
+def test_local_transcribe_returns_empty_without_faster_whisper(monkeypatch):
+    import builtins
+
+    monkeypatch.setattr(voice, "_whisper_model", None)
+    monkeypatch.setattr(voice, "_whisper_unavailable", False)
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "faster_whisper":
+            raise ImportError("no faster_whisper")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    audio = sr.AudioData(b"\x00\x00" * 100, voice._SAMPLE_RATE, voice._SAMPLE_WIDTH)
+    assert voice._local_transcribe(audio) == ""
+    assert voice._whisper_unavailable is True
+
+
 def test_listen_returns_empty_without_capturing_when_muted(monkeypatch):
     """A muted mic must not even open arecord (nor call STT)."""
     monkeypatch.setattr(voice, "_mic_muted", True)

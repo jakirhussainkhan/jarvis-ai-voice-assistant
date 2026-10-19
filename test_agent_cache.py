@@ -13,7 +13,7 @@ def test_cache_key_is_deterministic():
 def test_second_identical_query_is_a_cache_hit(monkeypatch):
     calls = []
 
-    def fake_chat(message):
+    def fake_chat(message, tools=None):
         calls.append(message)
         return "hello back", 42
 
@@ -31,7 +31,7 @@ def test_second_identical_query_is_a_cache_hit(monkeypatch):
 
 def test_blank_reply_is_replaced(monkeypatch):
     monkeypatch.setattr(agent, "_client", object())
-    monkeypatch.setattr(agent, "_chat", lambda message: ("", 0))
+    monkeypatch.setattr(agent, "_chat", lambda message, tools=None: ("", 0))
     agent._CACHE.clear()
     assert agent.run_agent("a blank answer please") == (
         "Sorry, I couldn't finish that.", 0,
@@ -48,7 +48,7 @@ def test_no_client_means_no_api_call(monkeypatch):
 
 def test_cache_hit_does_not_write_memory(monkeypatch):
     monkeypatch.setattr(agent, "_client", object())
-    monkeypatch.setattr(agent, "_chat", lambda message: ("hi", 7))
+    monkeypatch.setattr(agent, "_chat", lambda message, tools=None: ("hi", 7))
     agent._CACHE.clear()
 
     mem = Memory()

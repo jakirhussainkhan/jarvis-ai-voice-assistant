@@ -6,18 +6,23 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-__version__ = "1.0.11"
+__version__ = "1.2.0"
 
 # Groq (https://console.groq.com) exposes an OpenAI-compatible Chat Completions
 # API. The key is read from GROQ_API_KEY in .env; Groq keys start with "gsk_".
 API_KEY = os.getenv("GROQ_API_KEY")
 BASE_URL = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
 
-# Model ID confirmed at https://console.groq.com/docs/models (supports tools).
+# Primary text/agent model -- the 120B open-weight model on the Groq free tier.
+# Model IDs confirmed at https://console.groq.com/docs/models (both support tools).
 MODEL_NAME = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
 # Multimodal model used so Jarvis can actually *see* the screen. Verified to
 # accept image_url input on this account (see progress.md).
 VISION_MODEL = os.getenv("GROQ_VISION_MODEL", "qwen/qwen3.8-27b")
+# Cheaper model used only when the primary one is rate-limited (HTTP 429). The
+# 120B model has a strict requests-per-minute cap on the free tier; falling back
+# to a small 8B model keeps the turn from failing outright.
+FALLBACK_MODEL = os.getenv("GROQ_FALLBACK_MODEL", "llama3-8b-8192")
 
 STT_LANG = "en-US"  # English-only by design.
 # The Iron-Man Jarvis voice: a British male neural voice ("Ryan"). Override it
@@ -45,7 +50,16 @@ def _env_int(name, default, minimum=None):
 # or mute the mic. JARVIS_CHAT=0 gets the old click-to-talk behaviour back.
 CHAT_ON = os.getenv("JARVIS_CHAT", "1").strip().lower() not in ("0", "false", "no", "off")
 CHAT_TIMEOUT = _env_int("JARVIS_CHAT_TIMEOUT", 60, minimum=10)
-MAX_HISTORY_MSGS = 8
+# How many recent turns the transcript handed to the agent may contain. Kept
+# small on purpose: the Groq free tier is token-limited, and older turns add
+# cost without adding much context.
+MAX_HISTORY_MSGS = _env_int("JARVIS_HISTORY_MSGS", 10, minimum=2)
+# Send only the tools relevant to the detected intent instead of all ~40 schemas
+# on every call. This is the single biggest token saver. Set JARVIS_TOOL_PRUNING=0
+# to fall back to the full tool list if the intent classifier ever misjudges.
+TOOL_PRUNING = os.getenv("JARVIS_TOOL_PRUNING", "1").strip().lower() not in (
+    "0", "false", "no", "off",
+)
 # Headroom so a reasoning model's thinking tokens never crowd out the answer
 # (too low a cap makes it return empty and Jarvis says "I couldn't finish that").
 MAX_OUTPUT_TOKENS = 600

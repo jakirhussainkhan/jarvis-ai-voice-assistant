@@ -8,15 +8,18 @@ tool-calling loop.
 import hashlib
 import inspect
 import json
+import re
 
 from openai import OpenAI
 
 from config import (
     API_KEY,
     BASE_URL,
+    FALLBACK_MODEL,
     MAX_OUTPUT_TOKENS,
     MAX_TOOL_ROUNDS,
     MODEL_NAME,
+    TOOL_PRUNING,
 )
 from tools import (
     fn_brightness,
@@ -61,8 +64,13 @@ from tools import (
     fn_youtube,
 )
 
+# The system prompt is deliberately a *static* constant and is always the first
+# message. Groq's prefix cache keys on the start of the prompt, so keeping this
+# byte-identical across calls (no timestamps, IDs or other per-call data) lets
+# repeated requests hit the cache and cost far fewer tokens.
 SYSTEM_INSTRUCTION = (
-    "You are Jarvis, a highly capable Linux desktop assistant with voice, screen "
+    "You are Jarvis, a highly capable cross-platform desktop assistant with "
+    "voice, screen "
     "vision and terminal access. Reply briefly -- one or two short sentences -- "
     "and always in English, whatever language the user writes in.\n"
     "Act, don't narrate: when the user asks you to do something on the computer, "
@@ -189,6 +197,70 @@ def _tool_schema(fn):
 
 _TOOL_SCHEMAS = [_tool_schema(fn) for fn in _TOOLS]
 
+# --- intent-based tool pruning --------------------------------------------- #
+# Sending all ~40 schemas on every call is by far the biggest token cost. Before
+# each call the utterance is classified into one coarse intent, and only that
+# intent's handful of tools is sent. The order here is also the tie-break order
+# (first match with the highest score wins).
+_INTENT_PATTERNS = [
+    ("VISION", re.compile(
+        r"\b(screen|monitor|display|click|double ?click|type|press|keyboard|"
+        r"key|shortcut|scroll|button|desktop|on my screen|visible)\b", re.I)),
+    ("MEDIA", re.compile(
+        r"\b(play|watch|listen|song|songs|music|video|youtube|pause|unpause|"
+        r"resume|next|previous|skip|seek|now playing|what'?s playing|volume|"
+        r"mute|unmute|louder|quieter|track)\b", re.I)),
+    ("FILES", re.compile(
+        r"\b(file|files|folder|directory|read|note|save|find|locate|run|"
+        r"execute|command|terminal|shell|script|path|log)\b", re.I)),
+    ("SYSTEM", re.compile(
+        r"\b(open|launch|start|close|quit|kill|minimi[sz]e|maximi[sz]e|focus|"
+        r"switch|brightness|bright|dim|battery|cpu|ram|disk|status|lock|"
+        r"screenshot|notify|process|remind|timer)\b", re.I)),
+    ("WEB", re.compile(
+        r"\b(search|google|look ?up|weather|wikipedia|news|price|score|who|"
+        r"what|when|where|why|how|current|latest|release|fetch|url|http)\b", re.I)),
+]
+
+# 3-5 tools per intent. Kept deliberately tight -- this is the token saver.
+_INTENT_TOOLS = {
+    "VISION": [fn_see_screen, fn_screen_do, fn_click, fn_type_text, fn_press_keys],
+    "MEDIA": [fn_youtube, fn_media, fn_media_seek, fn_now_playing, fn_volume],
+    "FILES": [fn_open_path, fn_find_files, fn_read_file, fn_run_command,
+              fn_run_in_terminal],
+    "SYSTEM": [fn_open_app, fn_close_app, fn_list_windows, fn_focus_window,
+               fn_system_status],
+    "WEB": [fn_web_search, fn_web_lookup, fn_fetch_page, fn_wikipedia, fn_weather],
+    # Fallback for chit-chat, time/date, memory and anything unrecognised.
+    "GENERAL": [fn_web_lookup, fn_system_info, fn_open_path, fn_notify,
+                fn_save_note],
+}
+
+_SCHEMAS_BY_INTENT = {
+    name: [_tool_schema(fn) for fn in fns] for name, fns in _INTENT_TOOLS.items()
+}
+
+
+def classify_intent(text):
+    """Return the coarse intent of ``text`` (MEDIA/SYSTEM/WEB/VISION/FILES/GENERAL).
+
+    Pure keyword scoring: fast, offline and dependency-free. The first intent in
+    ``_INTENT_PATTERNS`` wins a tie, so the priority is that list's order.
+    """
+    best, best_score = "GENERAL", 0
+    for intent, pattern in _INTENT_PATTERNS:
+        score = len(pattern.findall(text or ""))
+        if score > best_score:
+            best, best_score = intent, score
+    return best
+
+
+def tools_for(text):
+    """Return the tool schemas to send for ``text`` (pruned unless disabled)."""
+    if not TOOL_PRUNING:
+        return _TOOL_SCHEMAS
+    return _SCHEMAS_BY_INTENT[classify_intent(text)]
+
 
 def _tokens(response):
     """Total tokens the model reported for one call."""
@@ -215,8 +287,44 @@ def _run_tool(call):
     return {"role": "tool", "tool_call_id": call.id, "content": str(result)}
 
 
-def _chat(message):
-    """Run one bounded tool-calling conversation. Returns (reply, tokens)."""
+def _is_rate_limit(exc):
+    """True when ``exc`` looks like a Groq rate-limit (HTTP 429) error."""
+    if getattr(exc, "status_code", None) == 429:
+        return True
+    text = f"{type(exc).__name__}: {exc}".lower()
+    return "429" in text or "rate limit" in text or "rate_limit" in text
+
+
+def _completion(messages, tools=None):
+    """One chat completion, retrying with the smaller model on a rate limit.
+
+    The free tier caps the 120B model hard; a 429 is caught here and the request
+    is re-sent to ``FALLBACK_MODEL`` so the turn still completes.
+    """
+    def call(model):
+        kwargs = {"model": model, "messages": messages,
+                  "max_tokens": MAX_OUTPUT_TOKENS}
+        if tools:
+            kwargs["tools"] = tools
+        return _client.chat.completions.create(**kwargs)
+
+    try:
+        return call(MODEL_NAME)
+    except Exception as exc:
+        if FALLBACK_MODEL and FALLBACK_MODEL != MODEL_NAME and _is_rate_limit(exc):
+            return call(FALLBACK_MODEL)
+        raise
+
+
+def _chat(message, tools=None):
+    """Run one bounded tool-calling conversation. Returns (reply, tokens).
+
+    The static system prompt is always message #0, which is what makes Groq's
+    prefix cache effective across turns. ``tools`` is the (already pruned) list
+    of schemas to expose for this turn; all tools are exposed when omitted.
+    """
+    if tools is None:
+        tools = _TOOL_SCHEMAS
     messages = [
         {"role": "system", "content": SYSTEM_INSTRUCTION},
         {"role": "user", "content": message},
@@ -225,12 +333,7 @@ def _chat(message):
 
     # Up to MAX_TOOL_ROUNDS tool rounds, then one final answer-only call.
     for _ in range(MAX_TOOL_ROUNDS + 1):
-        response = _client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=messages,
-            tools=_TOOL_SCHEMAS,
-            max_tokens=MAX_OUTPUT_TOKENS,
-        )
+        response = _completion(messages, tools)
         tokens += _tokens(response)
         choice = response.choices[0].message
         if not choice.tool_calls:
@@ -242,11 +345,7 @@ def _chat(message):
         })
         messages.extend(_run_tool(call) for call in choice.tool_calls)
 
-    response = _client.chat.completions.create(
-        model=MODEL_NAME,
-        messages=messages,
-        max_tokens=MAX_OUTPUT_TOKENS,
-    )
+    response = _completion(messages)
     tokens += _tokens(response)
     return (response.choices[0].message.content or "").strip(), tokens
 
@@ -272,7 +371,7 @@ def run_agent(user_text, memory=None):
     reply = ""
     tokens = 0
     if _client is not None:
-        reply, tokens = _chat(message)
+        reply, tokens = _chat(message, tools_for(query))
 
     if not reply:
         reply = "Sorry, I couldn't finish that."

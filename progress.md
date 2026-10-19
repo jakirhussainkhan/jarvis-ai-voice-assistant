@@ -29,9 +29,24 @@ is installed.
 | Timers / reminders | Working |
 | Offline wake word ("Hey Jarvis") | **Built + unit-tested; NOT yet verified live** (needs `pip install openwakeword onnxruntime`) |
 | Desktop launcher (`run.sh` + app-menu entry) | Working (verified: `desktop-file-validate` clean, GUI starts) |
-| Tests | `pytest` suite — **363 passed, 1 skipped** |
+| Tests | `pytest` suite — **386 passed, 1 skipped** |
 | Spoken voice | `en-GB-RyanNeural` (British male); override with `JARVIS_TTS_VOICE` |
 | Published | GitHub, tags **`v1.0.1`**…**`v1.0.7`** (README + MIT LICENSE) |
+
+## P0 Stability & P1 Groq Optimization (2026-10-19, v1.2.0)
+
+- **Security:** Sandboxed `fn_read_file` with an allowlist and `Path.resolve()` to
+  prevent directory traversal.
+- **Memory:** Migrated from an in-memory deque to SQLite (`~/.jarvis/memory.db`)
+  with thread-safe locking (`RLock`).
+- **STT Fallback:** Added local `faster-whisper` (`base`, `int8`) as a fallback
+  when Google STT fails due to network issues.
+- **Models:** Primary model set to Groq `openai/gpt-oss-120b` with a 429
+  rate-limit fallback to `llama3-8b-8192`. Vision remains on `qwen/qwen3.8-27b`.
+- **Tool Pruning:** Reduced the 40+ tool schemas sent to the LLM down to 3-5 based
+  on intent classification, saving ~87.5% of tool payload tokens.
+- **Prefix Cache:** Ensured the system prompt is static and placed at index 0.
+- **Tests:** Expanded the suite to **386 passed, 1 skipped**.
 
 ## Cross-Platform Refactor & Installers (2026-10-19, v1.1.0)
 

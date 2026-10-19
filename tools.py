@@ -12,7 +12,9 @@ not exposed here at all -- they are handled by the router through
 
 import os
 import re
+import tempfile
 from datetime import datetime
+from pathlib import Path
 
 import psutil
 
@@ -25,6 +27,38 @@ import vision
 
 _NOTES_PATH = os.path.expanduser("~/jarvis_notes.md")
 _READ_LIMIT = 1500
+
+# Directories fn_read_file may read from. Anything outside this allowlist is
+# refused, so a misheard or hostile path cannot be used to walk the filesystem.
+# The roots are resolved on every call (not once at import) so tests and a
+# relocated HOME behave correctly.
+_READ_DENIED = "Access denied. You can only read files in allowed directories."
+
+
+def _read_roots():
+    """Resolved directories fn_read_file is allowed to read from."""
+    home = Path.home()
+    candidates = [
+        Path(__file__).resolve().parent,   # the project itself
+        home / "Documents",
+        home / "Downloads",
+        Path("/tmp"),
+        Path(tempfile.gettempdir()),       # cross-platform temp directory
+    ]
+    roots = []
+    for path in candidates:
+        try:
+            resolved = path.resolve()
+        except (OSError, RuntimeError):
+            continue
+        if resolved not in roots:
+            roots.append(resolved)
+    return roots
+
+
+def _within_allowlist(path: Path) -> bool:
+    """True when ``path`` lives inside one of the allowed read directories."""
+    return any(path == root or root in path.parents for root in _read_roots())
 
 
 # --------------------------------------------------------------------------- #
@@ -161,8 +195,20 @@ def fn_save_note(text: str) -> str:
 
 
 def fn_read_file(path: str) -> str:
-    """Return the first 1500 characters of a text file."""
-    full = os.path.expanduser(path)
+    """Return the first 1500 characters of a text file.
+
+    Reading is sandboxed: only files inside the project, ~/Documents,
+    ~/Downloads or the temp directory are allowed, so a stray path can never be
+    used to read the wider filesystem.
+    """
+    try:
+        full = Path(path).expanduser().resolve()
+    except (OSError, RuntimeError, ValueError):
+        return f"Could not read {path}."
+
+    if not _within_allowlist(full):
+        return _READ_DENIED
+
     try:
         with open(full, "r", encoding="utf-8", errors="replace") as fh:
             content = fh.read(_READ_LIMIT + 1)

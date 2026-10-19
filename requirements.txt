@@ -7,6 +7,10 @@ psutil
 python-dotenv
 pytest
 
+# Offline speech-to-text fallback. If Google's online STT is unreachable,
+# Jarvis transcribes locally instead (see voice._local_transcribe).
+faster-whisper
+
 # Cross-platform audio capture and window control for Windows/macOS.
 # On Linux Jarvis uses arecord/wmctrl/xdotool instead, but installing these is
 # harmless there (the adapters import them lazily and degrade gracefully).

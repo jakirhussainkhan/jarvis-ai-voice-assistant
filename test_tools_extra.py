@@ -112,3 +112,51 @@ def test_timers_and_reminders_delegate(monkeypatch):
     monkeypatch.setattr(timers, "set_reminder", lambda t, m=5: f"r:{t}")
     assert tools.fn_set_timer(30) == "t:30"
     assert tools.fn_set_reminder("tea") == "r:tea"
+
+
+# --------------------------------------------------------------------------- #
+# fn_read_file sandbox
+# --------------------------------------------------------------------------- #
+
+def test_read_file_default_allowlist_includes_the_project():
+    from pathlib import Path
+    assert Path(__file__).resolve().parent in tools._read_roots()
+
+
+def test_read_file_allows_a_file_in_an_allowed_root(tmp_path, monkeypatch):
+    note = tmp_path / "note.txt"
+    note.write_text("hello world")
+    monkeypatch.setattr(tools, "_read_roots", lambda: [tmp_path.resolve()])
+    assert tools.fn_read_file(str(note)) == "hello world"
+
+
+def test_read_file_denies_a_file_outside_the_allowlist(tmp_path, monkeypatch):
+    secret = tmp_path / "secret.txt"
+    secret.write_text("top secret")
+    monkeypatch.setattr(tools, "_read_roots", lambda: [tmp_path / "allowed"])
+    assert tools.fn_read_file(str(secret)) == tools._READ_DENIED
+
+
+def test_read_file_denies_traversal_escape(tmp_path, monkeypatch):
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("nope")
+    monkeypatch.setattr(tools, "_read_roots", lambda: [allowed.resolve()])
+    # "../outside.txt" resolves to the parent, which is not in the allowlist.
+    assert tools.fn_read_file(str(allowed / ".." / "outside.txt")) == tools._READ_DENIED
+
+
+def test_read_file_truncates_long_files(tmp_path, monkeypatch):
+    big = tmp_path / "big.txt"
+    big.write_text("x" * (tools._READ_LIMIT + 100))
+    monkeypatch.setattr(tools, "_read_roots", lambda: [tmp_path.resolve()])
+    out = tools.fn_read_file(str(big))
+    assert out.endswith("[truncated]")
+    assert out.startswith("x" * 10)
+
+
+def test_read_file_missing_file_is_reported(tmp_path, monkeypatch):
+    monkeypatch.setattr(tools, "_read_roots", lambda: [tmp_path.resolve()])
+    assert "File not found" in tools.fn_read_file(str(tmp_path / "nope.txt"))
+

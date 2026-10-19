@@ -16,6 +16,7 @@ import sys
 import tempfile
 import threading
 import time
+import wave
 from collections import deque
 
 import edge_tts
@@ -481,6 +482,67 @@ def _ptt_stop_reader(stop_event):
     threading.Thread(target=run, daemon=True).start()
 
 
+# --- offline speech-to-text fallback (faster-whisper) ------------------------ #
+# Google STT needs the network. When it is unreachable, Jarvis transcribes the
+# already-captured audio on the machine instead, so voice input keeps working
+# offline. The model is small ("base" int8 by default) and only built on first
+# use, so a machine without faster-whisper installed pays nothing for it.
+_WHISPER_SIZE = os.getenv("JARVIS_WHISPER_MODEL", "base")
+_WHISPER_COMPUTE = os.getenv("JARVIS_WHISPER_COMPUTE", "int8")
+_whisper_model = None
+_whisper_unavailable = False
+
+
+def _local_transcribe(audio):
+    """Transcribe captured ``audio`` on-device with faster-whisper, or return "".
+
+    Lazy and best-effort: if faster-whisper (or the model) is missing, this
+    reports once and returns an empty string so the caller can fall back to a
+    plain "I didn't catch that".
+    """
+    global _whisper_model, _whisper_unavailable
+
+    if _whisper_unavailable:
+        return ""
+
+    if _whisper_model is None:
+        try:
+            from faster_whisper import WhisperModel
+        except Exception as exc:
+            _whisper_unavailable = True
+            _dbg(f"offline STT unavailable (faster-whisper not installed): {exc}")
+            return ""
+        try:
+            _dbg(f"loading offline STT model '{_WHISPER_SIZE}' ({_WHISPER_COMPUTE})")
+            _whisper_model = WhisperModel(
+                _WHISPER_SIZE, device="cpu", compute_type=_WHISPER_COMPUTE
+            )
+        except Exception as exc:
+            _whisper_unavailable = True
+            _dbg(f"offline STT model failed to load: {exc}")
+            return ""
+
+    path = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+            path = tmp.name
+        with wave.open(path, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(audio.sample_width)
+            wf.setframerate(audio.sample_rate)
+            wf.writeframes(audio.get_raw_data())
+        language = (STT_LANG or "en").split("-")[0]
+        segments, _info = _whisper_model.transcribe(path, language=language)
+        return " ".join(segment.text for segment in segments).strip()
+    except Exception as exc:
+        _dbg(f"offline transcription failed: {type(exc).__name__}: {exc}")
+        return ""
+    finally:
+        if path:
+            with contextlib.suppress(OSError):
+                os.remove(path)
+
+
 def listen(wait=None, *, label=""):
     """Capture one utterance from the microphone via the platform adapter.
 
@@ -567,13 +629,18 @@ def listen(wait=None, *, label=""):
         _dbg(f"UNKNOWN_VALUE: audio captured (rms={rms:.0f}) but no words recognised")
         return ""
     except sr.RequestError as exc:
-        # Network / API error: surface it loudly, never swallow it silently.
+        # Network / API error. Surface it, then transcribe locally so the turn is
+        # not lost when the connection is down.
         print(f"[voice] REQUEST_ERROR from Google STT: {type(exc).__name__}: {exc}",
               flush=True)
-        return ""
+        text = _local_transcribe(audio)
+        if not text:
+            return ""
     except Exception as exc:
         _dbg(f"recognition error: {type(exc).__name__}: {exc}")
-        return ""
+        text = _local_transcribe(audio)
+        if not text:
+            return ""
 
     _dbg(f"recognised: {text!r}")
     if not text:
