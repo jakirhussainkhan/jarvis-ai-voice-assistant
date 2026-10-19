@@ -13,7 +13,10 @@ import re
 from openai import OpenAI
 
 from config import (
+    API_FAILURE_THRESHOLD,
     API_KEY,
+    API_RECOVERY_SECONDS,
+    API_TIMEOUT,
     BASE_URL,
     FALLBACK_MODEL,
     MAX_OUTPUT_TOKENS,
@@ -21,6 +24,7 @@ from config import (
     MODEL_NAME,
     TOOL_PRUNING,
 )
+from resilience import OPEN, CircuitBreaker, CircuitOpenError
 from tools import (
     fn_brightness,
     fn_click,
@@ -163,7 +167,23 @@ _DISPATCH = {fn.__name__: fn for fn in _TOOLS}
 
 _TYPE_MAP = {str: "string", int: "integer", float: "number", bool: "boolean"}
 
-_client = OpenAI(api_key=API_KEY, base_url=BASE_URL) if API_KEY else None
+# No SDK-level retries: one spoken turn should fail fast, and a retry storm would
+# hide exactly the repeated failures the circuit breaker is meant to count.
+_client = (
+    OpenAI(api_key=API_KEY, base_url=BASE_URL,
+           timeout=API_TIMEOUT, max_retries=0)
+    if API_KEY else None
+)
+
+# The breaker is shared by every turn. It only trips on transient failures (5xx,
+# timeouts, connection errors), never on a normal 4xx or a rate limit.
+_breaker = CircuitBreaker(
+    failure_threshold=API_FAILURE_THRESHOLD,
+    recovery_timeout=API_RECOVERY_SECONDS,
+)
+
+# Spoken when the API is unavailable and the command is not a local one.
+API_FALLBACK = "I am having trouble reaching the network right now, sir."
 
 # md5(query.lower()) -> reply
 _CACHE = {}
@@ -295,12 +315,35 @@ def _is_rate_limit(exc):
     return "429" in text or "rate limit" in text or "rate_limit" in text
 
 
+def _is_transient(exc):
+    """True for errors that mean the API is unhealthy (5xx, timeout, no route).
+
+    A rate limit (429) is deliberately *not* transient: the fallback model and
+    the SDK's own handling are the right response to it, and opening the circuit
+    would punish a healthy but busy API. Client errors (400/401/...) prove the
+    API is reachable, so they are not outages either.
+    """
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int):
+        return status >= 500 or status == 408
+    text = f"{type(exc).__name__}: {exc}".lower()
+    return any(marker in text for marker in (
+        "timeout", "timed out", "connection", "unreachable",
+        "temporarily unavailable", "service unavailable",
+        "bad gateway", "gateway timeout",
+    ))
+
+
 def _completion(messages, tools=None):
-    """One chat completion, retrying with the smaller model on a rate limit.
+    """One chat completion, with a 429 fallback model and breaker protection.
 
     The free tier caps the 120B model hard; a 429 is caught here and the request
-    is re-sent to ``FALLBACK_MODEL`` so the turn still completes.
+    is re-sent to ``FALLBACK_MODEL`` so the turn still completes. When the
+    circuit is open this raises immediately, without touching the network.
     """
+    if not _breaker.allow_request():
+        raise CircuitOpenError("The assistant API circuit is open.")
+
     def call(model):
         kwargs = {"model": model, "messages": messages,
                   "max_tokens": MAX_OUTPUT_TOKENS}
@@ -309,11 +352,23 @@ def _completion(messages, tools=None):
         return _client.chat.completions.create(**kwargs)
 
     try:
-        return call(MODEL_NAME)
+        try:
+            response = call(MODEL_NAME)
+        except Exception as exc:
+            if (FALLBACK_MODEL and FALLBACK_MODEL != MODEL_NAME
+                    and _is_rate_limit(exc)):
+                response = call(FALLBACK_MODEL)
+            else:
+                raise
     except Exception as exc:
-        if FALLBACK_MODEL and FALLBACK_MODEL != MODEL_NAME and _is_rate_limit(exc):
-            return call(FALLBACK_MODEL)
+        if _is_transient(exc):
+            _breaker.record_failure()
+        else:
+            _breaker.record_reachable()
         raise
+
+    _breaker.record_success()
+    return response
 
 
 def _chat(message, tools=None):
@@ -357,8 +412,28 @@ def _remember(memory, user_text, reply):
     memory.add("assistant", reply)
 
 
+def _offline_fallback(query):
+    """Route a query locally if possible, else return a graceful spoken reply.
+
+    ``main.handle`` normally tries the local router first, but ``run_agent`` can
+    also be called directly (tests, integrations). Re-trying the offline router
+    here is cheap and means an API outage never leaves the user with silence.
+    """
+    try:
+        from router import try_local
+        local = try_local(query)
+    except Exception:
+        local = None
+    return local or API_FALLBACK
+
+
 def run_agent(user_text, memory=None):
-    """Handle one user turn. Returns (reply, tokens_used)."""
+    """Handle one user turn. Returns (reply, tokens_used).
+
+    The cache is consulted first (it still works offline). If the API circuit is
+    open the turn fails over to the local router / a graceful message without
+    making a network request.
+    """
     query = (user_text or "").strip()
     key = _cache_key(query.lower())
 
@@ -370,12 +445,24 @@ def run_agent(user_text, memory=None):
 
     reply = ""
     tokens = 0
+    used_fallback = False
     if _client is not None:
-        reply, tokens = _chat(message, tools_for(query))
+        if _breaker.state == OPEN:
+            reply = _offline_fallback(query)
+            used_fallback = True
+        else:
+            try:
+                reply, tokens = _chat(message, tools_for(query))
+            except CircuitOpenError:
+                reply = _offline_fallback(query)
+                used_fallback = True
 
     if not reply:
         reply = "Sorry, I couldn't finish that."
 
-    _CACHE[key] = reply
-    _remember(memory, query, reply)
+    # Never cache a fallback: once the circuit closes the same question must be
+    # allowed to reach the API and produce a real answer.
+    if not used_fallback:
+        _CACHE[key] = reply
+        _remember(memory, query, reply)
     return reply, tokens

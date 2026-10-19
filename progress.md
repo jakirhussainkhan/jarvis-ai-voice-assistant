@@ -14,7 +14,7 @@ is installed.
 | Area | State |
 | --- | --- |
 | CLI loop (`main.py`) | Working |
-| Voice I/O (STT + TTS) | Working, English-only (STT via `arecord` + Google) |
+| Voice I/O (STT + TTS) | Working, English-only (STT via `arecord` + Google; streaming TTS) |
 | Local command router (offline-first) | Working (apps, folders, windows, media, volume, brightness, clipboard, screenshot, lock, status, time, dictated commands) |
 | Groq agent + 40 tools | Working (needs `GROQ_API_KEY`) |
 | Screen vision (read + operate) | Working on the real screen (`qwen/qwen3.8-27b`) |
@@ -29,9 +29,21 @@ is installed.
 | Timers / reminders | Working |
 | Offline wake word ("Hey Jarvis") | **Built + unit-tested; NOT yet verified live** (needs `pip install openwakeword onnxruntime`) |
 | Desktop launcher (`run.sh` + app-menu entry) | Working (verified: `desktop-file-validate` clean, GUI starts) |
-| Tests | `pytest` suite — **396 passed, 1 skipped** |
+| Tests | `pytest` suite — **414 passed, 1 skipped** |
 | Spoken voice | `en-GB-RyanNeural` (British male); override with `JARVIS_TTS_VOICE` |
-| Published | GitHub, tags **`v1.0.1`**…**`v1.3.0`** (README + MIT LICENSE) |
+| Published | GitHub, tags **`v1.0.1`**…**`v1.4.0`** (README + MIT LICENSE) |
+
+## Streaming TTS & API Circuit Breaker (2026-10-19, v1.4.0)
+
+- **Streaming TTS:** Refactored TTS to pipe `edge_tts` MP3 chunks into `ffmpeg`
+  and play 0.2 s PCM blocks via `pygame` immediately, reducing audio latency
+  from ~2-3 s to near-zero. Stop and barge-in still cut the stream instantly,
+  and the GUI waveform is driven by the decoded PCM envelope.
+- **Circuit Breaker:** Added `resilience.py` with CLOSED, OPEN, and HALF_OPEN
+  states. Trips after 3 transient API failures, skips API calls for 30 s, and
+  falls back to the local router or a graceful apology. A successful call resets
+  the failure count; after the cooldown, one half-open probe tests recovery.
+- **Tests:** Expanded suite to **414 passed, 1 skipped**.
 
 ## ChatGPT-Style UI, Barge-in & New Icon (2026-10-19, v1.3.0)
 

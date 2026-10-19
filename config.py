@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-__version__ = "1.3.0"
+__version__ = "1.4.0"
 
 # Groq (https://console.groq.com) exposes an OpenAI-compatible Chat Completions
 # API. The key is read from GROQ_API_KEY in .env; Groq keys start with "gsk_".
@@ -66,6 +66,16 @@ MAX_OUTPUT_TOKENS = 600
 # How many tool round-trips one spoken request may chain (open a folder, then
 # read a file, then summarise it -> 3). Plenty for real multi-step requests.
 MAX_TOOL_ROUNDS = 6
+
+# --- remote API resilience --------------------------------------------------#
+# A hung request must not block a spoken turn for minutes (the OpenAI SDK's
+# default). One timeout counts as one failure for the circuit breaker below.
+API_TIMEOUT = _env_int("JARVIS_API_TIMEOUT", 20, minimum=1)
+# After this many consecutive transient failures (5xx, timeout, connection),
+# stop calling the API for the cooldown instead of making every turn wait.
+API_FAILURE_THRESHOLD = _env_int("JARVIS_API_FAILURES", 3, minimum=1)
+# How long the circuit stays open before allowing one half-open probe request.
+API_RECOVERY_SECONDS = _env_int("JARVIS_API_RECOVERY", 30, minimum=1)
 
 # --- screen vision --------------------------------------------------------- #
 # Downscale screenshots before sending them to the vision model (tokens/bandwidth).

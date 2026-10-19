@@ -7,7 +7,9 @@ envelope degrading to [] when ffmpeg is missing, and stop_speaking() actually
 cutting playback short.
 """
 
+import array
 import shutil
+import threading
 import types
 import wave
 
@@ -180,7 +182,7 @@ def test_play_tts_completes_normally(monkeypatch):
 
     levels = []
     voice.set_level_sink(levels.append)
-    voice._play_tts("hello there")
+    voice._play_tts_file("hello there")
 
     assert music.played is True
     assert music.stopped is False
@@ -195,7 +197,7 @@ def test_play_tts_is_cut_short_by_stop_speaking(monkeypatch):
 
     levels = []
     voice.set_level_sink(levels.append)
-    voice._play_tts("a long reply")
+    voice._play_tts_file("a long reply")
 
     assert music.played is True
     assert music.stopped is True, "stop_speaking() must cut playback"
@@ -215,7 +217,7 @@ def test_stop_speaking_clears_on_the_next_reply(monkeypatch):
     music.get_busy = busy
     _patch_tts(monkeypatch, music, envelope=[0.3])
 
-    voice._play_tts("next reply")
+    voice._play_tts_file("next reply")
 
     assert music.stopped is False
 
@@ -235,8 +237,239 @@ def test_stop_during_synthesis_cancels_playback(monkeypatch):
 
     levels = []
     voice.set_level_sink(levels.append)
-    voice._play_tts("a reply nobody will hear")
+    voice._play_tts_file("a reply nobody will hear")
     voice.set_level_sink(None)
 
     assert music.played is False, "a Stop during synthesis must cancel playback"
     assert levels and levels[-1] == 0.0
+
+
+# --------------------------------------------------------------------------- #
+# streaming TTS (edge-tts -> ffmpeg -> queued pygame Sounds)
+# --------------------------------------------------------------------------- #
+
+class _ChunkSink:
+    """A write sink that keeps its bytes even after close()."""
+
+    def __init__(self):
+        self.data = b""
+        self.closed = False
+
+    def write(self, chunk):
+        self.data += chunk
+
+    def flush(self):
+        pass
+
+    def close(self):
+        self.closed = True
+
+
+def _audio_event(data):
+    return {"type": "audio", "data": data}
+
+
+def test_streaming_synthesis_forwards_only_audio_chunks(monkeypatch):
+    class FakeCommunicate:
+        def __init__(self, text, voice=None, **kwargs):
+            self.text = text
+
+        async def stream(self):
+            yield _audio_event(b"aa")
+            yield {"type": "SentenceBoundary", "text": "ignored"}
+            yield _audio_event(b"bb")
+
+    monkeypatch.setattr(voice.edge_tts, "Communicate", FakeCommunicate)
+    sink = _ChunkSink()
+    voice._synthesize_to_decoder("hello", sink, threading.Event())
+
+    assert sink.data == b"aabb"
+    assert sink.closed is True
+
+
+def test_streaming_synthesis_stops_after_interrupt(monkeypatch):
+    stop = threading.Event()
+
+    class FakeCommunicate:
+        def __init__(self, text, voice=None, **kwargs):
+            self.text = text
+
+        async def stream(self):
+            yield _audio_event(b"first")
+            stop.set()                    # user pressed Stop / barge-in
+            yield _audio_event(b"second")
+
+    monkeypatch.setattr(voice.edge_tts, "Communicate", FakeCommunicate)
+    sink = _ChunkSink()
+    voice._synthesize_to_decoder("hello", sink, stop)
+
+    assert sink.data == b"first"
+
+
+class _FakeSound:
+    def __init__(self, buffer=None):
+        self.buffer = buffer
+
+
+class _FakeChannel:
+    def __init__(self, on_queue=None):
+        self.queued = []
+        self.stopped = False
+        self._on_queue = on_queue
+
+    def _record(self, sound):
+        self.queued.append(sound)
+        if self._on_queue is not None:
+            self._on_queue(len(self.queued))
+
+    def play(self, sound):
+        self._record(sound)
+
+    def queue(self, sound):
+        self._record(sound)
+
+    def get_busy(self):
+        return False
+
+    def stop(self):
+        self.stopped = True
+
+
+class _FakeStdin:
+    def __init__(self):
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+    def write(self, _data):
+        pass
+
+    def flush(self):
+        pass
+
+
+class _FakeStdout:
+    def __init__(self, blocks):
+        self.blocks = list(blocks)
+
+    def read(self, _size):
+        return self.blocks.pop(0) if self.blocks else b""
+
+    def close(self):
+        pass
+
+
+class _FakeProc:
+    def __init__(self, blocks):
+        self.stdin = _FakeStdin()
+        self.stdout = _FakeStdout(blocks)
+        self.terminated = False
+
+    def terminate(self):
+        self.terminated = True
+
+    def wait(self, timeout=None):
+        return 0
+
+
+def _fake_stream_pygame(channel):
+    mixer = types.SimpleNamespace(
+        get_init=lambda: (voice._TTS_RATE, -16, voice._TTS_CHANNELS),
+        init=lambda *a, **k: None,
+        quit=lambda *a, **k: None,
+        Channel=lambda _index: channel,
+        Sound=lambda buffer=None: _FakeSound(buffer),
+    )
+    clock = types.SimpleNamespace(tick=lambda _fps: 0)
+    return types.SimpleNamespace(
+        mixer=mixer, time=types.SimpleNamespace(Clock=lambda: clock)
+    )
+
+
+def _pcm_block(amplitude=2000):
+    samples = array.array("h", [amplitude] * (voice._TTS_BLOCK_BYTES // 2))
+    return samples.tobytes()
+
+
+def test_streaming_tts_queues_decoded_chunks(monkeypatch):
+    proc = _FakeProc([_pcm_block(2000), _pcm_block(2000)])
+    channel = _FakeChannel()
+    monkeypatch.setattr(voice, "_start_tts_decoder", lambda: proc)
+    monkeypatch.setattr(
+        voice, "_synthesize_to_decoder",
+        lambda text, stdin, stop: stdin.close(),
+    )
+    monkeypatch.setattr(voice, "pygame", _fake_stream_pygame(channel))
+
+    levels = []
+    voice.set_level_sink(levels.append)
+    assert voice._play_tts_stream("hello") is True
+
+    assert len(channel.queued) == 2
+    assert all(sound.buffer for sound in channel.queued)
+    assert any(level > 0 for level in levels)
+    assert levels[-1] == 0.0
+    assert proc.terminated is True
+    assert channel.stopped is True
+
+
+def test_streaming_tts_stops_after_the_first_chunk(monkeypatch):
+    proc = _FakeProc([_pcm_block(), _pcm_block(), _pcm_block()])
+    channel = _FakeChannel(
+        on_queue=lambda count: voice.stop_speaking() if count == 1 else None
+    )
+    monkeypatch.setattr(voice, "_start_tts_decoder", lambda: proc)
+    monkeypatch.setattr(
+        voice, "_synthesize_to_decoder",
+        lambda text, stdin, stop: stdin.close(),
+    )
+    monkeypatch.setattr(voice, "pygame", _fake_stream_pygame(channel))
+
+    assert voice._play_tts_stream("hello") is True
+
+    assert len(channel.queued) == 1
+    assert channel.stopped is True
+
+
+def test_play_tts_uses_streaming_when_available(monkeypatch):
+    calls = []
+    monkeypatch.setattr(voice, "_TTS_STREAM_ENABLED", True)
+    monkeypatch.setattr(
+        voice, "_play_tts_stream",
+        lambda text: calls.append(("stream", text)) or True,
+    )
+    monkeypatch.setattr(
+        voice, "_play_tts_file",
+        lambda text: calls.append(("file", text)),
+    )
+
+    voice._play_tts("hello")
+
+    assert calls == [("stream", "hello")]
+
+
+def test_play_tts_falls_back_when_ffmpeg_is_missing(monkeypatch):
+    calls = []
+    monkeypatch.setattr(voice, "_TTS_STREAM_ENABLED", True)
+    monkeypatch.setattr(voice, "_play_tts_stream", lambda text: False)
+    monkeypatch.setattr(voice, "_play_tts_file", lambda text: calls.append(text))
+
+    voice._play_tts("hello")
+
+    assert calls == ["hello"]
+
+
+def test_play_tts_does_not_replay_after_streaming_error(monkeypatch):
+    calls = []
+    monkeypatch.setattr(voice, "_TTS_STREAM_ENABLED", True)
+
+    def boom(_text):
+        raise RuntimeError("audio device died")
+
+    monkeypatch.setattr(voice, "_play_tts_stream", boom)
+    monkeypatch.setattr(voice, "_play_tts_file", lambda text: calls.append(text))
+
+    voice._play_tts("hello")
+
+    assert calls == []                  # never repeat words already heard

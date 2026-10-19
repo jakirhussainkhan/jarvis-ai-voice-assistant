@@ -10,6 +10,7 @@ if os.path.exists(os.environ.get("XDG_RUNTIME_DIR", "") + "/pulse/native"):
 import array
 import asyncio
 import contextlib
+import queue
 import select
 import subprocess
 import sys
@@ -811,11 +812,213 @@ def _pump_envelope(envelope, started):
         _emit_value(envelope[index])
 
 
-def _play_tts(text):
-    """Synthesise `text` with edge-tts and play it through pygame (may raise).
+# --- streaming TTS ---------------------------------------------------------- #
+# edge-tts emits 24 kHz mono MP3. Waiting for the whole file before playing costs
+# 2-3 seconds on a normal reply. Instead we pipe the MP3 chunks through ffmpeg as
+# they arrive, queue ~0.2 s raw-PCM pygame Sounds back-to-back on one channel,
+# and start the first words while the rest is still being synthesised.
+_TTS_RATE = 24000
+_TTS_CHANNELS = 1
+_TTS_SAMPLE_WIDTH = 2
+_TTS_BLOCK_SECONDS = 0.20
+_TTS_BLOCK_BYTES = int(_TTS_RATE * _TTS_BLOCK_SECONDS) * _TTS_SAMPLE_WIDTH
+_TTS_LEAD_SECONDS = 0.60        # max queued-ahead audio; keeps the levels in sync
+_TTS_QUEUE_BLOCKS = 96          # bounded backpressure (~19 s of decoded audio)
+_TTS_STREAM_ENABLED = os.getenv("JARVIS_TTS_STREAM", "1").strip().lower() not in (
+    "0", "false", "no", "off",
+)
 
-    While it plays, the decoded loudness envelope drives the level sink so the
-    GUI orb moves in time with the words, and stop_speaking() cuts it short.
+
+def _start_tts_decoder():
+    """Start ffmpeg decoding MP3 from stdin to raw S16_LE PCM on stdout.
+
+    Returns None when ffmpeg is unavailable, so the caller can use the old
+    whole-file path. ffmpeg is already used by the envelope/screen features, so
+    this adds no new mandatory dependency: it is an optimisation when present.
+    """
+    try:
+        return subprocess.Popen(
+            ["ffmpeg", "-v", "quiet", "-f", "mp3", "-i", "pipe:0",
+             "-f", "s16le", "-acodec", "pcm_s16le",
+             "-ac", str(_TTS_CHANNELS), "-ar", str(_TTS_RATE), "pipe:1"],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, bufsize=0,
+        )
+    except (OSError, ValueError):
+        return None
+
+
+def _synthesize_to_decoder(text, stdin, stop_event):
+    """Stream edge-tts MP3 chunks into ffmpeg's stdin until done or interrupted."""
+    async def pump():
+        communicate = edge_tts.Communicate(text, voice=TTS_VOICE)
+        try:
+            async for event in communicate.stream():
+                if stop_event.is_set():
+                    break
+                if event.get("type") != "audio":
+                    continue
+                data = event.get("data") or b""
+                if not data:
+                    continue
+                try:
+                    stdin.write(data)
+                    stdin.flush()
+                except (BrokenPipeError, OSError, ValueError):
+                    break
+        finally:
+            with contextlib.suppress(Exception):
+                stdin.close()
+
+    try:
+        asyncio.run(pump())
+    except Exception as exc:
+        _dbg(f"streaming TTS synthesis failed: {type(exc).__name__}: {exc}")
+
+
+def _read_decoded_pcm(stdout, blocks, stop_event):
+    """Read decoded PCM blocks from ffmpeg and hand them to the playback loop."""
+    try:
+        while not stop_event.is_set():
+            data = stdout.read(_TTS_BLOCK_BYTES)
+            if not data:
+                break
+            # pygame.mixer.Sound needs whole samples.
+            if len(data) % _TTS_SAMPLE_WIDTH:
+                data = data[:len(data) - (len(data) % _TTS_SAMPLE_WIDTH)]
+            if data:
+                blocks.put(data, timeout=0.5)
+    except (OSError, ValueError, queue.Full):
+        pass
+    finally:
+        with contextlib.suppress(Exception):
+            blocks.put(None, timeout=0.5)
+
+
+def _pcm_level(data):
+    """Normalise one decoded PCM block to the 0..1 level the GUI understands."""
+    rms = _rms(data, _TTS_SAMPLE_WIDTH)
+    return min(1.0, max(0.0, rms / _LEVEL_CEILING)) ** 0.5
+
+
+def _flush_levels(pending, now):
+    """Emit envelope values whose scheduled playback time has arrived."""
+    while pending and pending[0][0] <= now:
+        _emit_value(pending.popleft()[1])
+
+
+def _play_tts_stream(text):
+    """Play edge-tts audio progressively through ffmpeg + pygame.
+
+    Returns False only when no ffmpeg decoder could be started (the caller then
+    uses the whole-file fallback). Once streaming has begun a failure is not
+    replayed from the start, which would repeat the reply.
+    """
+    proc = _start_tts_decoder()
+    if proc is None:
+        return False
+
+    blocks = queue.Queue(maxsize=_TTS_QUEUE_BLOCKS)
+    writer = threading.Thread(
+        target=_synthesize_to_decoder,
+        args=(text, proc.stdin, _stop_speaking),
+        daemon=True, name="jarvis-tts-writer",
+    )
+    reader = threading.Thread(
+        target=_read_decoded_pcm,
+        args=(proc.stdout, blocks, _stop_speaking),
+        daemon=True, name="jarvis-tts-reader",
+    )
+    writer.start()
+    reader.start()
+
+    channel = None
+    clock = None
+    pending = deque()
+    enqueued = 0.0
+    started = None
+    mixer_started = False
+    try:
+        if pygame.mixer.get_init() != (_TTS_RATE, -16, _TTS_CHANNELS):
+            with contextlib.suppress(Exception):
+                pygame.mixer.quit()
+            pygame.mixer.init(frequency=_TTS_RATE, size=-16,
+                              channels=_TTS_CHANNELS)
+        mixer_started = True
+        channel = pygame.mixer.Channel(0)
+        clock = pygame.time.Clock()
+
+        while not _stop_speaking.is_set():
+            try:
+                data = blocks.get(timeout=0.05)
+            except queue.Empty:
+                data = b""
+            now = time.monotonic()
+            _flush_levels(pending, now)
+            if data is None:
+                break
+            if not data:
+                continue
+
+            # After an underrun the queued audio has already finished: restart
+            # the clock so the lead calculation stays honest.
+            if started is None or enqueued - (now - started) <= 0:
+                started = now
+                enqueued = 0.0
+
+            sound = pygame.mixer.Sound(buffer=data)
+            if channel.get_busy():
+                channel.queue(sound)
+            else:
+                channel.play(sound)
+            duration = len(data) / float(_TTS_RATE * _TTS_SAMPLE_WIDTH)
+            pending.append((started + enqueued, _pcm_level(data)))
+            enqueued += duration
+
+            # Synthesis can be much faster than playback. Keep only a short lead
+            # so the envelope stays close to what is actually audible and a long
+            # reply is not buffered entirely in memory.
+            while not _stop_speaking.is_set():
+                now = time.monotonic()
+                _flush_levels(pending, now)
+                if enqueued - (now - started) <= _TTS_LEAD_SECONDS:
+                    break
+                clock.tick(30)
+
+        # Let already-queued audio finish unless the user interrupted us.
+        while not _stop_speaking.is_set() and channel.get_busy():
+            _flush_levels(pending, time.monotonic())
+            clock.tick(30)
+        if not _stop_speaking.is_set():
+            _flush_levels(pending, time.monotonic() + 1e9)
+    finally:
+        if channel is not None:
+            with contextlib.suppress(Exception):
+                channel.stop()
+        with contextlib.suppress(Exception):
+            if proc.stdin is not None:
+                proc.stdin.close()
+        with contextlib.suppress(Exception):
+            proc.terminate()
+        with contextlib.suppress(Exception):
+            proc.wait(timeout=1.0)
+        with contextlib.suppress(Exception):
+            if proc.stdout is not None:
+                proc.stdout.close()
+        writer.join(timeout=0.5)
+        reader.join(timeout=0.5)
+        if mixer_started:
+            with contextlib.suppress(Exception):
+                pygame.mixer.quit()
+        _emit_value(0.0)
+    return True
+
+
+def _play_tts_file(text):
+    """Fallback: synthesise the whole reply to disk, then play it with pygame.
+
+    Used only when ffmpeg is unavailable. It has the old 2-3 s startup latency
+    but keeps TTS working on machines without the streaming decoder.
     """
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3").name
     try:
@@ -850,6 +1053,25 @@ def _play_tts(text):
     finally:
         with contextlib.suppress(OSError):
             os.remove(tmp)
+
+
+def _play_tts(text):
+    """Speak `text`, streaming the audio whenever possible.
+
+    A fresh reply clears any stale Stop. If ffmpeg is missing we fall back to the
+    whole-file player; if streaming started and then failed we do not replay the
+    beginning of the reply (that would repeat words the user already heard).
+    """
+    _stop_speaking.clear()
+    if _TTS_STREAM_ENABLED:
+        try:
+            if _play_tts_stream(text):
+                return
+        except Exception as exc:
+            _dbg(f"streaming TTS failed: {type(exc).__name__}: {exc}")
+            _emit_value(0.0)
+            return
+    _play_tts_file(text)
 
 
 def speak(text):
