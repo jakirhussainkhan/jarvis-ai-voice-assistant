@@ -88,6 +88,10 @@ def test_chat_sends_the_static_system_prompt_first(monkeypatch):
     # The prompt is a constant -- no per-call data that would break the cache.
     assert agent.SYSTEM_INSTRUCTION is agent.SYSTEM_INSTRUCTION
     assert "openai/gpt-oss-120b" not in agent.SYSTEM_INSTRUCTION
+    # The creator identity is a strict, always-present part of the prompt.
+    assert "IDENTITY RULE:" in agent.SYSTEM_INSTRUCTION
+    assert "Jakir Hussain Khan" in agent.SYSTEM_INSTRUCTION
+    assert "Do not mention OpenAI, Groq" in agent.SYSTEM_INSTRUCTION
 
 
 # --------------------------------------------------------------------------- #

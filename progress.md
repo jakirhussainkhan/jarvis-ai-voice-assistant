@@ -29,9 +29,17 @@ is installed.
 | Timers / reminders | Working |
 | Offline wake word ("Hey Jarvis") | **Built + unit-tested; NOT yet verified live** (needs `pip install openwakeword onnxruntime`) |
 | Desktop launcher (`run.sh` + app-menu entry) | Working (verified: `desktop-file-validate` clean, GUI starts) |
-| Tests | `pytest` suite — **441 passed, 1 skipped** |
+| Tests | `pytest` suite — **448 passed, 1 skipped** |
 | Spoken voice | `en-GB-RyanNeural` (British male); override with `JARVIS_TTS_VOICE` |
-| Published | GitHub, tags **`v1.0.1`**…**`v1.5.0`** (README + MIT LICENSE) |
+| Published | GitHub, tags **`v1.0.1`**…**`v1.6.0`** (README + MIT LICENSE) |
+
+## Creator Identity & CI/CD Pipeline (2026-10-19, v1.6.0)
+
+- **Identity:** Added strict rules in the system prompt and offline router to
+  ensure Jarvis proudly identifies **Jakir Hussain Khan** as his creator.
+- **CI/CD:** Added GitHub Actions (`.github/workflows/ci.yml`) to automatically
+  run the 448+ test suite across Linux, Windows, and macOS on every push.
+- **Tests:** **448 passed, 1 skipped.**
 
 ## Advanced Intelligence: Semantic Cache, Sub-agent & CodeAct (2026-10-19, v1.5.0)
 

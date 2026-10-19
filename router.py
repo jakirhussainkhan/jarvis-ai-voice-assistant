@@ -77,6 +77,21 @@ OFFLINE_WORD = re.compile(
     re.I,
 )
 
+# Creator questions are answered locally and instantly, before any search or
+# agent call. This also keeps the answer independent of the model provider.
+CREATOR_QUESTION = re.compile(
+    r"\b(?:"
+    r"who\s+(?:made|created|built|developed|designed|programmed)\s+"
+    r"(?:you|jarvis)\b|"
+    r"who(?:'s| is| was)\s+your\s+"
+    r"(?:creator|maker|developer|designer|builder)\b|"
+    r"who\s+(?:is|was)\s+the\s+"
+    r"(?:creator|maker|developer|designer|builder)\s+of\s+jarvis\b"
+    r")",
+    re.I,
+)
+CREATOR_REPLY = "I was created and developed by Jakir Hussain Khan."
+
 # A command spoken with an explicit marker is run directly, offline -- no model
 # needed. "run firefox" deliberately does NOT match (it has no marker), so it
 # still reaches the agent and is handled as an app launch.
@@ -358,6 +373,10 @@ def try_local(text):
     # --- offline help: answered locally so it works with no connection ------ #
     if HELP_PHRASE.match(t) or (OFFLINE_WORD.search(t) and len(t.split()) <= 12):
         return CAPABILITIES
+
+    # --- creator identity: always local, instant and provider-independent --- #
+    if CREATOR_QUESTION.search(t):
+        return CREATOR_REPLY
 
     # Search requests belong to the agent (it can call the search tools).
     if SEARCH_VERB.search(t):

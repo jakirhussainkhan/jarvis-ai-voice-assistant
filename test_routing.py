@@ -62,6 +62,21 @@ def test_search_verb_defers_to_agent():
     assert router.try_local("open YouTube and search for lo-fi music") is None
 
 
+@pytest.mark.parametrize("phrase", [
+    "who made you",
+    "who created you",
+    "who built you",
+    "who developed you",
+    "who is your creator",
+    "who's your creator",
+    "who was the creator of Jarvis",
+])
+def test_creator_questions_are_answered_locally(phrase):
+    assert router.try_local(phrase) == (
+        "I was created and developed by Jakir Hussain Khan."
+    )
+
+
 # --------------------------------------------------------------------------- #
 # opening apps
 # --------------------------------------------------------------------------- #
