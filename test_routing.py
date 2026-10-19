@@ -228,6 +228,20 @@ def test_search_on_youtube_defers_to_agent(monkeypatch):
     assert calls == []
 
 
+def test_search_then_play_goes_straight_to_the_video(monkeypatch):
+    """"search <song> and play" must resolve the video, not leave results."""
+    calls = _spy(monkeypatch, "play_youtube", "Playing despacito on YouTube.")
+    assert router.try_local("search despacito and play now") == \
+        "Playing despacito on YouTube."
+    assert calls == [(("despacito",), {})]
+
+
+def test_look_up_then_play_keeps_the_song(monkeypatch):
+    calls = _spy(monkeypatch, "play_youtube", "ok")
+    assert router.try_local("look up lofi beats then play it") == "ok"
+    assert calls == [(("lofi beats",), {})]
+
+
 def test_bare_youtube_defers(monkeypatch):
     assert router.try_local("youtube") is None
 
@@ -273,10 +287,16 @@ def test_deictic_song_is_an_on_screen_action_not_a_search(monkeypatch):
 
 def test_media_commands(monkeypatch):
     calls = _spy(monkeypatch, "media_control", "ok")
+    # Media commands must be recognised even while media is playing, because
+    # listening no longer pauses it first.
     assert router.try_local("pause the music") == "ok"
+    assert router.try_local("pause music") == "ok"
+    assert router.try_local("resume music") == "ok"
     assert router.try_local("next song") == "ok"
     assert calls[0] == (("pause",), {})
-    assert calls[1] == (("next",), {})
+    assert calls[1] == (("pause",), {})
+    assert calls[2] == (("resume",), {})
+    assert calls[3] == (("next",), {})
 
 
 def test_volume_up_and_set(monkeypatch):
@@ -342,7 +362,7 @@ def test_open_lock_screen_settings_does_not_lock(monkeypatch):
 def test_shutdown_asks_first_and_runs_after_yes(monkeypatch):
     calls = _spy(monkeypatch, "power", "Shutting down.")
     reply = router.try_local("shut down")
-    assert reply == "Are you sure you want to shutdown?"
+    assert reply == "Are you sure you want to shut down?"
     assert calls == []                 # nothing runs yet
     assert confirm.is_pending()
 
@@ -361,3 +381,73 @@ def test_restart_is_cancelled_by_anything_but_yes(monkeypatch):
 def test_power_word_with_a_target_is_not_power(monkeypatch):
     # "restart chrome" is about chrome, not the machine.
     assert router.try_local("restart chrome") is None
+
+
+def test_turn_off_computer_asks_first_and_runs_after_yes(monkeypatch):
+    calls = _spy(monkeypatch, "power", "Shutting down.")
+    reply = router.try_local("turn off the computer")
+    assert reply == "Are you sure you want to shut down?"
+    assert calls == []                 # nothing runs yet
+    assert confirm.is_pending()
+
+    handled, result = confirm.resolve("yes")
+    assert handled and result == "Shutting down."
+    assert calls == [(("shutdown",), {})]
+
+
+def test_shutdown_phrases_all_require_confirmation(monkeypatch):
+    calls = _spy(monkeypatch, "power", "Shutting down.")
+    for phrase in ("shut down laptop", "shutdown", "turn off pc", "power off"):
+        confirm.clear()
+        assert router.try_local(phrase) == "Are you sure you want to shut down?"
+        assert calls == [], phrase
+    confirm.clear()
+
+
+# --------------------------------------------------------------------------- #
+# terminal dictation / close (Step 1 & 2)
+# --------------------------------------------------------------------------- #
+
+def test_open_terminal_and_type_routes_to_dictation(monkeypatch):
+    calls = _spy(monkeypatch, "dictate_in_terminal", "Typed in the terminal: ls")
+    assert router.try_local("open terminal and type ls") == "Typed in the terminal: ls"
+    assert calls == [(("ls",), {})]
+
+
+def test_type_in_terminal_routes_to_dictation(monkeypatch):
+    calls = _spy(monkeypatch, "dictate_in_terminal", "Typed in the terminal: df -h")
+    assert router.try_local("type df -h in terminal") == "Typed in the terminal: df -h"
+    assert router.try_local("please type pwd in the terminal") == (
+        "Typed in the terminal: df -h"
+    )
+    assert calls == [(("df -h",), {}), (("pwd",), {})]
+
+
+def test_open_terminal_alone_still_opens_the_app(monkeypatch):
+    calls = _spy(monkeypatch, "open_app", "Opening Terminal.")
+    dictation = _spy(monkeypatch, "dictate_in_terminal", "SHOULD NOT HAPPEN")
+    assert router.try_local("open terminal") == "Opening Terminal."
+    assert dictation == []
+    assert calls == [(("terminal",), {})]
+
+
+def test_close_terminal_uses_the_class_based_closer(monkeypatch):
+    calls = _spy(monkeypatch, "close_terminal", "Closing the terminal.")
+    assert router.try_local("close terminal") == "Closing the terminal."
+    assert router.try_local("close the terminal") == "Closing the terminal."
+    assert calls == [((), {}), ((), {})]
+
+
+# --------------------------------------------------------------------------- #
+# Asia/Dhaka local time (Step 6)
+# --------------------------------------------------------------------------- #
+
+def test_time_uses_dhaka_timezone():
+    from datetime import timedelta
+
+    assert router.DHAKA_TZ.key == "Asia/Dhaka"
+    offset = router._now_dhaka().utcoffset()
+    assert offset == timedelta(hours=6)
+    reply = router.try_local("what time is it")
+    assert reply.startswith("Current time:")
+    assert router._now_dhaka().strftime("%H:%M:%S") in reply

@@ -1,6 +1,6 @@
 # Jarvis — Progress
 
-Last updated: 2026-10-19
+Last updated: 2026-10-20
 
 A voice-controlled cross-platform desktop assistant. You speak a command; Jarvis either
 handles it locally (regex, offline) or forwards it to a Groq-backed agent that
@@ -29,9 +29,31 @@ is installed.
 | Timers / reminders | Working |
 | Offline wake word ("Hey Jarvis") | **Built + unit-tested; NOT yet verified live** (needs `pip install openwakeword onnxruntime`) |
 | Desktop launcher (`run.sh` + app-menu entry) | Working (verified: `desktop-file-validate` clean, GUI starts) |
-| Tests | `pytest` suite — **501 passed, 1 skipped** |
+| Tests | `pytest` suite — **557 passed, 1 skipped** |
 | Spoken voice | `en-GB-RyanNeural` (British male); override with `JARVIS_TTS_VOICE` |
-| Published | GitHub, tags **`v1.0.1`**…**`v2.0.1`** (README + MIT LICENSE) |
+| Published | GitHub, tags **`v1.0.1`**…**`v2.1.1`** (README + MIT LICENSE) |
+
+## YouTube Autoplay Verification & Smart Routing (2026-10-20, v2.1.1)
+
+A focused release that stops Jarvis from claiming a video is playing when the
+browser has actually blocked autoplay, and makes "search X and play" resolve the
+video directly.
+
+- **Routing:** Recognises "search X and play" / "look up X then play" phrasing and
+  routes it to direct video playback (`play_youtube`) instead of leaving the
+  YouTube search-results page open. The song name is taken from before the play
+  verb ("search despacito and play now" → despacito).
+- **Autoplay fix:** `ensure_browser_playing()` checks `playerctl status`. If it is
+  not already **Playing**, Jarvis focuses the YouTube window and sends `Space`
+  (`xdotool`) to start playback, then verifies after one second. If the video is
+  already playing it does nothing, so a working video is never accidentally
+  paused.
+- **Honest feedback:** Jarvis says "Playing X" only after playback has been
+  verified; otherwise it warns that the video is still paused and asks the user to
+  press play or allow autoplay.
+- **Tests:** Expanded suite to **557 passed, 1 skipped**, covering paused/playing
+  `playerctl` states, the Space key press, playerctl failure, both routing
+  phrasings, and the verified/blocked spoken replies.
 
 ## STT Name Correction & Forget Memory Tool (2026-10-19, v2.0.1)
 

@@ -25,6 +25,7 @@ Safety rules enforced here and in :mod:`desktop`:
 
 import re
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import psutil
 
@@ -32,6 +33,15 @@ import confirm
 import desktop
 import shell
 import vision
+
+# Jarvis runs for a user in Bangladesh, so clock answers use Dhaka local time
+# rather than the server's (possibly UTC) timezone.
+DHAKA_TZ = ZoneInfo("Asia/Dhaka")
+
+
+def _now_dhaka():
+    """Current wall-clock time in Asia/Dhaka."""
+    return datetime.now(DHAKA_TZ)
 
 # A short, spoken summary of what Jarvis can do with no internet at all. Used
 # for "help" / "what can you do offline" and as the fallback when a network
@@ -56,6 +66,16 @@ OFFLINE_REPLY = "I can't reach the internet right now, so I'm staying offline. "
 # A search verb means the user wants information, so the router leaves it to the
 # agent (which can call the search tools).
 SEARCH_VERB = re.compile(r"\b(search|look ?up|find)\b", re.I)
+
+# "search <song> and play it" / "find <song> then play" is a *play* request, not
+# a web search: the router resolves the video with yt-dlp and navigates the open
+# YouTube tab straight to watch?v=ID instead of leaving a results page open.
+SEARCH_AND_PLAY = re.compile(
+    r"^\s*(?:(?:please|jarvis|hey\s+jarvis|can\s+you|could\s+you)[\s,]+)*"
+    r"(?:search|look\s*up|find)\b.*?\b(?:and|then)\s+"
+    r"(?:play|watch|start)\b",
+    re.I,
+)
 
 # A terminal request must reach the agent (it can call fn_run_command). The
 # leading-verb match also stops "run ls" from being mistaken for "launch an app
@@ -125,6 +145,26 @@ DIRECT_CMD = re.compile(
     re.I,
 )
 
+# Terminal dictation: open a terminal and type the command into it (as if the
+# user typed it), rather than running it invisibly. Two spoken shapes are
+# supported: "open terminal and type <cmd>" and "type <cmd> in (the) terminal".
+DICTATE_TERMINAL = re.compile(
+    r"^\s*(?:please\s+|jarvis\s+|hey\s+jarvis\s+|can you\s+|could you\s+)*"
+    r"(?:"
+    r"open\s+(?:a\s+|the\s+|my\s+)?terminal\s+and\s+"
+    r"(?:type|enter|write)\s+(?P<opened>.+)"
+    r"|type\s+(?P<inline>.+?)\s+(?:in|into)\s+(?:the\s+|a\s+|my\s+)?terminal"
+    r")"
+    r"\s*[.!?]*$",
+    re.I,
+)
+
+# A "close <terminal>" target. Terminal windows have an unhelpful title (the
+# shell prompt), so they are matched by WM_CLASS instead of by name.
+TERMINAL_TARGET = re.compile(
+    r"^\s*(?:the\s+|my\s+|a\s+)?(?:terminal|term|console|shell)\s*$", re.I
+)
+
 # --- windows / now playing / seek / clipboard ------------------------------- #
 LIST_WINDOWS = re.compile(
     r"\b(?:list|show|see)\b[^.]{0,15}\bwindows\b"
@@ -153,8 +193,8 @@ CLIP_READ = re.compile(
 
 # --- power (confirmation-gated) -------------------------------------------- #
 POWER_WORD = re.compile(
-    r"\b(shut ?down|power ?off|shut ?off|restart|reboot|log ?out|sign ?out|"
-    r"suspend|sleep)\b",
+    r"\b(shut ?down|shutdown|power ?off|turn ?off|shut ?off|restart|reboot|"
+    r"log ?out|sign ?out|suspend|sleep)\b",
     re.I,
 )
 POWER_FILLER = re.compile(
@@ -162,6 +202,15 @@ POWER_FILLER = re.compile(
     r"now|please|again|session)\b",
     re.I,
 )
+
+# Spoken prompts are friendlier than the raw action name ("shut down" vs
+# "shutdown").
+_POWER_PROMPT = {
+    "shutdown": "shut down",
+    "restart": "restart",
+    "logout": "log out",
+    "suspend": "suspend",
+}
 
 # --- media (playerctl) ------------------------------------------------------ #
 MEDIA_PAUSE = re.compile(r"\b(pause|unpause|resume)\b", re.I)
@@ -320,6 +369,7 @@ def _power_kind(text):
     word = match.group(0).lower().replace(" ", "")
     return {
         "shutdown": "shutdown", "poweroff": "shutdown", "shutoff": "shutdown",
+        "turnoff": "shutdown",
         "restart": "restart", "reboot": "restart",
         "logout": "logout", "signout": "logout",
         "suspend": "suspend", "sleep": "suspend",
@@ -393,6 +443,15 @@ def try_local(text):
     if command:
         return shell.run(command.group("cmd").strip())
 
+    # --- dictate a command into a real terminal window (offline) ------------ #
+    # Checked before the agent-defer branch below (which matches "terminal"),
+    # so "type ls in terminal" opens a terminal and types it instead of being
+    # handed to fn_run_command.
+    dictation = DICTATE_TERMINAL.match(t)
+    if dictation:
+        to_type = (dictation.group("opened") or dictation.group("inline") or "").strip()
+        return desktop.dictate_in_terminal(to_type)
+
     # --- offline help: answered locally so it works with no connection ------ #
     if HELP_PHRASE.match(t) or (OFFLINE_WORD.search(t) and len(t.split()) <= 12):
         return CAPABILITIES
@@ -410,7 +469,16 @@ def try_local(text):
         set_mic_muted(muted)
         return "Mic muted." if muted else "Mic unmuted."
 
-    # Search requests belong to the agent (it can call the search tools).
+    # "search <song> and play it" is really a play command, so it goes to
+    # play_youtube() -- which resolves the direct watch URL -- rather than to the
+    # agent (that would only open the search results page).
+    if SEARCH_AND_PLAY.match(t):
+        query = desktop.extract_media_query(t)
+        if query:
+            return desktop.play_youtube(query)
+        return "What should I play?"
+
+    # Other search requests belong to the agent (it can call the search tools).
     if SEARCH_VERB.search(t):
         return None
 
@@ -421,10 +489,8 @@ def try_local(text):
     # --- power: never run straight away, always confirm first -------------- #
     kind = _power_kind(t)
     if kind:
-        return confirm.request(
-            lambda k=kind: desktop.power(k),
-            f"Are you sure you want to {kind}?",
-        )
+        prompt = f"Are you sure you want to {_POWER_PROMPT.get(kind, kind)}?"
+        return confirm.ask_action(prompt, lambda k=kind: desktop.power(k))
 
     # --- now playing / seek ------------------------------------------------- #
     if NOW_PLAYING.search(t):
@@ -477,9 +543,9 @@ def try_local(text):
         disk = psutil.disk_usage("/").percent
         return f"CPU {cpu:.0f}%, RAM {ram:.0f}%, Disk {disk:.0f}%"
     if TIME_WORD.search(t):
-        return f"Current time: {datetime.now().strftime('%H:%M:%S')}"
+        return f"Current time: {_now_dhaka().strftime('%H:%M:%S')}"
     if DATE_WORD.search(t):
-        return f"Today is {datetime.now().strftime('%A, %d %B %Y')}"
+        return f"Today is {_now_dhaka().strftime('%A, %d %B %Y')}"
 
     # --- windows ------------------------------------------------------------ #
     # Before the open branch so "what windows are open" lists windows instead of
@@ -517,6 +583,10 @@ def try_local(text):
         if target:
             if YT_WORD.search(t):
                 return desktop.close_youtube()
+            # A terminal has no useful window title ("jakir@coder: ~"), so it is
+            # closed by WM_CLASS instead of by the fuzzy app name.
+            if TERMINAL_TARGET.match(target):
+                return desktop.close_terminal()
             app, score = desktop.match_app(target)
             if app is not None and score >= desktop.STRONG_MATCH:
                 return desktop.close_app(app)

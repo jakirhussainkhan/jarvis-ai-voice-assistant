@@ -121,3 +121,83 @@ def test_text_mode_eof_is_an_exit(monkeypatch):
     assert main.read_input() == "exit"
 
 
+# --------------------------------------------------------------------------- #
+# ChatGPT-style stop/listen while Jarvis is speaking (Step 4)
+# --------------------------------------------------------------------------- #
+
+def test_read_input_passes_the_barge_flag(monkeypatch):
+    monkeypatch.setattr(main, "_TEXT", False)
+    seen = {}
+
+    def fake_listen(barge=False):
+        seen["barge"] = barge
+        return ""
+
+    monkeypatch.setattr(main, "listen", fake_listen)
+    assert main.read_input(barge=True) == ""
+    assert seen["barge"] is True
+
+
+def test_speak_with_barge_in_cuts_speech_and_returns_true(monkeypatch):
+    monkeypatch.setattr(main, "_TEXT", False)
+    events = []
+    created = {}
+
+    class FakeMonitor:
+        def __init__(self, on_barge=None):
+            self.on_barge = on_barge
+            created["monitor"] = self
+
+        def start(self):
+            return True
+
+        def stop(self):
+            events.append("stop")
+
+    def fake_speak(reply):
+        events.append(("speak", reply))
+        created["monitor"].on_barge()          # the user talks over the reply
+
+    monkeypatch.setattr(main, "_barge_monitor",
+                        lambda on_barge: FakeMonitor(on_barge))
+    monkeypatch.setattr(main, "speak", fake_speak)
+    monkeypatch.setattr(main.voice, "stop_speaking",
+                        lambda: events.append("stopped"))
+
+    assert main._speak_with_barge_in("hello") is True
+    assert events == [("speak", "hello"), "stopped", "stop"]
+
+
+def test_speak_without_barge_in_speaks_normally(monkeypatch):
+    monkeypatch.setattr(main, "_TEXT", False)
+    spoken = []
+
+    class FakeMonitor:
+        def __init__(self, on_barge=None):
+            pass
+
+        def start(self):
+            return True
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(main, "_barge_monitor",
+                        lambda on_barge: FakeMonitor(on_barge))
+    monkeypatch.setattr(main, "speak", lambda reply: spoken.append(reply))
+
+    assert main._speak_with_barge_in("hi") is False
+    assert spoken == ["hi"]
+
+
+def test_speak_skips_the_monitor_in_text_mode(monkeypatch):
+    monkeypatch.setattr(main, "_TEXT", True)
+    monkeypatch.setattr(main, "_barge_monitor",
+                        lambda on_barge: pytest.fail("no microphone in text mode"))
+    spoken = []
+    monkeypatch.setattr(main, "speak", lambda reply: spoken.append(reply))
+
+    assert main._speak_with_barge_in("hi") is False
+    assert spoken == ["hi"]
+
+

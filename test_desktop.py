@@ -4,7 +4,6 @@ Nothing here touches a real app, player, mixer or the network.
 """
 
 from pathlib import Path
-import threading
 
 import pytest
 
@@ -12,12 +11,15 @@ import desktop
 from platform_adapters import common, System
 
 @pytest.fixture(autouse=True)
-def _reset_media_mic():
-    """play_youtube mutes the process-wide mic; never leak that into other tests."""
+def _reset_voice_mute():
+    """Keep the process-wide mic-mute state from leaking between tests."""
     import voice
+
     voice.set_mic_muted(False)
+    voice._stop_listening.clear()
     yield
     voice.set_mic_muted(False)
+    voice._stop_listening.clear()
 
 
 FAKE_APPS = [
@@ -133,6 +135,139 @@ def test_close_app_reports_not_running(monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
+# terminals: class-based close and dictation
+# --------------------------------------------------------------------------- #
+
+TERMINAL_APP = desktop.App(
+    "org.gnome.Terminal", "Terminal", "gnome-terminal",
+    ["shell"], Path("/a/org.gnome.Terminal.desktop"))
+
+# Two real `wmctrl -lx` lines: the title is just the shell prompt, so a title
+# match would never find the window.
+WMCTRL_LX = (
+    "0x03a00007  0 gnome-terminal-server.Gnome-terminal  "
+    "jakir-host jakir@coder: ~\n"
+    "0x04c0000a  0 firefox.Firefox  jakir-host Some page - Firefox\n"
+)
+
+
+def test_close_terminal_matches_the_window_class_not_the_title(monkeypatch):
+    monkeypatch.setattr(common, "is_wayland", lambda: False)
+    monkeypatch.setattr(common, "has", lambda tool: tool in ("wmctrl", "xdotool"))
+    calls = []
+
+    def fake_run(args, timeout=6):
+        calls.append(args)
+        if args[:2] == ["wmctrl", "-lx"]:
+            return 0, WMCTRL_LX
+        return 0, ""
+
+    monkeypatch.setattr(common, "run", fake_run)
+
+    assert desktop.close_terminal() == "Closing the terminal."
+    assert ["wmctrl", "-ic", "0x03a00007"] in calls
+    # The firefox window must never be touched.
+    assert not any("0x04c0000a" in c for c in calls)
+
+
+def test_close_terminal_reports_when_none_is_open(monkeypatch):
+    monkeypatch.setattr(common, "is_wayland", lambda: False)
+    monkeypatch.setattr(common, "has", lambda tool: tool == "wmctrl")
+    monkeypatch.setattr(common, "run", lambda args, timeout=6: (0, ""))
+
+    assert desktop.close_terminal() == "I don't see any terminal running."
+
+
+def test_close_by_class_falls_back_to_xdotool_windowkill(monkeypatch):
+    monkeypatch.setattr(common, "is_wayland", lambda: False)
+    monkeypatch.setattr(common, "has", lambda tool: tool in ("wmctrl", "xdotool"))
+    calls = []
+
+    def fake_run(args, timeout=6):
+        calls.append(args)
+        if args[:2] == ["wmctrl", "-lx"]:
+            return 0, WMCTRL_LX
+        if args[:2] == ["wmctrl", "-ic"]:
+            return 1, "close refused"
+        if args[:2] == ["xdotool", "windowkill"]:
+            return 0, ""
+        return 0, ""
+
+    monkeypatch.setattr(common, "run", fake_run)
+
+    assert desktop.close_terminal() == "Closing the terminal."
+    assert ["xdotool", "windowkill", "0x03a00007"] in calls
+
+
+def test_mic_mute_never_touches_the_system_microphone(monkeypatch):
+    """Regression: Jarvis's mic button must not mute the OS input source.
+
+    Muting the system source lights the keyboard LED and silences other apps;
+    Jarvis only stops its own capture stream.
+    """
+    import voice
+
+    calls = []
+    monkeypatch.setattr(common, "has", lambda tool: True)
+    monkeypatch.setattr(common, "run",
+                        lambda args, timeout=6: calls.append(args) or (0, ""))
+
+    # There must be no adapter entry point for muting the system microphone.
+    assert not hasattr(desktop.Audio, "set_source_mute")
+
+    assert voice.set_mic_muted(True) is True
+    assert voice.set_mic_muted(False) is False
+    assert calls == []                 # no pactl (or any OS command) at all
+
+    # Speaker mute is a different control and still uses the sink.
+    desktop.Audio.set_mute(True)
+    assert ["pactl", "set-sink-mute", "@DEFAULT_SINK@", "1"] in calls
+
+
+def test_close_app_closes_a_terminal_by_class(monkeypatch):
+    """Regression: 'close terminal' used to say nothing was open."""
+    closed = []
+    monkeypatch.setattr(desktop, "Window",
+                        type("W", (), {
+                            "close_by_class": staticmethod(
+                                lambda keys: closed.append(tuple(keys)) or True),
+                        }))
+    assert desktop.close_app(TERMINAL_APP) == "Closed Terminal."
+    assert closed and "gnome-terminal" in closed[0]
+
+
+def test_dictate_in_terminal_opens_types_and_enters(monkeypatch):
+    monkeypatch.setattr(common, "is_wayland", lambda: False)
+    monkeypatch.setattr(common, "has",
+                        lambda tool: tool in ("xdotool", "gnome-terminal"))
+    spawned = []
+    monkeypatch.setattr(common, "spawn", lambda args: spawned.append(args) or True)
+    calls = []
+    monkeypatch.setattr(common, "run",
+                        lambda args, timeout=6: calls.append(args) or (0, ""))
+    monkeypatch.setattr(desktop.time, "sleep", lambda _s: None)
+
+    reply = desktop.dictate_in_terminal("ls -la")
+
+    assert reply == "Typed in the terminal: ls -la"
+    assert spawned == [["gnome-terminal"]]
+    assert ["xdotool", "type", "--clearmodifiers", "ls -la"] in calls
+    assert ["xdotool", "key", "Return"] in calls
+
+
+def test_dictate_in_terminal_needs_xdotool(monkeypatch):
+    monkeypatch.setattr(common, "is_wayland", lambda: False)
+    monkeypatch.setattr(common, "has", lambda tool: False)
+    monkeypatch.setattr(common, "spawn",
+                        lambda args: pytest.fail("must not open a terminal"))
+    assert "xdotool" in desktop.dictate_in_terminal("ls")
+
+
+def test_dictate_in_terminal_rejects_an_empty_command(monkeypatch):
+    assert desktop.dictate_in_terminal("  ") == "What should I type in the terminal?"
+
+
+# --------------------------------------------------------------------------- #
 # volume / brightness limits
 # --------------------------------------------------------------------------- #
 
@@ -185,6 +320,64 @@ def test_brightness_reports_failure(monkeypatch):
     monkeypatch.setattr(common, "has", lambda tool: tool == "brightnessctl")
     monkeypatch.setattr(common, "run", lambda args, timeout=6: (1, ""))
     assert "brightness" in desktop.brightness_control("down").lower()
+
+
+def test_brightness_falls_back_to_xrandr_when_brightnessctl_missing(monkeypatch):
+    monkeypatch.setattr(common, "has", lambda tool: tool == "xrandr")
+    calls = []
+
+    def fake_run(args, timeout=6):
+        calls.append(args)
+        if args == ["xrandr"]:
+            return 0, "eDP-1 connected primary 1920x1080+0+0\nHDMI-1 disconnected\n"
+        return 0, ""
+
+    monkeypatch.setattr(common, "run", fake_run)
+
+    assert desktop.brightness_control("set", 40) == "Brightness set to 40 percent."
+    assert ["xrandr", "--output", "eDP-1", "--brightness", "0.40"] in calls
+
+
+def test_brightness_falls_back_to_xrandr_when_brightnessctl_fails(monkeypatch):
+    """A permissions error from brightnessctl must not leave the screen stuck."""
+    monkeypatch.setattr(common, "has",
+                        lambda tool: tool in ("brightnessctl", "xrandr"))
+    calls = []
+
+    def fake_run(args, timeout=6):
+        calls.append(args)
+        if args and args[0] == "brightnessctl":
+            return 1, "Permission denied"
+        if args == ["xrandr"]:
+            return 0, "eDP-1 connected primary 1920x1080+0+0\n"
+        if args == ["xrandr", "--verbose"]:
+            return 0, "\tBrightness: 0.50\n"
+        return 0, ""
+
+    monkeypatch.setattr(common, "run", fake_run)
+
+    assert desktop.brightness_control("up") == "Brightness up."
+    assert ["brightnessctl", "set", "+10%"] in calls
+    assert ["xrandr", "--output", "eDP-1", "--brightness", "0.60"] in calls
+
+
+def test_brightness_xrandr_picks_the_primary_connected_display(monkeypatch):
+    from platform_adapters.linux import system as linux_system
+
+    text = ("HDMI-1 connected 1920x1080+0+0\n"
+            "eDP-1 connected primary 1366x768+0+0\n")
+    assert linux_system._xrandr_display(text) == "eDP-1"
+    # No primary flag -> the first connected output wins.
+    assert linux_system._xrandr_display("DP-2 connected 1x1+0+0\n") == "DP-2"
+    assert linux_system._xrandr_display("DP-1 disconnected\n") is None
+
+
+def test_brightness_without_a_value_asks_instead_of_crashing(monkeypatch):
+    """"brightness" (no number) must not reach int(None) in the xrandr path."""
+    monkeypatch.setattr(common, "has", lambda tool: tool in ("brightnessctl", "xrandr"))
+    monkeypatch.setattr(common, "run", lambda args, timeout=6: (0, ""))
+
+    assert "brightness" in desktop.brightness_control("set", None).lower()
 
 
 # --------------------------------------------------------------------------- #
@@ -244,8 +437,8 @@ def test_media_resume_does_not_claim_it_cannot_skip(monkeypatch):
     assert desktop.media_control("resume") == "There is no media player to control."
 
 
-def test_media_pause_never_toggles_a_stopped_video(monkeypatch):
-    """`k` is a play/pause *toggle*: it must never be used to pause silence."""
+def test_media_pause_falls_back_to_space_in_the_browser(monkeypatch):
+    """No MPRIS session, so playerctl can't pause: press space in the browser."""
     monkeypatch.setattr(common, "has", lambda tool: tool in ("playerctl", "xdotool"))
     monkeypatch.setattr(common, "run", lambda args, timeout=6: (1, ""))
     monkeypatch.setattr(desktop, "_youtube_window", lambda: "123")
@@ -253,8 +446,17 @@ def test_media_pause_never_toggles_a_stopped_video(monkeypatch):
     monkeypatch.setattr(desktop, "_press_in_window",
                         lambda wid, key, restore=True: pressed.append(key) or True)
 
+    assert desktop.media_control("pause") == "Media pause."
+    assert desktop.media_control("resume") == "Media resume."
+    assert pressed == ["space", "space"]
+
+
+def test_media_pause_is_honest_without_a_browser_window(monkeypatch):
+    monkeypatch.setattr(common, "has", lambda tool: tool == "playerctl")
+    monkeypatch.setattr(common, "run", lambda args, timeout=6: (1, ""))
+    monkeypatch.setattr(desktop, "_youtube_window", lambda: None)
+
     assert desktop.media_control("pause") == "There is no media player to control."
-    assert pressed == []
 
 
 class _FakeClock:
@@ -270,33 +472,86 @@ class _FakeClock:
         self.now += seconds
 
 
-def test_ensure_browser_playing_presses_k_once(monkeypatch):
-    """A freshly opened tab does not autoplay; press its own play key once."""
-    monkeypatch.setattr(common, "has", lambda tool: True)
+def _fake_browser_run(statuses, calls=None):
+    """A ``common.run`` fake for playerctl status + xdotool focus key presses.
+
+    ``statuses`` are returned by successive ``playerctl status`` calls (the last
+    one repeats). ``("xdotool", "key", "--clearmodifiers", "space")`` is recorded
+    in ``calls`` when the helper actually presses Space.
+    """
+    calls = calls if calls is not None else []
+    pending = list(statuses)
+
+    def fake_run(args, timeout=25):
+        args = tuple(args)
+        calls.append(args)
+        if args[:2] == ("playerctl", "status"):
+            value = pending.pop(0) if len(pending) > 1 else pending[0]
+            if value is None:                      # playerctl failed/timed out
+                return 1, ""
+            return 0, value
+        if args[:2] in (("xdotool", "getactivewindow"),
+                        ("xdotool", "getwindowfocus")):
+            return 0, "555"
+        return 0, ""
+
+    return fake_run, calls
+
+
+def test_ensure_browser_playing_presses_space_when_paused(monkeypatch):
+    """A reused tab often lands paused; focus it and send ``xdotool key space``."""
+    monkeypatch.setattr(common, "has",
+                        lambda tool: tool in ("playerctl", "xdotool"))
     monkeypatch.setattr(common, "is_wayland", lambda: False)
     monkeypatch.setattr(desktop, "time", _FakeClock())
-    monkeypatch.setattr(desktop, "_browser_media_player", lambda: False)
-    monkeypatch.setattr(desktop, "_youtube_window", lambda: "123")
-    pressed = []
-    monkeypatch.setattr(desktop, "_press_in_window",
-                        lambda wid, key, restore=False: pressed.append(key) or True)
+    monkeypatch.setattr(desktop, "_youtube_window", lambda: "555")
+    fake_run, calls = _fake_browser_run(["Paused", "Playing"])
+    monkeypatch.setattr(common, "run", fake_run)
 
-    assert desktop.ensure_browser_playing(timeout=1.0) is False
-    assert pressed == ["k"]                 # once, not once per poll
+    assert desktop.ensure_browser_playing() is True
+    assert ("xdotool", "key", "--clearmodifiers", "space") in calls
+    assert ("xdotool", "windowactivate", "--sync", "555") in calls
 
 
-def test_ensure_browser_playing_leaves_autoplay_alone(monkeypatch):
-    """If the video already started, do not touch it (a key would pause it)."""
-    monkeypatch.setattr(common, "has", lambda tool: True)
+def test_ensure_browser_playing_leaves_a_playing_video_alone(monkeypatch):
+    """If playerctl says Playing, do not send a key (Space would pause it)."""
+    monkeypatch.setattr(common, "has",
+                        lambda tool: tool in ("playerctl", "xdotool"))
     monkeypatch.setattr(common, "is_wayland", lambda: False)
     monkeypatch.setattr(desktop, "time", _FakeClock())
-    monkeypatch.setattr(desktop, "_browser_media_player", lambda: True)
-    pressed = []
-    monkeypatch.setattr(desktop, "_press_in_window",
-                        lambda wid, key, restore=False: pressed.append(key) or True)
+    fake_run, calls = _fake_browser_run(["Playing"])
+    monkeypatch.setattr(common, "run", fake_run)
 
-    assert desktop.ensure_browser_playing(timeout=9.0) is True
-    assert pressed == []
+    assert desktop.ensure_browser_playing() is True
+    assert not any(c[:2] == ("xdotool", "key") for c in calls)
+    assert not any(c[:2] == ("xdotool", "windowactivate") for c in calls)
+
+
+def test_ensure_browser_playing_presses_space_when_playerctl_fails(monkeypatch):
+    """No media session (autoplay blocked) -> press Space, then verify."""
+    monkeypatch.setattr(common, "has",
+                        lambda tool: tool in ("playerctl", "xdotool"))
+    monkeypatch.setattr(common, "is_wayland", lambda: False)
+    monkeypatch.setattr(desktop, "time", _FakeClock())
+    monkeypatch.setattr(desktop, "_youtube_window", lambda: "555")
+    fake_run, calls = _fake_browser_run([None, "Playing"])
+    monkeypatch.setattr(common, "run", fake_run)
+
+    assert desktop.ensure_browser_playing() is True
+    assert ("xdotool", "key", "--clearmodifiers", "space") in calls
+
+
+def test_ensure_browser_playing_reports_still_paused(monkeypatch):
+    """If Space did not start it, the caller must be able to tell the truth."""
+    monkeypatch.setattr(common, "has",
+                        lambda tool: tool in ("playerctl", "xdotool"))
+    monkeypatch.setattr(common, "is_wayland", lambda: False)
+    monkeypatch.setattr(desktop, "time", _FakeClock())
+    monkeypatch.setattr(desktop, "_youtube_window", lambda: "555")
+    fake_run, _calls = _fake_browser_run(["Paused"])
+    monkeypatch.setattr(common, "run", fake_run)
+
+    assert desktop.ensure_browser_playing() is False
 
 
 def test_ensure_browser_playing_needs_x11_and_the_tools(monkeypatch):
@@ -382,6 +637,18 @@ def test_extract_media_query_from_messy_sentence():
     assert desktop.extract_media_query(messy) == "udi udi"
 
 
+def test_extract_media_query_from_search_and_play():
+    """The song sits before the play verb in "search <song> and play it"."""
+    assert desktop.extract_media_query(
+        "search despacito and play now") == "despacito"
+    assert desktop.extract_media_query(
+        "search for despacito on youtube and play it") == "despacito"
+    assert desktop.extract_media_query(
+        "look up lofi beats then play") == "lofi beats"
+    assert desktop.extract_media_query(
+        "search and play despacito") == "despacito"
+
+
 def test_extract_media_query_empty_when_only_filler():
     assert desktop.extract_media_query("play the song on youtube") == ""
     assert desktop.extract_media_query("play some music") == ""
@@ -416,22 +683,20 @@ def test_play_youtube_asks_when_query_is_empty(monkeypatch):
     assert desktop.play_youtube("play the song on youtube") == "What should I play?"
 
 
-def test_play_youtube_releases_the_mic_before_media(monkeypatch):
-    """YouTube must not compete with barge-in for the audio device."""
+def test_play_youtube_keeps_the_mic_and_media_alone(monkeypatch):
+    """Playing YouTube must not mute the mic or pause background audio."""
     import voice
 
-    calls = []
     monkeypatch.setattr(voice, "set_mic_muted",
-                        lambda muted: calls.append(("muted", muted)) or muted)
+                        lambda *a, **k: pytest.fail("must not mute the mic"))
     monkeypatch.setattr(voice, "pause_barge_in",
-                        lambda: calls.append(("paused", None)))
+                        lambda: pytest.fail("must not pause barge-in"))
+    monkeypatch.setattr(desktop, "pause_media_if_playing",
+                        lambda: pytest.fail("must not pause media"))
     monkeypatch.setattr(common, "has", lambda tool: False)
     monkeypatch.setattr(desktop, "_open_url", lambda url: True)
 
-    desktop.play_youtube("despacito")
-
-    assert ("muted", True) in calls
-    assert ("paused", None) in calls
+    assert "YouTube results" in desktop.play_youtube("despacito")
 
 
 def test_play_youtube_uses_top_ytdlp_result(monkeypatch):
@@ -445,6 +710,8 @@ def test_play_youtube_uses_top_ytdlp_result(monkeypatch):
     monkeypatch.setattr(common, "run", fake_run)
     opened = []
     monkeypatch.setattr(desktop, "_open_url", lambda url: opened.append(url) or True)
+    monkeypatch.setattr(desktop.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(desktop, "ensure_browser_playing", lambda: True)
 
     assert desktop.play_youtube("despacito") == "Playing despacito on YouTube."
     assert opened == ["https://www.youtube.com/watch?v=dQw4w9WgXcQ"]
@@ -454,19 +721,32 @@ def test_play_youtube_uses_top_ytdlp_result(monkeypatch):
     assert "--get-id" not in seen["args"]
 
 
-def test_play_youtube_nudges_playback_in_the_background(monkeypatch):
-    """Autoplay is usually blocked, so start the video ourselves -- off-thread,
-    so the spoken reply is never delayed."""
-    monkeypatch.setattr(common, "has",
-                        lambda tool: tool in ("yt-dlp", "playerctl"))
+def test_play_youtube_verifies_playback_before_reporting(monkeypatch):
+    """The reply may only say "Playing" after ensure_browser_playing() ran."""
+    monkeypatch.setattr(common, "has", lambda tool: tool == "yt-dlp")
     monkeypatch.setattr(common, "run", lambda args, timeout=25: (0, "dQw4w9WgXcQ"))
-    monkeypatch.setattr(desktop, "_open_url", lambda url: True)
-    started = threading.Event()
+    monkeypatch.setattr(desktop.time, "sleep", lambda _s: None)
+    events = []
+    monkeypatch.setattr(desktop, "_navigate_youtube",
+                        lambda url: events.append("navigated") or "opened")
     monkeypatch.setattr(desktop, "ensure_browser_playing",
-                        lambda timeout=9.0: started.set() or True)
+                        lambda: events.append("verified") or True)
 
     assert desktop.play_youtube("despacito") == "Playing despacito on YouTube."
-    assert started.wait(3.0), "the playback nudge should run in the background"
+    assert events == ["navigated", "verified"]
+
+
+def test_play_youtube_reports_blocked_autoplay_honestly(monkeypatch):
+    """Never claim "Playing" when the player could not be started."""
+    monkeypatch.setattr(common, "has", lambda tool: tool == "yt-dlp")
+    monkeypatch.setattr(common, "run", lambda args, timeout=25: (0, "dQw4w9WgXcQ"))
+    monkeypatch.setattr(desktop.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(desktop, "_navigate_youtube", lambda url: "opened")
+    monkeypatch.setattr(desktop, "ensure_browser_playing", lambda: False)
+
+    reply = desktop.play_youtube("despacito")
+    assert "still paused" in reply
+    assert not reply.startswith("Playing")
 
 
 def test_play_youtube_reuses_the_open_youtube_tab(monkeypatch):
@@ -498,7 +778,7 @@ def test_play_youtube_reuses_the_open_youtube_tab(monkeypatch):
     monkeypatch.setattr(desktop, "_open_url", lambda url: opened.append(url) or True)
     nudged = []
     monkeypatch.setattr(desktop, "ensure_browser_playing",
-                        lambda timeout=9.0: nudged.append(1) or True)
+                        lambda: nudged.append(1) or True)
 
     reply = desktop.play_youtube("despacito")
     assert reply == "Playing despacito in your open YouTube tab."
@@ -557,8 +837,8 @@ def test_open_youtube_brings_the_existing_tab_to_the_front(monkeypatch):
     assert any("555" in c for c in called), called
 
 
-def test_open_youtube_falls_back_when_activation_is_refused(monkeypatch):
-    """Cinnamon may refuse to raise the window: then open a new tab instead."""
+def test_open_youtube_never_opens_a_second_tab(monkeypatch):
+    """If activation is refused, keep the existing tab -- never duplicate it."""
     monkeypatch.setattr(desktop, "_youtube_window", lambda: "555")
     opened = []
     monkeypatch.setattr(desktop, "_open_url", lambda url: opened.append(url) or True)
@@ -567,8 +847,9 @@ def test_open_youtube_falls_back_when_activation_is_refused(monkeypatch):
         lambda args, timeout=6: (0, {("xdotool", "getwindowfocus"): "999"}
                                  .get(tuple(args[:2]), "")))
 
-    assert desktop.open_youtube() == "Opening YouTube."
-    assert opened == ["https://www.youtube.com"]
+    assert desktop.open_youtube() == (
+        "YouTube is already open, but I couldn't bring it to the front.")
+    assert opened == []
 
 
 def test_search_youtube_reuses_the_open_youtube_tab(monkeypatch):
@@ -597,6 +878,32 @@ def test_search_youtube_reuses_the_open_youtube_tab(monkeypatch):
     assert opened == []
     typed = [c for c in calls if c[:2] == ("xdotool", "type")]
     assert any("results?search_query=cats" in c[-1] for c in typed), typed
+
+
+def test_play_youtube_never_duplicates_an_open_tab(monkeypatch):
+    """A failed in-place navigation must not fall back to opening a new tab."""
+    monkeypatch.setattr(common, "has", lambda tool: tool == "yt-dlp")
+    monkeypatch.setattr(common, "run",
+                        lambda args, timeout=25: (0, "dQw4w9WgXcQ"))
+    monkeypatch.setattr(desktop, "_youtube_window", lambda: "555")
+    monkeypatch.setattr(desktop, "_reuse_youtube_tab", lambda url: False)
+    opened = []
+    monkeypatch.setattr(desktop, "_open_url", lambda url: opened.append(url) or True)
+
+    reply = desktop.play_youtube("despacito")
+    assert "couldn't navigate" in reply
+    assert opened == [], "webbrowser.open is forbidden while YouTube is open"
+
+
+def test_search_youtube_never_duplicates_an_open_tab(monkeypatch):
+    monkeypatch.setattr(desktop, "_youtube_window", lambda: "555")
+    monkeypatch.setattr(desktop, "_reuse_youtube_tab", lambda url: False)
+    opened = []
+    monkeypatch.setattr(desktop, "_open_url", lambda url: opened.append(url) or True)
+
+    reply = desktop.search_youtube("cats")
+    assert "couldn't navigate" in reply
+    assert opened == []
 
 
 def test_close_youtube_closes_the_open_youtube_tab_anywhere(monkeypatch):

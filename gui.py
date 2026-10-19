@@ -22,12 +22,13 @@ import math
 import sys
 from collections import deque
 
-from PyQt5.QtCore import (QEasingCurve, QPointF, QPropertyAnimation, QRectF, Qt,
-                          QThread, QTimer, pyqtProperty, pyqtSignal)
+from PyQt5.QtCore import (QEasingCurve, QPointF, QPropertyAnimation, QRect,
+                          QRectF, Qt, QThread, QTimer, pyqtProperty, pyqtSignal)
 from PyQt5.QtGui import (QBrush, QColor, QIcon, QLinearGradient, QPainter,
                          QPainterPath, QPen, QPixmap, QRadialGradient)
 from PyQt5.QtWidgets import (QApplication, QHBoxLayout, QLabel, QMenu,
-                             QPushButton, QSystemTrayIcon, QVBoxLayout, QWidget)
+                             QPushButton, QSizeGrip, QSystemTrayIcon, QVBoxLayout,
+                             QWidget)
 
 import voice
 from config import CHAT_ON, CHAT_TIMEOUT
@@ -521,11 +522,37 @@ class JarvisTray(QSystemTrayIcon):
         self.chat_action.setChecked(on)
 
 
+# Global wake hotkeys: press either from any application to talk to Jarvis.
+# Ctrl+Shift+J is the documented default; Ctrl+Alt+J is accepted too because it
+# was requested and some layouts treat Ctrl+Shift+J oddly.
+HOTKEY = "<ctrl>+<shift>+j"
+ALT_HOTKEY = "<ctrl>+<alt>+j"
+HOTKEYS = (HOTKEY, ALT_HOTKEY)
+
+# How close (in px) the pointer must be to a window edge before a drag resizes
+# the frameless card instead of moving it.
+_RESIZE_MARGIN = 8
+
+
+def _make_hotkey_listener(callback):
+    """Build the global-hotkey listener, importing ``pynput`` lazily.
+
+    Kept as a module-level seam so tests can substitute a fake listener (the
+    real one grabs the keyboard system-wide, which must never happen in a test).
+    Raises ``ImportError`` when ``pynput`` is not installed; the caller degrades
+    gracefully.
+    """
+    from pynput import keyboard
+    return keyboard.GlobalHotKeys({key: callback for key in HOTKEYS})
+
+
 class JarvisWidget(QWidget):
     """The floating rounded card: orb + waveform + status + mic/stop controls."""
 
     # Emitted by the wake-word thread (never touch Qt from that thread).
     wake_heard = pyqtSignal()
+    # Emitted by the pynput global-hotkey thread (never touch Qt from it either).
+    hotkey_pressed = pyqtSignal()
 
     def __init__(self):
         super().__init__()
@@ -545,11 +572,21 @@ class JarvisWidget(QWidget):
         self.setStyleSheet("#jarvisCard { background: transparent; }")
         self.setWindowTitle("Jarvis")
         self.setWindowIcon(make_icon(64))
-        self.setFixedSize(380, 560)
+        # Frameless windows have no system resize border, so the card resizes
+        # through the QSizeGrip in the corner and the custom edge dragging in the
+        # mouse handlers below.
+        self.resize(380, 560)
+        self.setMinimumSize(320, 440)
+        self.setMouseTracking(True)
 
         self.memory = Memory()
         self.worker = None
         self._drag_offset = None
+        # Edge-resize drag state: which edges are grabbed, where the drag began
+        # and the geometry it began from.
+        self._resize_edges = set()
+        self._resize_origin = None
+        self._resize_start = None
         self._quitting = False
         self._chat = CHAT_ON
         self._menu = QMenu(self)
@@ -557,6 +594,9 @@ class JarvisWidget(QWidget):
         # The wake-word listener runs on its own thread, so it signals us instead
         # of touching Qt: Qt then delivers it here on the GUI thread.
         self.wake_heard.connect(self._on_wake_heard)
+        self._hotkey = None
+        self.wake_server = None
+        self.hotkey_pressed.connect(self._on_hotkey)
 
         self._build_ui()
         self._build_menu()
@@ -567,6 +607,7 @@ class JarvisWidget(QWidget):
 
         # Started last so both menus already exist and can show the right state.
         self._start_wake()
+        self._start_hotkey()
         self._center()
 
     # -- layout ----------------------------------------------------------- #
@@ -586,7 +627,7 @@ class JarvisWidget(QWidget):
         self.minimize_button.clicked.connect(self._minimize)
         self.close_button = self._window_button("✕", "closeButton")
         self.close_button.setToolTip("Hide to tray")
-        self.close_button.clicked.connect(self.close)
+        self.close_button.clicked.connect(self._close_to_tray)
         header.addWidget(self.minimize_button)
         header.addWidget(self.close_button)
 
@@ -644,6 +685,18 @@ class JarvisWidget(QWidget):
         layout.addWidget(self.transcript, alignment=Qt.AlignCenter)
         layout.addStretch(1)
         layout.addLayout(buttons)
+
+        # Frameless card: a visible QSizeGrip in the bottom-right corner resizes
+        # the window; the custom edge dragging below covers the rest of the
+        # border.
+        grip_row = QHBoxLayout()
+        grip_row.setContentsMargins(0, 0, 0, 0)
+        grip_row.addStretch(1)
+        self.size_grip = QSizeGrip(self)
+        self.size_grip.setFixedSize(16, 16)
+        self.size_grip.setToolTip("Resize")
+        grip_row.addWidget(self.size_grip, 0, Qt.AlignBottom | Qt.AlignRight)
+        layout.addLayout(grip_row)
 
     def _window_button(self, text, name):
         button = QPushButton(text)
@@ -704,6 +757,14 @@ class JarvisWidget(QWidget):
     def _minimize(self):
         """Minimise the card; the tray keeps Jarvis running."""
         self.showMinimized()
+
+    def _close_to_tray(self):
+        """X button: hide the card to the tray (the app keeps running).
+
+        Delegates to :meth:`close`, which routes through :meth:`closeEvent` so
+        the window-manager close and the ✕ button behave identically.
+        """
+        self.close()
 
     # -- state ------------------------------------------------------------ #
     def set_state(self, state):
@@ -788,6 +849,58 @@ class JarvisWidget(QWidget):
 
     def _on_wake_heard(self):
         """GUI-thread slot: run a normal cycle, exactly as if clicked."""
+        self.trigger()
+
+    # -- global hotkey (Ctrl+Shift+J) ------------------------------------- #
+    def _start_hotkey(self):
+        """Start the global Ctrl+Shift+J hotkey (best effort).
+
+        The listener runs on its own thread; its callback only emits a signal so
+        Qt performs the actual work on the GUI thread. A missing ``pynput`` (or a
+        system that refuses the grab) must never stop the GUI from starting.
+        """
+        if self._hotkey is not None:
+            return
+        try:
+            listener = _make_hotkey_listener(self._on_hotkey_signal)
+            listener.start()
+        except Exception as exc:                       # optional dependency
+            print(f"[gui] global hotkey unavailable: "
+                  f"{type(exc).__name__}: {exc}", flush=True)
+            return
+        self._hotkey = listener
+
+    def _stop_hotkey(self):
+        """Stop and release the global hotkey listener."""
+        listener = self._hotkey
+        self._hotkey = None
+        if listener is None:
+            return
+        try:
+            listener.stop()
+        except Exception:
+            pass
+
+    def _on_hotkey_signal(self):
+        """Called on the pynput thread: hop onto the GUI thread."""
+        # Never touch Qt from that thread; let Qt deliver it on the GUI thread.
+        self.hotkey_pressed.emit()
+
+    def _on_hotkey(self):
+        """GUI-thread slot: wake Jarvis from Idle, hidden or Mute.
+
+        This only brings the *existing* window forward -- it never builds a new
+        widget, tray icon or hotkey listener, so pressing the hotkey can never
+        spawn a second Jarvis.
+        """
+        if voice.is_mic_muted():
+            # The hotkey is an explicit "talk to me" gesture, so it unmutes.
+            self.set_mic_muted(False)
+        # Restore the card if it was hidden or minimised, then start a cycle.
+        self.show()
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
         self.trigger()
 
     def _resume_wake(self):
@@ -877,6 +990,10 @@ class JarvisWidget(QWidget):
     def quit(self):
         """Really exit: stop the tray and the Qt event loop."""
         self._quitting = True
+        self._stop_hotkey()
+        if self.wake_server is not None:
+            self.wake_server.stop()
+            self.wake_server = None
         if self._wake is not None:
             self._wake.stop()
         voice.stop_speaking()
@@ -890,23 +1007,105 @@ class JarvisWidget(QWidget):
     def _log(text):
         print(text, flush=True)
 
-    # -- window drag (background area) ------------------------------------ #
+    # -- window drag + resize (frameless) --------------------------------- #
+    def _edge_at(self, pos):
+        """Return the set of window edges/corners under ``pos`` (empty = none).
+
+        Used both to change the cursor on hover and to decide whether a press
+        starts a resize instead of a move.
+        """
+        margin = _RESIZE_MARGIN
+        edges = set()
+        if pos.x() <= margin:
+            edges.add("left")
+        elif pos.x() >= self.width() - margin:
+            edges.add("right")
+        if pos.y() <= margin:
+            edges.add("top")
+        elif pos.y() >= self.height() - margin:
+            edges.add("bottom")
+        return edges
+
+    @staticmethod
+    def _cursor_for_edges(edges):
+        """The resize cursor that matches a set of grabbed edges."""
+        if edges in ({"left", "top"}, {"right", "bottom"}):
+            return Qt.SizeFDiagCursor
+        if edges in ({"right", "top"}, {"left", "bottom"}):
+            return Qt.SizeBDiagCursor
+        if edges in ({"left"}, {"right"}):
+            return Qt.SizeHorCursor
+        if edges in ({"top"}, {"bottom"}):
+            return Qt.SizeVerCursor
+        return Qt.ArrowCursor
+
     def mousePressEvent(self, event):
         if event.button() == Qt.RightButton:
             self._show_menu(event.globalPos())
             return
         if event.button() == Qt.LeftButton:
-            self._drag_offset = event.globalPos() - self.frameGeometry().topLeft()
+            edges = self._edge_at(event.pos())
+            if edges:
+                # Near an edge/corner: resize rather than move.
+                self._resize_edges = edges
+                self._resize_origin = event.globalPos()
+                self._resize_start = self.geometry()
+            else:
+                self._drag_offset = event.globalPos() - self.frameGeometry().topLeft()
         event.accept()
 
     def mouseMoveEvent(self, event):
-        if self._drag_offset is not None and event.buttons() & Qt.LeftButton:
+        if self._resize_edges:
+            self._apply_resize(event.globalPos())
+        elif self._drag_offset is not None and event.buttons() & Qt.LeftButton:
             self.move(event.globalPos() - self._drag_offset)
+        else:
+            # Hovering (no button): show the matching resize cursor.
+            self.setCursor(self._cursor_for_edges(self._edge_at(event.pos())))
         event.accept()
 
     def mouseReleaseEvent(self, event):
         self._drag_offset = None
+        self._resize_edges = set()
+        self._resize_origin = None
+        self._resize_start = None
+        self.setCursor(Qt.ArrowCursor)
         event.accept()
+
+    def _apply_resize(self, global_pos):
+        """Resize the window by the drag delta, honouring the minimum size."""
+        start = self._resize_start
+        origin = self._resize_origin
+        if start is None or origin is None:
+            return
+        dx = global_pos.x() - origin.x()
+        dy = global_pos.y() - origin.y()
+        geo = QRect(start)
+        if "left" in self._resize_edges:
+            geo.setLeft(start.left() + dx)
+        if "right" in self._resize_edges:
+            geo.setRight(start.right() + dx)
+        if "top" in self._resize_edges:
+            geo.setTop(start.top() + dy)
+        if "bottom" in self._resize_edges:
+            geo.setBottom(start.bottom() + dy)
+        # Never shrink below the minimum: keep the dragged edge under the cursor.
+        if geo.width() < self.minimumWidth():
+            if "left" in self._resize_edges:
+                geo.setLeft(geo.right() - self.minimumWidth() + 1)
+            else:
+                geo.setRight(geo.left() + self.minimumWidth() - 1)
+        if geo.height() < self.minimumHeight():
+            if "top" in self._resize_edges:
+                geo.setTop(geo.bottom() - self.minimumHeight() + 1)
+            else:
+                geo.setBottom(geo.top() + self.minimumHeight() - 1)
+        self.setGeometry(geo)
+
+    def leaveEvent(self, event):
+        if not self._resize_edges:
+            self.setCursor(Qt.ArrowCursor)
+        super().leaveEvent(event)
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Escape:
@@ -929,18 +1128,26 @@ class JarvisWidget(QWidget):
             self.tray.sync_toggle(False)
 
     def closeEvent(self, event):
-        """Closing the widget hides it to the tray instead of quitting."""
-        if self._quitting or self.tray is None:
+        """Close-to-tray: the X hides the card, it never quits the app.
+
+        Only a real quit (``Quit`` in the tray/menu, which sets ``_quitting``)
+        lets the window actually close. Everything else ignores the event and
+        hides to the tray, keeping the tray icon available to reopen or exit.
+        """
+        if self._quitting:
+            self._stop_hotkey()
             if self.worker is not None and self.worker.isRunning():
                 self.worker.wait(5000)
             event.accept()
             return
         event.ignore()
         self.hide()
-        self.tray.showMessage(
-            "Jarvis", "Still running in the tray. Click the icon to talk.",
-            QSystemTrayIcon.Information, 3000,
-        )
+        if self.tray is not None:
+            self.tray.show()               # make sure the icon stays visible
+            self.tray.showMessage(
+                "Jarvis", "Still running in the tray. Click the icon to talk.",
+                QSystemTrayIcon.Information, 3000,
+            )
 
 
 def main():
@@ -950,8 +1157,20 @@ def main():
     # Keep running after the floating window is hidden/closed -> tray lives on.
     app.setQuitOnLastWindowClosed(False)
     widget = JarvisWidget()
+
+    # Let a second launch / `main.py --wake` wake this instance instead of
+    # spawning a duplicate tray icon. The socket thread only emits a signal, so
+    # Qt runs the real work on the GUI thread.
+    import instance
+    server = instance.WakeServer(widget.hotkey_pressed.emit)
+    server.start()
+    widget.wake_server = server
+
     widget.show()
-    return app.exec_()
+    try:
+        return app.exec_()
+    finally:
+        server.stop()
 
 
 if __name__ == "__main__":

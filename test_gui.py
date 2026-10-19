@@ -15,9 +15,9 @@ import pytest
 
 pytest.importorskip("PyQt5")
 
-from PyQt5.QtCore import Qt               # noqa: E402
-from PyQt5.QtGui import QPixmap           # noqa: E402
-from PyQt5.QtWidgets import QApplication   # noqa: E402
+from PyQt5.QtCore import QPoint, Qt        # noqa: E402
+from PyQt5.QtGui import QPixmap            # noqa: E402
+from PyQt5.QtWidgets import QApplication, QSizeGrip   # noqa: E402
 
 import gui                                 # noqa: E402
 import voice                               # noqa: E402
@@ -45,6 +45,34 @@ def _reset_voice_state(monkeypatch):
     voice._stop_speaking.clear()
 
 
+class _FakeHotkeyListener:
+    """Stand-in for ``pynput.keyboard.GlobalHotKeys``.
+
+    The real listener grabs the keyboard system-wide, which must never happen
+    while the test suite runs, so every widget build gets this fake instead.
+    """
+
+    def __init__(self, mapping):
+        self.mapping = mapping
+        self.started = False
+        self.stopped = False
+
+    def start(self):
+        self.started = True
+
+    def stop(self):
+        self.stopped = True
+
+
+@pytest.fixture(autouse=True)
+def _fake_hotkey(monkeypatch):
+    """Replace the pynput listener factory for every GUI test."""
+    def fake_make(callback):
+        return _FakeHotkeyListener({key: callback for key in gui.HOTKEYS})
+
+    monkeypatch.setattr(gui, "_make_hotkey_listener", fake_make)
+
+
 def test_make_icon_paints_something(app):
     icon = gui.make_icon(64)
     assert not icon.isNull()
@@ -68,8 +96,147 @@ def test_widget_quit_does_not_hang(app):
 def test_hide_to_tray_does_not_quit_by_default(app):
     """Closing the widget must hide it, not quit the app."""
     widget = gui.JarvisWidget()
-    # With no tray available (offscreen), the close falls through to accept.
+    widget.show()
+    widget.close()                 # as the ✕ button / window manager would
     assert widget._quitting is False
+    assert widget.isVisible() is False
+
+
+def test_close_to_tray_keeps_the_app_alive(app):
+    """The ✕ button hides the card; it never quits Jarvis."""
+    widget = gui.JarvisWidget()
+    widget.show()
+
+    widget._close_to_tray()
+
+    assert widget.isVisible() is False
+    assert widget._quitting is False
+
+
+def test_real_quit_is_allowed_to_close(app):
+    """Only a real quit (tray menu) lets the window actually close."""
+    widget = gui.JarvisWidget()
+    widget._quitting = True
+    widget.close()
+    assert widget._quitting is True
+
+
+# --------------------------------------------------------------------------- #
+# frameless resize (QSizeGrip + edge dragging)
+# --------------------------------------------------------------------------- #
+
+def test_window_has_a_resize_grip(app):
+    widget = gui.JarvisWidget()
+    assert isinstance(widget.size_grip, QSizeGrip)
+    # The frameless card must no longer be locked to a single size.
+    assert widget.minimumWidth() < widget.maximumWidth()
+    assert widget.minimumHeight() < widget.maximumHeight()
+
+
+def test_resize_edge_detection(app):
+    widget = gui.JarvisWidget()
+    widget.resize(380, 560)
+
+    assert widget._edge_at(QPoint(2, 2)) == {"left", "top"}
+    assert widget._edge_at(QPoint(378, 558)) == {"right", "bottom"}
+    assert widget._edge_at(QPoint(2, 280)) == {"left"}
+    assert widget._edge_at(QPoint(190, 280)) == set()
+    assert widget._cursor_for_edges({"left", "top"}) == Qt.SizeFDiagCursor
+    assert widget._cursor_for_edges({"right", "top"}) == Qt.SizeBDiagCursor
+    assert widget._cursor_for_edges({"left"}) == Qt.SizeHorCursor
+    assert widget._cursor_for_edges({"bottom"}) == Qt.SizeVerCursor
+    assert widget._cursor_for_edges(set()) == Qt.ArrowCursor
+
+
+def test_edge_drag_resizes_the_window(app):
+    widget = gui.JarvisWidget()
+    widget.resize(380, 560)
+    widget._resize_edges = {"right", "bottom"}
+    widget._resize_origin = QPoint(1000, 1000)
+    widget._resize_start = widget.geometry()
+
+    widget._apply_resize(QPoint(1060, 1040))
+
+    assert widget.width() == 440
+    assert widget.height() == 600
+
+
+def test_resize_never_shrinks_below_minimum(app):
+    widget = gui.JarvisWidget()
+    widget.resize(380, 560)
+    widget._resize_edges = {"right", "bottom"}
+    widget._resize_origin = QPoint(1000, 1000)
+    widget._resize_start = widget.geometry()
+
+    widget._apply_resize(QPoint(0, 0))
+
+    assert widget.width() == widget.minimumWidth()
+    assert widget.height() == widget.minimumHeight()
+
+
+# --------------------------------------------------------------------------- #
+# global wake hotkey (Ctrl+Shift+J / Ctrl+Alt+J)
+# --------------------------------------------------------------------------- #
+
+def test_global_hotkey_is_registered_on_start(app):
+    widget = gui.JarvisWidget()
+    listener = widget._hotkey
+    assert listener is not None
+    assert listener.started is True
+    assert gui.HOTKEY == "<ctrl>+<shift>+j"
+    assert gui.ALT_HOTKEY == "<ctrl>+<alt>+j"
+    assert gui.HOTKEY in listener.mapping
+    assert gui.ALT_HOTKEY in listener.mapping
+
+
+def test_global_hotkey_triggers_a_cycle_from_idle(app):
+    widget = gui.JarvisWidget()
+    triggered = []
+    widget.trigger = lambda: triggered.append(True)
+
+    widget.hotkey_pressed.emit()          # what the pynput thread emits
+
+    assert triggered == [True]
+
+
+def test_global_hotkey_restores_the_existing_window(app):
+    """The hotkey shows the existing card -- it never builds a second one."""
+    widget = gui.JarvisWidget()
+    tray = widget.tray
+    triggered = []
+    widget.trigger = lambda: triggered.append(True)
+
+    widget.hide()
+    assert widget.isVisible() is False
+
+    widget.hotkey_pressed.emit()
+
+    assert widget.isVisible() is True        # same widget, brought forward
+    assert triggered == [True]
+    assert widget.tray is tray               # no duplicate tray/instance
+
+
+def test_global_hotkey_unmutes_before_triggering(app):
+    widget = gui.JarvisWidget()
+    widget.set_mic_muted(True)
+    assert voice.is_mic_muted() is True
+    triggered = []
+    widget.trigger = lambda: triggered.append(True)
+
+    widget.hotkey_pressed.emit()
+
+    assert voice.is_mic_muted() is False
+    assert triggered == [True]
+
+
+def test_global_hotkey_stops_cleanly_on_quit(app):
+    widget = gui.JarvisWidget()
+    listener = widget._hotkey
+
+    widget.quit()
+
+    assert listener.stopped is True
+    assert widget._hotkey is None
 
 
 # --------------------------------------------------------------------------- #

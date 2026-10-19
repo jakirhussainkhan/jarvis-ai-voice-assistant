@@ -93,6 +93,50 @@ class LinuxWindowController(WindowController):
                     closed = True
         return closed
 
+    def locate_by_class(self, keywords):
+        """Handles of windows whose WM_CLASS contains any of ``keywords``.
+
+        ``wmctrl -lx`` prints the WM_CLASS in the third column
+        (e.g. ``gnome-terminal-server.Gnome-terminal``). This finds terminal
+        windows whose titles are just the shell prompt, so they cannot be matched
+        by name.
+        """
+        keys = [str(k).lower() for k in (keywords or []) if k]
+        if not keys or common.is_wayland() or not common.has("wmctrl"):
+            return []
+        rc, out = common.run(["wmctrl", "-lx"])
+        if rc != 0:
+            return []
+        handles = []
+        for line in out.splitlines():
+            parts = line.split(None, 4)
+            if len(parts) < 3:
+                continue
+            handle, _desktop, wm_class = parts[0], parts[1], parts[2]
+            low = wm_class.lower()
+            if any(key in low for key in keys):
+                handles.append(handle)
+        return handles
+
+    def close_by_class(self, keywords):
+        """Close every window matching :meth:`locate_by_class`.
+
+        ``wmctrl -ic <id>`` asks the window manager to close it gracefully;
+        ``xdotool windowkill`` is the fallback when that fails.
+        """
+        handles = self.locate_by_class(keywords)
+        if not handles:
+            return False
+        closed = False
+        for handle in handles:
+            if common.run(["wmctrl", "-ic", handle])[0] == 0:
+                closed = True
+                continue
+            if common.has("xdotool") and common.run(
+                    ["xdotool", "windowkill", handle])[0] == 0:
+                closed = True
+        return closed
+
     def minimize_by_title(self, name):
         rc, out = self._wmctrl("-r", name)
         if rc != 0:

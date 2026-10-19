@@ -25,7 +25,6 @@ import edge_tts
 import pygame
 import speech_recognition as sr
 
-import desktop
 from config import BARGE_HOLD, BARGE_THRESHOLD, STT_LANG, TTS_VOICE
 from platform_adapters import Audio
 
@@ -150,16 +149,22 @@ _mic_muted = False
 
 
 def set_mic_muted(flag):
-    """Mute/unmute the microphone and return the new state.
+    """Mute/unmute Jarvis's own listening and return the new state.
+
+    This is a *Jarvis-internal* mute only: it flips a boolean, cuts off any
+    in-flight capture, and pauses the barge-in monitor, so Jarvis stops
+    listening. The physical system microphone is deliberately left untouched --
+    Jarvis never issues an OS-level mute (``pactl set-source-mute`` or similar),
+    which would light up the keyboard mute LED and silence other applications.
 
     Barge-in is explicitly paused while muted so its capture thread cannot keep
-    the audio device open (media playback and the mic otherwise fight over it).
-    Unmuting resumes normal barge-in detection.
+    the audio device open. Unmuting resumes normal barge-in detection.
     """
     global _mic_muted
     _mic_muted = bool(flag)
     if _mic_muted:
-        pause_barge_in()
+        stop_listening()          # cut off any in-flight capture immediately
+        pause_barge_in()          # keep barge-in from opening the mic again
     else:
         resume_barge_in()
     return _mic_muted
@@ -276,7 +281,7 @@ _barge_paused = threading.Event()
 
 
 def pause_barge_in():
-    """Stop barge-in from opening the microphone (used for media playback)."""
+    """Keep barge-in from opening the microphone (e.g. while Jarvis is muted)."""
     _barge_paused.set()
 
 
@@ -292,12 +297,20 @@ def is_barge_in_paused():
 
 # A short, unambiguous interruption spoken *after* barge-in has already cut the
 # reply. This is intentionally stricter than "contains stop": commands such as
-# "stop listening" or "stop the music" must still reach the router.
+# "stop listening" or "stop the music" must still reach the router. Besides
+# "stop", the ChatGPT-style interruptions "wait", "listen" and "hold on" cut the
+# reply without ending the session or reaching the LLM.
 _STOP_PHRASE = re.compile(
     r"^\s*(?:(?:please|okay|ok|hey|jarvis|just|can\s+you|could\s+you|"
     r"would\s+you)[\s,]+)*"
-    r"(?:stop|shut\s+up|quiet|be\s+quiet|silence)"
-    r"(?:\s+(?:it|now|please|talking|speaking|that|this))*"
+    r"(?:"
+    r"stop|shut\s+up|quiet|be\s+quiet|silence"
+    r"|wait(?:\s+(?:a\s+(?:sec|second|moment|minute)|up|please))?"
+    r"|hold\s+on|hang\s+on"
+    r"|listen(?:\s+up)?"
+    r")"
+    r"(?:\s+(?:it|now|please|talking|speaking|that|this|a\s+"
+    r"(?:sec|second|moment|minute)))*"
     r"\s*[.!?]*$",
     re.I,
 )
@@ -774,9 +787,11 @@ def listen(wait=None, *, label="", barge=False):
     command.
 
     With ``JARVIS_PTT=1`` this becomes push-to-talk: it waits for Enter, records
-    until Enter is pressed again or silence is detected, then transcribes. Media
-    that is playing is paused first (and resumed after capture) so it does not
-    leak into the mic or hold the silence gate open.
+    until Enter is pressed again or silence is detected, then transcribes.
+
+    Background media is never paused: Jarvis listens while YouTube or music
+    plays (so "pause music" / "next song" still work), relying on the RMS gate
+    and barge-in threshold to ignore the audio leaking in from the speakers.
     """
     rec = sr.Recognizer()
     rec.operation_timeout = _RECOGNIZE_TIMEOUT
@@ -796,20 +811,11 @@ def listen(wait=None, *, label="", barge=False):
     if ptt and not _ptt_wait_for_enter():
         return ""
 
-    # Best effort: pause any playing media so it neither leaks into the mic nor
-    # keeps the silence gate open. Resumed after the phrase is captured.
-    pause_token = None
-    try:
-        pause_token = desktop.pause_media_if_playing()
-    except Exception as exc:                                   # never fatal
-        _dbg(f"media pause skipped: {type(exc).__name__}: {exc}")
-
     try:
         print("🎤 Listening...", flush=True)
         proc = _spawn_arecord(device)
     except Exception as exc:
         _dbg(f"capture error: {type(exc).__name__}: {exc}")
-        desktop.resume_media(pause_token)
         return ""
 
     stop_event = threading.Event() if ptt else None
@@ -825,7 +831,6 @@ def listen(wait=None, *, label="", barge=False):
             return ""
     finally:
         _stop_arecord(proc)
-        desktop.resume_media(pause_token)
 
     if not data:
         _dbg(f"TIMEOUT:{label or 'listen'} no speech above threshold within "

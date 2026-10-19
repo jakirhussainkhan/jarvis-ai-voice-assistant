@@ -22,6 +22,10 @@ fastembed
 sounddevice
 pywinctl
 
+# Global wake hotkey (Ctrl+Shift+J) for the GUI. Imported lazily, so the app
+# still starts if it is missing -- the hotkey simply is not available.
+pynput
+
 # Windows-only extras (volume, brightness, screen input) are installed by
 # install.ps1, not here, because they do not install on Linux/macOS:
 #   pycaw comtypes pyautogui screen-brightness-control pillow plyer

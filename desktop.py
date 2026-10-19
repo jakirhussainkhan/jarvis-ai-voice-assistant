@@ -15,7 +15,6 @@ built here and in the adapters. Destructive/power actions are invoked through
 
 import os
 import re
-import threading
 import time
 import unicodedata
 from datetime import datetime
@@ -241,6 +240,23 @@ def match_app(name, threshold=0.55):
 STRONG_MATCH = 0.72   # act directly
 WEAK_MATCH = 0.55     # ask "Did you mean ...?"
 
+# WM_CLASS fragments that identify a terminal emulator window. A terminal's
+# *title* is just the shell prompt ("jakir@coder: ~"), so closing terminals has
+# to match the window class rather than the name.
+TERMINAL_CLASSES = (
+    "gnome-terminal", "xterm", "kitty", "alacritty", "tilix", "terminal",
+)
+
+
+def _is_terminal_app(app):
+    """True when a matched app is a terminal emulator."""
+    blob = " ".join((
+        getattr(app, "name", "") or "",
+        getattr(app, "desktop_id", "") or "",
+        getattr(app, "exec_bin", "") or "",
+    )).lower()
+    return any(key in blob for key in TERMINAL_CLASSES)
+
 
 def open_app(name):
     """Launch an installed app by fuzzy name. Never guesses."""
@@ -260,9 +276,22 @@ def close_app(app):
     """Gracefully close an app, escalating to SIGKILL after ~3 s."""
     if _is_protected(app.exec_bin) or _is_protected(app.name):
         return f"I won't close {app.name} -- it is protected."
+    # Terminals are matched by window class: their titles are shell prompts, so
+    # the normal title/process matching would report "not running" wrongly.
+    if _is_terminal_app(app) and Window.close_by_class(TERMINAL_CLASSES):
+        return f"Closed {app.name}."
     if System.close_app(app):
         return f"Closed {app.name}."
+    if _is_terminal_app(app) and Window.close_by_class(TERMINAL_CLASSES):
+        return f"Closed {app.name}."
     return f"I don't see {app.name} running."
+
+
+def close_terminal():
+    """Close any open terminal emulator by window class, not by title."""
+    if Window.close_by_class(TERMINAL_CLASSES):
+        return "Closing the terminal."
+    return "I don't see any terminal running."
 
 
 def list_running():
@@ -291,6 +320,30 @@ def list_running():
 def run_in_terminal(command):
     """Open a visible terminal and run ``command`` there, leaving it open."""
     return System.run_in_terminal(command)
+
+
+def dictate_in_terminal(text):
+    """Open a terminal, type ``text`` into it and press Enter.
+
+    Unlike :func:`run_in_terminal`, nothing is executed on Jarvis's behalf: the
+    command is typed (via ``xdotool``) as if the user had typed it, so it is
+    visible and auditable. X11 only -- ``xdotool`` cannot drive Wayland.
+    """
+    text = "" if text is None else str(text).strip()
+    if not text:
+        return "What should I type in the terminal?"
+    if is_wayland():
+        return "I can't type into a terminal on Wayland."
+    if not has("xdotool"):
+        return "xdotool is not installed, so I can't type in the terminal."
+    if not System.open_terminal():
+        return "I couldn't find a terminal emulator."
+    time.sleep(1.5)                     # let the terminal window draw and focus
+    rc, out = _run(["xdotool", "type", "--clearmodifiers", text])
+    if rc != 0:
+        return f"I couldn't type in the terminal: {out}"
+    _run(["xdotool", "key", "Return"])
+    return f"Typed in the terminal: {text}"
 
 
 # --------------------------------------------------------------------------- #
@@ -323,17 +376,19 @@ _MEDIA_FILLER_WORD = re.compile(
 )
 
 
-def extract_media_query(text):
-    """Pull just the song/video name out of a spoken "play ... on YouTube".
+# "search <song> (and|then) play it": the song sits *before* the play verb.
+_SEARCH_START = re.compile(
+    r"^\s*(?:(?:please|jarvis|hey\s+jarvis|can\s+you|could\s+you)[\s,]+)*"
+    r"(?:search|look\s*up|find)\b\s*(?:for\s+)?",
+    re.I,
+)
+_SEARCH_PLAY_SPLIT = re.compile(
+    r"\b(?:and|then)\s+(?:play|watch|start)\b", re.I
+)
 
-    Drops the play/watch/listen verb, a trailing "on YouTube", unambiguous STT
-    noise ("what do you mean", "i am", "please", ...) and filler phrases like
-    "the song" / "music player". Words that could belong to a title are kept, so
-    "Hey Jude", "Like a Prayer" and "The Nights" survive. Returns "" when only
-    filler is left, so the caller can ask "What should I play?".
-    """
-    if not text:
-        return ""
+
+def _media_tail(text):
+    """Strip the play verb, YouTube mentions and filler; return the song name."""
     match = _PLAY_VERB.search(text)
     tail = text[match.end():] if match else text
     # Drop a trailing "on YouTube" (and any other "youtube" mention).
@@ -346,6 +401,35 @@ def extract_media_query(text):
     if not re.sub(r"[^A-Za-z0-9]+", "", _MEDIA_FILLER_WORD.sub(" ", tail)):
         return ""
     return tail
+
+
+def extract_media_query(text):
+    """Pull just the song/video name out of a spoken play/search command.
+
+    Handles "play <song> on YouTube" and, importantly, "search <song> and play
+    it": in the latter the song comes *before* the play verb, so the ordinary
+    "everything after play" rule would keep only "now". Drops unambiguous STT
+    noise ("what do you mean", "i am", "please", ...) and filler phrases like
+    "the song" / "music player". Words that could belong to a title are kept, so
+    "Hey Jude", "Like a Prayer" and "The Nights" survive. Returns "" when only
+    filler is left, so the caller can ask "What should I play?".
+    """
+    if not text:
+        return ""
+    search = _SEARCH_START.match(text)
+    if search:
+        rest = text[search.end():]
+        split = _SEARCH_PLAY_SPLIT.search(rest)
+        if split:
+            # Try the words before "and play" first, then the words after it
+            # ("search and play <song>").
+            for candidate in (rest[:split.start()], rest[split.end():]):
+                song = _media_tail(candidate)
+                if song:
+                    return song
+            return ""
+        return _media_tail(rest)
+    return _media_tail(text)
 
 
 def _yt_url_search(query):
@@ -403,7 +487,7 @@ def _reuse_youtube_tab(url):
     after = Window.window_name(wid)
     # The page title must change: anything else means the keys never landed.
     if not ok or after == before:
-        _dbg("navigation did not reach the browser; falling back")
+        _dbg("navigation did not reach the browser; keeping the current tab")
         return False
     return True
 
@@ -411,39 +495,72 @@ def _reuse_youtube_tab(url):
 def open_youtube():
     """Open YouTube -- or bring the existing YouTube tab to the front."""
     wid = _youtube_window()
-    if wid and Window.activate_window(wid) and _window_has_input_focus(wid):
-        return "YouTube is already open -- I brought it up."
+    if wid:
+        if Window.activate_window(wid) and _window_has_input_focus(wid):
+            return "YouTube is already open -- I brought it up."
+        # A YouTube tab exists but the window manager refused to raise it. A
+        # second tab is never opened just because activation failed.
+        return "YouTube is already open, but I couldn't bring it to the front."
     if _open_url("https://www.youtube.com"):
         return "Opening YouTube."
     return "I couldn't open the browser."
 
 
+def _navigate_youtube(url):
+    """Send the browser to ``url``, reusing the open YouTube tab when there is one.
+
+    Returns one of:
+
+    * ``"reused"``  -- navigated the already-open YouTube tab in place.
+    * ``"opened"``  -- no YouTube tab was open, so a new one was opened.
+    * ``"blocked"`` -- YouTube is open but the in-place navigation failed; a
+      second tab is deliberately NOT opened.
+    * ``"failed"``  -- no YouTube tab was open and the browser could not open.
+
+    This is the single choke point for YouTube navigation: when a YouTube window
+    already exists, ``webbrowser``/``open_url`` is never used, so Jarvis can
+    never spawn a duplicate tab.
+    """
+    if _youtube_window():
+        return "reused" if _reuse_youtube_tab(url) else "blocked"
+    return "opened" if _open_url(url) else "failed"
+
+
 def search_youtube(query):
     if not query:
         return open_youtube()
-    if _reuse_youtube_tab(_yt_url_search(query)):
+    outcome = _navigate_youtube(_yt_url_search(query))
+    if outcome == "reused":
         return f"Searching YouTube for {query}."
-    if _open_url(_yt_url_search(query)):
+    if outcome == "opened":
         return f"Here are the YouTube results for {query}."
+    if outcome == "blocked":
+        return ("YouTube is already open, but I couldn't navigate the "
+                "existing tab.")
     return "I couldn't open the browser."
 
 
 _YT_ID = re.compile(r"^[A-Za-z0-9_-]{6,}$")
 
 
-def _release_mic_for_media():
-    """Mute the mic and pause barge-in before media starts.
+def _finish_youtube_play(query, outcome):
+    """Wait for the page, make it play, then report the *verified* state.
 
-    Browsers and the capture process otherwise compete for the same audio
-    device, which makes YouTube stutter, mute or stop. Importing voice lazily
-    avoids the desktop <-> voice import cycle.
+    The spoken reply must never claim "Playing" before the video really is: the
+    page is given two seconds to load and ``ensure_browser_playing`` then checks
+    (and if needed nudges) the player. A blocked autoplay is reported honestly so
+    the user can press play instead of wondering why nothing happened.
     """
-    try:
-        import voice
-        voice.set_mic_muted(True)
-        voice.pause_barge_in()
-    except Exception as exc:                       # never block playback
-        _dbg(f"could not pause the mic for media: {type(exc).__name__}: {exc}")
+    time.sleep(2.0)                      # let the browser load the new video
+    if ensure_browser_playing():
+        if outcome == "reused":
+            return f"Playing {query} in your open YouTube tab."
+        return f"Playing {query} on YouTube."
+    if outcome == "reused":
+        return (f"I navigated your open YouTube tab to {query}, but it is still "
+                "paused -- press play or allow autoplay.")
+    return (f"I opened {query} on YouTube, but it is still paused -- "
+            "press play or allow autoplay.")
 
 
 def play_youtube(query):
@@ -454,13 +571,17 @@ def play_youtube(query):
     Uses ``--flat-playlist --print id`` so yt-dlp only resolves the search hit's
     id -- it never tries to pick a video format (which fails on YouTube with
     older yt-dlp builds and would silently downgrade us to a results page).
+
+    When a YouTube tab is already open the resolved watch URL (or the results
+    URL) is typed into that tab's address bar with ``xdotool`` instead of opening
+    a new one; see :func:`_navigate_youtube`.
     """
     query = extract_media_query(query)
     if not query:
         return "What should I play?"
-    # Release the microphone before resolving/opening the video: the browser
-    # needs the audio device, and barge-in must not grab it mid-playback.
-    _release_mic_for_media()
+    # The mic stays live and media is never paused: Jarvis keeps listening while
+    # the video plays so "pause music" / "next song" work, and the RMS gate keeps
+    # the background audio from registering as speech.
     if has("yt-dlp"):
         rc, out = _run(
             ["yt-dlp", f"ytsearch1:{query}", "--flat-playlist",
@@ -475,28 +596,28 @@ def play_youtube(query):
                 break
         if rc == 0 and vid:
             watch_url = f"https://www.youtube.com/watch?v={vid}"
-            if _reuse_youtube_tab(watch_url):
-                # Playing in the tab the user already had open. Autoplay is
-                # normally blocked without a user gesture, but our typed
-                # address bar keypresses *are* gestures -- nudge anyway, in the
-                # background, so the spoken reply is never delayed.
-                threading.Thread(target=ensure_browser_playing,
-                                 daemon=True).start()
-                return f"Playing {query} in your open YouTube tab."
-            if _open_url(watch_url):
-                # Autoplay is normally blocked for a freshly opened tab, which
-                # would leave the video paused with no MPRIS session; nudge it in
-                # the background so the spoken reply is never delayed.
-                threading.Thread(target=ensure_browser_playing,
-                                 daemon=True).start()
-                return f"Playing {query} on YouTube."
+            outcome = _navigate_youtube(watch_url)
+            if outcome in ("reused", "opened"):
+                # Autoplay is normally blocked without a user gesture, so verify
+                # (and nudge) playback before promising that it is playing.
+                return _finish_youtube_play(query, outcome)
+            if outcome == "blocked":
+                return ("YouTube is already open, but I couldn't navigate the "
+                        "existing tab.")
         elif rc != 0:
             # Surface yt-dlp's own error instead of failing silently.
             _dbg(f"yt-dlp failed (rc={rc}): {out}")
-    # yt-dlp missing or failed: open the results page and say so.
+    # yt-dlp missing or failed: navigate to the results page and say so.
     reason = "yt-dlp is not installed" if not has("yt-dlp") else "I couldn't find a video"
-    _open_url(_yt_url_search(query))
-    return f"{reason}, so I opened the YouTube results for {query}."
+    outcome = _navigate_youtube(_yt_url_search(query))
+    if outcome == "reused":
+        return f"{reason}, so I searched your open YouTube tab for {query}."
+    if outcome == "opened":
+        return f"{reason}, so I opened the YouTube results for {query}."
+    if outcome == "blocked":
+        return ("YouTube is already open, but I couldn't navigate the "
+                "existing tab.")
+    return f"{reason}, and I couldn't open the browser."
 
 
 def close_youtube():
@@ -539,31 +660,83 @@ def _browser_media_player():
     return bool(_BROWSER_MEDIA.search(System.media_players()))
 
 
-def ensure_browser_playing(timeout=9.0):
-    """Nudge a freshly opened YouTube tab to actually start playing.
+def _playerctl_status(timeout=3):
+    """playerctl's status in lower case; '' when there is no player.
 
-    A browser refuses unmuted autoplay until the *site* has seen a user gesture,
-    and a spoken command is not one -- so a video we just opened sits paused and
-    publishes no MPRIS session at all (which is why "pause" then reports that
-    nothing is playing). Best effort, X11 only, never raises.
+    Returns ``None`` when playerctl is missing or cannot be run, so callers can
+    tell "no media session" (autoplay blocked) apart from "cannot verify".
     """
-    if not (Window.can_send_keys() and System.media_available()):
+    if not has("playerctl"):
+        return None
+    rc, out = _run(["playerctl", "status"], timeout=timeout)
+    if rc != 0:
+        return ""
+    return (out or "").strip().lower()
+
+
+def ensure_browser_playing(verify_seconds=1.0):
+    """Make sure the YouTube video is actually playing; return True when it is.
+
+    Browsers refuse unmuted autoplay until the site has seen a user gesture, and a
+    spoken command is not one -- so a video we just navigated to often sits paused
+    and may publish no MPRIS session at all. ``playerctl status`` is checked
+    first: "Playing" means leave it alone (a key press would pause it). "Paused",
+    no session, or a playerctl failure all mean playback is not running, so the
+    YouTube window is focused and Space is pressed, then the status is verified
+    after ``verify_seconds``. When playerctl is unavailable the delivered key is
+    trusted (there is nothing to verify against). Best effort, X11 only, never
+    raises.
+    """
+    status = _playerctl_status()
+    if status and "playing" in status:
+        return True
+    if not Window.can_send_keys():
         return False
-    deadline = time.monotonic() + max(1.0, float(timeout))
-    nudged = False
-    while time.monotonic() < deadline:
-        if _browser_media_player():
-            return True
-        if not nudged:
-            wid = _youtube_window()
-            if wid and _press_in_window(wid, "k", restore=False):
-                nudged = True
-        time.sleep(0.8)
-    return _browser_media_player()
+    wid = _youtube_window()
+    if not wid:
+        return False
+    if not _press_in_window(wid, "space", restore=False):
+        return False
+    time.sleep(max(0.5, float(verify_seconds)))
+    status = _playerctl_status()
+    if status is None:
+        return True                  # no playerctl: trust the key we delivered
+    return "playing" in status
 
 
 def _youtube_page_fallback(key):
-    return _press_in_window(_youtube_window(), key)
+    """Drive a media key in the browser window (YouTube first, then any browser).
+
+    Used when ``playerctl`` cannot handle the action (Chromium/Brave report
+    ``CanGoNext = false`` for skip, and pause may have no MPRIS session at all).
+    """
+    return _press_in_window(_browser_window(), key)
+
+
+# A window whose title identifies a browser (used to route media keys when the
+# MPRIS session is missing). YouTube-specific windows are preferred.
+_BROWSER_WINDOW = re.compile(
+    r"(youtube|chrome|chromium|firefox|brave|edge|vivaldi|opera)", re.I
+)
+
+
+def _browser_window():
+    """Handle of a visible browser window, or ``None``.
+
+    The YouTube window is preferred; otherwise the first visible window whose
+    title looks like a browser is used.
+    """
+    wid = _youtube_window()
+    if wid:
+        return wid
+    if not Window.can_send_keys():
+        return None
+    for title in Window.list_window_titles():
+        if _BROWSER_WINDOW.search(title or ""):
+            wid = Window.locate_window(title)
+            if wid:
+                return wid
+    return None
 
 
 def media_control(action):
@@ -582,10 +755,12 @@ def now_playing():
 
 
 def pause_media_if_playing():
-    """Best-effort pause of active media so it does not leak into the mic.
+    """Explicitly pause active media, returning an opaque resume token.
 
-    Returns an opaque resume token, or ``None`` when nothing was playing.
-    Never raises.
+    This is deliberately *not* called when Jarvis listens: background media
+    keeps playing so the user can ask for "pause music" or "next song". It
+    remains available as a manual media-control primitive. Returns ``None``
+    when nothing was playing; never raises.
     """
     return System.pause_media_if_playing()
 

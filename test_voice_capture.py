@@ -17,10 +17,8 @@ import voice
 
 
 @pytest.fixture(autouse=True)
-def _no_media_pause(monkeypatch):
-    """Never touch the real audio sink during tests: pause/resume are stubbed."""
-    monkeypatch.setattr(voice.desktop, "pause_media_if_playing", lambda: None)
-    monkeypatch.setattr(voice.desktop, "resume_media", lambda token: None)
+def _isolate_capture_globals(monkeypatch):
+    """Keep the module-level capture state from leaking between tests."""
     monkeypatch.setattr(voice, "_level_sink", None)
     monkeypatch.setattr(voice, "_mic_muted", False)
     monkeypatch.setattr(voice, "_stop_listening", threading.Event())
@@ -258,6 +256,21 @@ def _recognising_listen(monkeypatch, recognise, **listen_kwargs):
         pipe.close()
 
 
+def test_listening_does_not_pause_media(monkeypatch):
+    """Jarvis listens while media plays; it must never pause it automatically."""
+    import desktop
+
+    monkeypatch.setattr(desktop, "pause_media_if_playing",
+                        lambda: pytest.fail("listen() must not pause media"))
+    monkeypatch.setattr(desktop, "resume_media",
+                        lambda token: pytest.fail("listen() must not resume media"))
+
+    def recognise(self, audio, language=None):
+        return "pause music"
+
+    assert _recognising_listen(monkeypatch, recognise) == "pause music"
+
+
 def test_google_failure_falls_back_to_local_stt(monkeypatch):
     """A network error from Google STT must not lose the phrase: transcribe it
     locally instead."""
@@ -303,6 +316,18 @@ def test_stop_phrase_helper_accepts_normal_interruptions():
                    "quiet", "be quiet", "silence"):
         assert voice.is_stop_phrase(phrase), phrase
     for phrase in ("stop the music", "stop listening", "don't stop", ""):
+        assert not voice.is_stop_phrase(phrase), phrase
+
+
+def test_stop_phrase_helper_accepts_chatgpt_style_interruptions():
+    """'wait', 'listen' and 'hold on' cut the reply without touching a command."""
+    for phrase in ("wait", "wait a second", "wait a moment", "hold on",
+                   "hold on a second", "hang on", "listen", "listen up",
+                   "hey jarvis, hold on"):
+        assert voice.is_stop_phrase(phrase), phrase
+    # Commands that merely start with an interruption word must still dispatch.
+    for phrase in ("wait for the download", "listen to music",
+                   "hold on to this file", "stop the music"):
         assert not voice.is_stop_phrase(phrase), phrase
 
 

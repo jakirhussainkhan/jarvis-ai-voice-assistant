@@ -160,10 +160,13 @@ copy-paste install command for you to run yourself, but it never executes one.
   long name. Tune it with `JARVIS_LISTEN_TIMEOUT`.
 - **Stop cancels a wait too** — pressing Stop (or `Space`) now abandons a listen
   that is still waiting for you, as well as cutting off a reply mid-sentence.
-- **Playback that actually starts, and `next` that works** — a freshly opened
-  video usually sits paused (browsers block autoplay without a real click), and a
-  paused tab publishes no MPRIS session at all, so nothing could control it.
-  Jarvis now gives the new tab a background play tap, and **`next`/`previous`
+- **Playback that actually starts, and honest feedback** — a freshly opened or
+  reused video usually sits paused (browsers block autoplay without a real
+  click), and a paused tab publishes no MPRIS session at all. After navigating,
+  Jarvis checks `playerctl status`; if it is not already **Playing** it focuses
+  the YouTube window and presses **Space** (`xdotool`), then verifies before
+  saying "Playing" — so it no longer claims success while the player is paused.
+  **`next`/`previous`
   work on a YouTube tab** by driving the page's own shortcuts — Brave's MPRIS
   reports `CanGoNext = false`, so `playerctl` alone can never skip tracks there.
 - **Copy-paste install hints** — a missing tool and the readiness report now print
@@ -268,10 +271,11 @@ copy-paste install command for you to run yourself, but it never executes one.
   ~0.3 s pre-roll keeps quiet onsets, and hysteresis ends the phrase after ~2 s
   of silence. Phrases are capped at 15 s (`JARVIS_PHRASE_LIMIT`), and Jarvis waits
   up to **30 s** (`JARVIS_LISTEN_TIMEOUT`) for you to start speaking — Stop
-  abandons a pending wait. Playing media is paused while Jarvis listens and
-  resumed afterwards (best effort), and `JARVIS_PTT=1` switches to push-to-talk
-  for noisy rooms.
-- **Tests** — a `pytest` suite of **501 tests** (1 skipped) covering routing, app
+  abandons a pending wait. Background media keeps playing while Jarvis listens,
+  so "pause music" / "next song" work; the RMS gate and barge-in threshold keep
+  the audio from registering as speech, and `JARVIS_PTT=1` switches to
+  push-to-talk for noisy rooms.
+- **Tests** — a `pytest` suite of **557 tests** (1 skipped) covering routing, app
   matching, the protected list, the confirmation flow, the terminal guardrails,
   screen routing, clipboard fallbacks, offline behaviour, the internet tools,
   vision parsing, timers, the YouTube path (play-by-name and on-screen picks),
@@ -409,6 +413,7 @@ token cap and tool-round limit are constants in `config.py`.
 ./venv/bin/python main.py --version          # print the version
 ./venv/bin/python main.py --screen "what is on my screen?"   # one screen answer
 ./venv/bin/python main.py --gui              # floating widget + system tray
+./venv/bin/python main.py --wake             # wake the running Jarvis (or start it)
 ./venv/bin/python install_desktop.py         # add Jarvis to the app menu
 ./venv/bin/python doctor.py                  # readiness report
 ./venv/bin/python test_mic.py                # microphone diagnostic
@@ -420,9 +425,15 @@ cache hits. Say **"exit"**, **"quit"**, **"bye"** or **"stop"** (on their own) t
 end a session.
 
 **GUI:** left-click the orb (or the tray icon) to talk — or just say **"Hey
-Jarvis"** once the wake word is installed — drag to move the card, right-click
-for the menu, `Esc` or the **✕** button hides it to the tray, and only **Quit**
-in the tray menu really exits. The orb **breathes** when idle, **reacts to your
+Jarvis"** once the wake word is installed, or press **Ctrl+Shift+J** (or
+**Ctrl+Alt+J**) from any application to wake Jarvis — it brings the card
+forward and unmutes the mic if it was muted — drag to move the card, drag an
+edge/corner or the corner grip to **resize** it, right-click
+for the menu, `Esc`, the **✕** button or the window close all hide it to the
+tray (they never quit), and only **Quit**
+in the tray menu really exits. Launching Jarvis twice is safe: the second launch
+wakes the running one and exits, so there is only ever one tray icon (a lock
+file at `~/.jarvis/jarvis.lock`). The orb **breathes** when idle, **reacts to your
 voice** while it listens and **moves while it speaks**, and the 13-bar waveform
 under it shows the live level. Start talking while Jarvis speaks to **interrupt
 it** (barge-in): the reply stops and Jarvis goes straight back to listening. The
@@ -564,8 +575,9 @@ confirmation first, then tries the router, and only sends a miss to the agent.
 | `agent.py` | Groq orchestration with an optional Ollama backend: response cache, token accounting, tool schemas from function signatures, English-only system instruction, bounded tool loop, long-term fact injection, 44 tools. |
 | `tools.py` | The tool functions (see the list below). |
 | `memory.py` | SQLite conversation history plus the persistent `user_facts` table for long-term personal memory. |
-| `main.py` | Entry point and `handle()` dispatch (`--text`, `--offline`, `--local`, `--screen`, `--gui`, `--check`, `--version`). |
-| `gui.py` | PyQt5 ChatGPT-Voice-style card + system tray; the listen/think/speak cycle runs on a `QThread` — and with continuous chat on, that thread loops turn after turn until you go quiet, say an exit word, press Stop or mute. The breathing `Orb` and 13-bar `Waveform` are driven by live mic levels / the TTS loudness envelope; the worker arms a `voice.BargeInMonitor` while speaking, so talking over a reply cuts it short and returns to listening. Frameless rounded card with minimise/close controls. Owns the wake listener's lifecycle (start/pause/resume/stop). |
+| `main.py` | Entry point and `handle()` dispatch (`--text`, `--offline`, `--local`, `--screen`, `--gui`, `--wake`, `--check`, `--version`). Enforces a single instance via `instance.py`. |
+| `gui.py` | PyQt5 ChatGPT-Voice-style card + system tray; the listen/think/speak cycle runs on a `QThread` — and with continuous chat on, that thread loops turn after turn until you go quiet, say an exit word, press Stop or mute. The breathing `Orb` and 13-bar `Waveform` are driven by live mic levels / the TTS loudness envelope; the worker arms a `voice.BargeInMonitor` while speaking, so talking over a reply cuts it short and returns to listening. Frameless, **resizable** rounded card (corner `QSizeGrip` + edge dragging) whose ✕/close **hides to the tray** instead of quitting. Owns the wake listener's lifecycle (start/pause/resume/stop) and registers the optional global **Ctrl+Shift+J** / **Ctrl+Alt+J** wake hotkey (`pynput`). |
+| `instance.py` | Single-instance lock (`~/.jarvis/jarvis.lock`) and wake socket (`~/.jarvis/jarvis.sock`). A second launch (or `main.py --wake`) signals the running GUI to wake and then exits, so there is only ever one Jarvis. Degrades gracefully without `fcntl`/Unix sockets. |
 | `icon_art.py` | The vector artwork for the app icon (charcoal tile, azure orb, stylised "J"), shared by the GUI, the tray and `gen_icon.py`. |
 | `gen_icon.py` | Renders `assets/jarvis-{32,48,64,128,256}.png` from `icon_art.py`, headless and PyQt-only. |
 | `wake.py` | Optional offline **"Hey Jarvis"** wake word (openWakeWord ONNX). `Detector` re-frames audio into 80 ms frames and applies the threshold; `Listener` streams the mic on a daemon thread, hands the device over before any listen cycle, and stays silent while the mic is muted. Importable without openWakeWord. |
@@ -634,8 +646,10 @@ Long-term memory: `fn_remember_fact`, `fn_recall_facts`, `fn_forget_fact`.
 - **Screen control says it needs X11 / "not supported":** you are on Wayland.
 - **"play …" opens YouTube but nothing starts, or "pause" says nothing is
   playing.** Browsers block autoplay until you interact with the site, and a
-  paused tab publishes no media session at all. Jarvis taps play on the new tab
-  itself (needs `xdotool` + X11); if you opened the tab by hand, click the video
+  paused tab publishes no media session at all. Jarvis checks `playerctl status`,
+  taps play on the YouTube window itself and verifies (needs `xdotool` + X11);
+  if it is still paused it says so instead of claiming it is playing. If you
+  opened the tab by hand, click the video
   once and pause/next will work from then on. A browser's MPRIS cannot skip
   tracks (`CanGoNext = false` in Chromium/Brave), so `next`/`previous` are sent
   to the YouTube page as its own keyboard shortcuts instead.

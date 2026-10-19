@@ -39,6 +39,16 @@ def test_resolve_without_pending_is_unhandled():
     assert confirm.resolve("yes") == (False, None)
 
 
+def test_ask_action_is_a_prompt_first_alias_of_request():
+    ran = []
+    assert confirm.ask_action(
+        "Are you sure you want to shut down?", lambda: ran.append(True) or "Down."
+    ) == "Are you sure you want to shut down?"
+    assert confirm.is_pending()
+    assert confirm.resolve("yes") == (True, "Down.")
+    assert ran == [True]
+
+
 def test_is_yes_accepts_common_affirmatives():
     for word in ("yes", "Yeah", "yep", "sure", "ok", "okay", "do it"):
         assert confirm.is_yes(word), word

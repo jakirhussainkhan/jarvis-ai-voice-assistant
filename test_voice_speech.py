@@ -50,6 +50,24 @@ def test_mic_mute_toggles_and_resets():
     assert voice.is_mic_muted() is True
 
 
+def test_mic_mute_only_stops_the_internal_capture(monkeypatch):
+    """Regression: muting Jarvis must never mute the system microphone."""
+    # There must be no OS-level mic-mute path at all (it lit the keyboard LED).
+    assert not hasattr(voice, "_apply_source_mute")
+    assert not hasattr(voice.Audio, "set_source_mute")
+
+    calls = []
+    monkeypatch.setattr(voice, "stop_listening",
+                        lambda: calls.append("capture-stopped"))
+    monkeypatch.setattr(voice, "pause_barge_in", lambda: calls.append("paused"))
+    monkeypatch.setattr(voice, "resume_barge_in", lambda: calls.append("resumed"))
+
+    assert voice.set_mic_muted(True) is True
+    assert voice.set_mic_muted(False) is False
+    # Only Jarvis's own capture is stopped; the hardware is never addressed.
+    assert calls == ["capture-stopped", "paused", "resumed"]
+
+
 def test_emit_value_clamps_and_swallows_errors():
     seen = []
     voice.set_level_sink(seen.append)

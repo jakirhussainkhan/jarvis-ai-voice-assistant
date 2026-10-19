@@ -191,6 +191,20 @@ class WindowController(ABC):
     def can_send_keys(self):
         """True when this platform can focus a window and type keys into it."""
 
+    # -- class-based lookup ------------------------------------------------- #
+    def locate_by_class(self, keywords):
+        """Handles of windows whose WM_CLASS contains any keyword (else []).
+
+        Needed where the title is unhelpful -- a terminal's title is just the
+        shell prompt. Platforms without a window-manager class concept inherit
+        this empty result.
+        """
+        return []
+
+    def close_by_class(self, keywords):
+        """Close every window matching :meth:`locate_by_class`; True if any."""
+        return False
+
 
 class SystemController(ABC):
     """Applications, media, brightness, power and the desktop shell."""
@@ -278,6 +292,10 @@ class SystemController(ABC):
     @abstractmethod
     def run_in_terminal(self, command):
         """Run ``command`` in a visible terminal; return a spoken reply."""
+
+    def open_terminal(self):
+        """Open an empty (default) terminal window; False when unsupported."""
+        return False
 
     @abstractmethod
     def power(self, kind):

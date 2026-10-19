@@ -20,6 +20,9 @@ _MEDIA = {
     "stop": "stop", "toggle": "play-pause",
 }
 _YT_KEYS = {"next": "shift+n", "previous": "shift+p", "prev": "shift+p"}
+# Keys used to drive the browser's own player when playerctl cannot help:
+# space toggles play/pause, shift+n skips to the next video on YouTube.
+_BROWSER_KEYS = {"pause": "space", "resume": "space", "toggle": "space"}
 
 # Terminal emulators tried in order, with the flag that runs a command.
 _TERMINALS = (
@@ -39,6 +42,52 @@ _DOMAIN_RE = re.compile(
     r"eu)(?:/\S*)?$",
     re.I,
 )
+
+
+def _xrandr_display(text=None):
+    """Name of the primary (or first) connected output from ``xrandr``.
+
+    Parsing ``xrandr`` for a line containing ``" connected"`` mirrors the usual
+    ``xrandr | grep " connected"`` recipe. Pass ``text`` to reuse an existing
+    ``xrandr`` dump (and to keep tests offline).
+    """
+    if text is None:
+        rc, text = common.run(["xrandr"])
+        if rc != 0:
+            return None
+    primary = first = None
+    for line in (text or "").splitlines():
+        if " connected" not in line:
+            continue
+        name = line.split()[0]
+        if first is None:
+            first = name
+        if " primary" in line:
+            primary = name
+    return primary or first
+
+
+def _xrandr_percent(text=None):
+    """Current xrandr brightness (0.0-1.0 multiplier) as a percent, or None."""
+    if text is None:
+        rc, text = common.run(["xrandr", "--verbose"])
+        if rc != 0:
+            return None
+    match = re.search(r"Brightness:\s*([0-9]*\.?[0-9]+)", text or "")
+    if not match:
+        return None
+    try:
+        return max(1, min(100, round(float(match.group(1)) * 100)))
+    except ValueError:
+        return None
+
+
+def _xrandr_set(display, percent):
+    """Set ``display`` brightness to ``percent`` via xrandr; True on success."""
+    value = max(1, min(100, int(percent))) / 100.0
+    rc, _ = common.run(
+        ["xrandr", "--output", display, "--brightness", f"{value:.2f}"])
+    return rc == 0
 
 
 class LinuxSystemController(SystemController):
@@ -82,10 +131,12 @@ class LinuxSystemController(SystemController):
         label = "previous" if key == "prev" else key
         if rc == 0:
             return f"Media {label}."
-        youtube_key = _YT_KEYS.get(key)
-        if youtube_key and page_fallback is not None and page_fallback(youtube_key):
+        # playerctl could not handle it: drive the browser window directly.
+        # Play/pause uses space; next/previous use YouTube's own shortcuts.
+        page_key = _BROWSER_KEYS.get(key) or _YT_KEYS.get(key)
+        if page_key and page_fallback is not None and page_fallback(page_key):
             return f"Media {label}."
-        if youtube_key and re.search(r"no player could handle", out, re.I):
+        if key in _YT_KEYS and re.search(r"no player could handle", out, re.I):
             return "That player can't skip tracks."
         return "There is no media player to control."
 
@@ -151,7 +202,7 @@ class LinuxSystemController(SystemController):
         except Exception:
             pass
 
-    # -- brightness (brightnessctl) ----------------------------------------- #
+    # -- brightness (brightnessctl, with xrandr fallback) ------------------- #
     def get_brightness(self):
         rc, out = common.run(["brightnessctl", "--machine-readable", "get"])
         if rc != 0 or not out.strip():
@@ -168,22 +219,52 @@ class LinuxSystemController(SystemController):
 
     def brightness_control(self, action, value=None):
         key = (action or "").strip().lower()
-        if not common.has("brightnessctl"):
+        if key not in ("up", "increase", "down", "decrease", "set", "to",
+                       "level"):
+            return "I can change the brightness up, down or to a percent."
+        if key in ("set", "to", "level") and value is None:
+            # "brightness" with no number: ask rather than fall through to
+            # int(None) in the xrandr path.
+            return "I can change the brightness up, down or to a percent."
+        if common.has("brightnessctl"):
+            if key in ("up", "increase"):
+                rc, _ = common.run(["brightnessctl", "set", "+10%"])
+                if rc == 0:
+                    return "Brightness up."
+            elif key in ("down", "decrease"):
+                rc, _ = common.run(["brightnessctl", "set", "10%-"])
+                if rc == 0:
+                    return "Brightness down."
+            elif value is not None:
+                pct = max(1, min(100, int(value)))
+                rc, _ = common.run(["brightnessctl", "set", f"{pct}%"])
+                if rc == 0:
+                    return f"Brightness set to {pct} percent."
+            # brightnessctl failed (usually a permissions error): fall through
+            # to xrandr, which works on the X server without special rights.
+        return self._brightness_xrandr(key, value)
+
+    def _brightness_xrandr(self, key, value):
+        """Software brightness via ``xrandr --brightness`` (0.0-1.0; 1.0 = 100%)."""
+        if not common.has("xrandr"):
             return ("brightnessctl is not installed. To install it, run: "
                     "sudo apt install brightnessctl")
+        display = _xrandr_display()
+        if not display:
+            return "I couldn't find a connected display."
         if key in ("up", "increase"):
-            rc, _ = common.run(["brightnessctl", "set", "+10%"])
-            return "Brightness up." if rc == 0 else "I couldn't change the brightness."
-        if key in ("down", "decrease"):
-            rc, _ = common.run(["brightnessctl", "set", "10%-"])
-            return "Brightness down." if rc == 0 else "I couldn't change the brightness."
-        if key in ("set", "to", "level") and value is not None:
-            pct = max(1, min(100, int(value)))
-            rc, _ = common.run(["brightnessctl", "set", f"{pct}%"])
-            if rc == 0:
-                return f"Brightness set to {pct} percent."
-            return "I couldn't change the brightness."
-        return "I can change the brightness up, down or to a percent."
+            percent = min(100, (_xrandr_percent() or 50) + 10)
+        elif key in ("down", "decrease"):
+            percent = max(1, (_xrandr_percent() or 50) - 10)
+        else:
+            percent = max(1, min(100, int(value)))
+        if _xrandr_set(display, percent):
+            if key in ("up", "increase"):
+                return "Brightness up."
+            if key in ("down", "decrease"):
+                return "Brightness down."
+            return f"Brightness set to {percent} percent."
+        return "I couldn't change the brightness."
 
     # -- screenshots / lock ------------------------------------------------- #
     def screenshot(self, path):
@@ -277,6 +358,18 @@ class LinuxSystemController(SystemController):
             return f"I couldn't find any file matching {query}."
         home_hits = [h for h in hits if h.startswith(home)]
         return "\n".join((home_hits or hits)[:limit])
+
+    def open_terminal(self):
+        """Open the default terminal emulator as an empty window.
+
+        Reuses the same ordered :data:`_TERMINALS` list as
+        :meth:`run_in_terminal`, so whichever terminal the user has installed is
+        the one that opens.
+        """
+        for name, _flag in _TERMINALS:
+            if common.has(name) and common.spawn([name]):
+                return True
+        return False
 
     def run_in_terminal(self, command):
         command = (command or "").strip()

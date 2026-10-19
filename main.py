@@ -7,6 +7,7 @@ import sys
 import agent
 import config
 import confirm
+import voice
 from voice import listen, speak
 from router import try_local, CAPABILITIES, OFFLINE_REPLY
 from agent import run_agent
@@ -97,15 +98,58 @@ def is_exit(text: str) -> bool:
     return not rest
 
 
-def read_input():
-    """Return one user turn: typed in text mode, otherwise spoken."""
+def read_input(barge=False):
+    """Return one user turn: typed in text mode, otherwise spoken.
+
+    ``barge`` is passed to :func:`voice.listen` so that, right after the user
+    talked over a reply, a pure interruption ("stop", "wait", "listen",
+    "hold on") is swallowed instead of being dispatched or ending the session.
+    """
     if _TEXT:
         try:
             return input("👤 ").strip()
         except (EOFError, KeyboardInterrupt):
             print(flush=True)
             return "exit"
-    return listen()
+    return listen(barge=barge)
+
+
+def _barge_monitor(on_barge):
+    """Build a barge-in monitor (a seam tests can replace without a mic)."""
+    return voice.BargeInMonitor(on_barge=on_barge)
+
+
+def _speak_with_barge_in(reply):
+    """Speak ``reply``; return True when the user talked over it.
+
+    While the reply plays, barge-in watches the microphone. On an interruption
+    the speech is cut immediately with :func:`voice.stop_speaking`; the app keeps
+    running and the loop goes straight back to listening for the next command.
+    """
+    if _TEXT:
+        speak(reply)
+        return False
+
+    barged = {"value": False}
+
+    def on_barge():
+        barged["value"] = True
+        voice.stop_speaking()
+
+    monitor = _barge_monitor(on_barge)
+    try:
+        started = monitor.start()
+    except Exception:
+        started = False
+    if not started:
+        # No barge-in (disabled, muted or push-to-talk): speak normally.
+        speak(reply)
+        return False
+    try:
+        speak(reply)
+    finally:
+        monitor.stop()
+    return barged["value"]
 
 
 def handle(text, memory):
@@ -134,38 +178,9 @@ def handle(text, memory):
     return reply, ("cache" if tokens == 0 else "agent"), tokens
 
 
-def main():
-    global total_tokens, local_count, agent_count, _TEXT, _OFFLINE
-
-    args = sys.argv[1:]
-    if "--local" in args:
-        # Force the opt-in Ollama backend for this process only. The default
-        # remains Groq, and no Ollama connection is attempted otherwise.
-        config.USE_LOCAL_LLM = True
-        agent.USE_LOCAL_LLM = True
-    if "--check" in args:
-        from doctor import report
-        print(report())
-        return
-    if "--version" in args or "-v" in args:
-        from config import __version__
-        print(f"Jarvis {__version__}")
-        return
-    if "--gui" in args:
-        from gui import main as gui_main
-        gui_main()
-        return
-    for flag in ("--screen", "--see", "--look"):
-        if flag in args:
-            index = args.index(flag)
-            words = [a for a in args[index + 1:] if not a.startswith("-")]
-            from vision import look
-            print(look(" ".join(words) or None))
-            return
-    if "--text" in args or "-t" in args:
-        _TEXT = True
-    if "--offline" in args:
-        _OFFLINE = True
+def _run_loop():
+    """The spoken/typed command loop (everything except the GUI)."""
+    global total_tokens, local_count, agent_count
 
     timers.set_speaker(speak)
     mem = Memory()
@@ -177,8 +192,10 @@ def main():
               flush=True)
     speak("Jarvis online.")
 
+    barge_pending = False
     while True:
-        user = read_input()
+        user = read_input(barge=barge_pending)
+        barge_pending = False
         if not user:
             continue
 
@@ -199,7 +216,62 @@ def main():
                 f"[STAT] agent | +{tok} | tokens={total_tokens} | agent={agent_count}",
                 flush=True,
             )
-        speak(reply)
+        barge_pending = _speak_with_barge_in(reply)
+
+
+def main():
+    global _TEXT, _OFFLINE
+
+    args = sys.argv[1:]
+    if "--local" in args:
+        # Force the opt-in Ollama backend for this process only. The default
+        # remains Groq, and no Ollama connection is attempted otherwise.
+        config.USE_LOCAL_LLM = True
+        agent.USE_LOCAL_LLM = True
+    if "--check" in args:
+        from doctor import report
+        print(report())
+        return
+    if "--version" in args or "-v" in args:
+        from config import __version__
+        print(f"Jarvis {__version__}")
+        return
+    for flag in ("--screen", "--see", "--look"):
+        if flag in args:
+            index = args.index(flag)
+            words = [a for a in args[index + 1:] if not a.startswith("-")]
+            from vision import look
+            print(look(" ".join(words) or None))
+            return
+    if "--text" in args or "-t" in args:
+        _TEXT = True
+    if "--offline" in args:
+        _OFFLINE = True
+
+    # Single instance: a second launch must not create a duplicate tray icon,
+    # hotkey grab or microphone. It wakes the running Jarvis and exits.
+    import instance
+    wake = "--wake" in args
+    if wake and instance.signal_wake():
+        print("Jarvis is already running -- I asked it to wake up.", flush=True)
+        return
+    try:
+        lock = instance.acquire()
+    except instance.AlreadyRunning:
+        if instance.signal_wake():
+            print("Jarvis is already running -- I asked it to wake up.",
+                  flush=True)
+        else:
+            print("Jarvis is already running.", flush=True)
+        return
+    try:
+        if "--gui" in args or wake:
+            from gui import main as gui_main
+            gui_main()
+            return
+        _run_loop()
+    finally:
+        instance.release(lock)
 
 
 if __name__ == "__main__":

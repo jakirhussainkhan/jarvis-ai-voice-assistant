@@ -36,6 +36,15 @@ def request(action, prompt):
     return prompt
 
 
+def ask_action(prompt, action):
+    """Prompt-first alias of :func:`request`.
+
+    Reads more naturally at a call site (``ask_action("Are you sure?", do_it)``)
+    while sharing the same single pending slot.
+    """
+    return request(action, prompt)
+
+
 def is_pending():
     return _pending["action"] is not None
 
