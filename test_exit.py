@@ -1,6 +1,6 @@
-"""Tests for main.is_exit (session exit detection)."""
+"""Tests for main.is_exit / main.is_shutdown (session and app exit detection)."""
 
-from main import is_exit
+from main import is_exit, is_shutdown
 
 
 def test_exit_words_are_detected():
@@ -32,3 +32,27 @@ def test_exit_word_with_a_target_is_not_exit():
     assert not is_exit("quit youtube")
     assert not is_exit("stop the music")
     assert not is_exit("close youtube")
+
+
+def test_explicit_close_commands_exit():
+    for phrase in (
+        "close yourself",
+        "jarvis close yourself",
+        "shut yourself down",
+        "shut down jarvis",
+        "shutdown jarvis",
+        "exit jarvis",
+        "quit jarvis",
+        "terminate yourself",
+        "close jarvis",
+    ):
+        assert is_exit(phrase), phrase
+        assert is_shutdown(phrase), phrase
+
+
+def test_shutdown_phrases_do_not_swallow_real_commands():
+    assert not is_shutdown("close youtube")
+    assert not is_shutdown("shut down the computer")
+    assert not is_shutdown("quit youtube")
+    assert is_exit("stop")                       # a normal session exit
+    assert not is_shutdown("stop")               # but not an app close

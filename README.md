@@ -350,7 +350,7 @@ All configuration lives in `config.py` and can be overridden from `.env`:
 | `GROQ_API_KEY` | *(required)* | Groq API key, `gsk_…` |
 | `GROQ_BASE_URL` | `https://api.groq.com/openai/v1` | OpenAI-compatible endpoint |
 | `GROQ_MODEL` | `openai/gpt-oss-120b` | Main model ID (must support tools) |
-| `GROQ_VISION_MODEL` | `qwen/qwen3.8-27b` | Multimodal model for screen vision |
+| `GROQ_VISION_MODEL` | `qwen/qwen3.8-27b` | Multimodal model for screen vision (verified live) |
 | `JARVIS_SCREEN_MAX_WIDTH` | `1280` | Downscale width for vision screenshots |
 | `JARVIS_SCREEN_STEPS` | `6` | Max perceive→act steps per screen goal |
 | `JARVIS_SHELL_TIMEOUT` | `20` | Seconds before a terminal command is killed |

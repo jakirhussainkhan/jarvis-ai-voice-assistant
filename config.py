@@ -6,18 +6,23 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-__version__ = "1.6.0"
+__version__ = "1.7.0"
 
 # Groq (https://console.groq.com) exposes an OpenAI-compatible Chat Completions
 # API. The key is read from GROQ_API_KEY in .env; Groq keys start with "gsk_".
-API_KEY = os.getenv("GROQ_API_KEY")
-BASE_URL = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
+# Normalise both values so a blank key is treated as missing and a trailing
+# slash on the base URL cannot produce "//chat/completions" paths.
+API_KEY = (os.getenv("GROQ_API_KEY") or "").strip() or None
+BASE_URL = ((os.getenv("GROQ_BASE_URL") or "https://api.groq.com/openai/v1")
+            .strip().rstrip("/"))
 
 # Primary text/agent model -- the 120B open-weight model on the Groq free tier.
 # Model IDs confirmed at https://console.groq.com/docs/models (both support tools).
 MODEL_NAME = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
-# Multimodal model used so Jarvis can actually *see* the screen. Verified to
-# accept image_url input on this account (see progress.md).
+# Multimodal model used so Jarvis can actually *see* the screen. Verified live
+# against this account: Qwen accepts OpenAI-style image_url content, while
+# `llama-3.2-11b-vision-preview` is decommissioned on Groq. Override it in .env
+# (GROQ_VISION_MODEL=...) if the account exposes a different multimodal model.
 VISION_MODEL = os.getenv("GROQ_VISION_MODEL", "qwen/qwen3.8-27b")
 # Cheaper model used only when the primary one is rate-limited (HTTP 429). The
 # 120B model has a strict requests-per-minute cap on the free tier; falling back
@@ -44,12 +49,33 @@ def _env_int(name, default, minimum=None):
     return value
 
 
+def _env_float(name, default, minimum=None):
+    """Read a float env var, falling back to ``default`` when it is unusable."""
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    if minimum is not None and value < minimum:
+        return default
+    return value
+
+
 # Continuous conversation (ChatGPT-like voice mode). After Jarvis replies it
 # keeps the microphone open so the next sentence flows without another click.
 # It sleeps when you go quiet, and leaves when you say an exit word, press Stop
 # or mute the mic. JARVIS_CHAT=0 gets the old click-to-talk behaviour back.
 CHAT_ON = os.getenv("JARVIS_CHAT", "1").strip().lower() not in ("0", "false", "no", "off")
 CHAT_TIMEOUT = _env_int("JARVIS_CHAT_TIMEOUT", 60, minimum=10)
+
+# Barge-in sensitivity: speaking over Jarvis for this long cuts the reply.
+# 1200 is normal conversational volume (the old 2600 was too high for many
+# microphones), and 0.3 s keeps the interruption feeling immediate. Raise the
+# threshold if speaker echo causes false interruptions.
+BARGE_THRESHOLD = _env_int("JARVIS_BARGE_THRESHOLD", 1200, minimum=300)
+BARGE_HOLD = _env_float("JARVIS_BARGE_HOLD", 0.3, minimum=0.1)
 # How many recent turns the transcript handed to the agent may contain. Kept
 # small on purpose: the Groq free tier is token-limited, and older turns add
 # cost without adding much context.

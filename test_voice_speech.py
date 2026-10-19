@@ -1,15 +1,18 @@
 """Tests for the speech-side helpers: level sink, TTS envelope and interruption.
 
 The microphone and the real audio device cannot be driven from a test, so the
-pygame mixer and the ffmpeg decode are stubbed. What is covered here is the
-logic that used to be easy to get wrong: the level sink never raising, the
-envelope degrading to [] when ffmpeg is missing, and stop_speaking() actually
-cutting playback short.
+sounddevice/pygame outputs and the ffmpeg decode are stubbed. What is covered
+here is the logic that used to be easy to get wrong: the level sink never
+raising, the envelope degrading to [] when ffmpeg is missing, bounded queue
+backpressure, and stop_speaking() actually cutting playback short.
 """
 
 import array
+import queue
 import shutil
+import sys
 import threading
+import time
 import types
 import wave
 
@@ -25,11 +28,13 @@ def _reset_voice_globals():
     voice.set_mic_muted(False)
     voice._stop_speaking.clear()
     voice._stop_listening.clear()
+    voice._set_active_tts_playback(None, None)
     yield
     voice.set_level_sink(None)
     voice.set_mic_muted(False)
     voice._stop_speaking.clear()
     voice._stop_listening.clear()
+    voice._set_active_tts_playback(None, None)
 
 
 # --------------------------------------------------------------------------- #
@@ -315,6 +320,10 @@ class _FakeChannel:
     def __init__(self, on_queue=None):
         self.queued = []
         self.stopped = False
+        self.busy = False
+        self.plays = 0
+        self.queues = 0
+        self._busy_checks = 0
         self._on_queue = on_queue
 
     def _record(self, sound):
@@ -323,16 +332,58 @@ class _FakeChannel:
             self._on_queue(len(self.queued))
 
     def play(self, sound):
+        self.plays += 1
+        self.busy = True
+        self._busy_checks = 0
         self._record(sound)
 
     def queue(self, sound):
+        self.queues += 1
         self._record(sound)
 
     def get_busy(self):
-        return False
+        # One successful "still playing" check is enough to exercise the queue
+        # path, then report completion so the post-loop drain can finish.
+        if not self.busy:
+            return False
+        if self._busy_checks:
+            self.busy = False
+            return False
+        self._busy_checks += 1
+        return True
 
     def stop(self):
         self.stopped = True
+        self.busy = False
+
+
+class _FakeRawStream:
+    """Minimal stand-in for sounddevice.RawOutputStream."""
+
+    def __init__(self, on_write=None):
+        self.written = []
+        self.started = False
+        self.stopped = False
+        self.aborted = False
+        self.closed = False
+        self._on_write = on_write
+
+    def start(self):
+        self.started = True
+
+    def write(self, data):
+        self.written.append(data)
+        if self._on_write is not None:
+            self._on_write(len(self.written))
+
+    def stop(self):
+        self.stopped = True
+
+    def abort(self):
+        self.aborted = True
+
+    def close(self):
+        self.closed = True
 
 
 class _FakeStdin:
@@ -374,52 +425,116 @@ class _FakeProc:
 
 
 def _fake_stream_pygame(channel):
+    calls = {"pre_init": [], "init": []}
     mixer = types.SimpleNamespace(
         get_init=lambda: (voice._TTS_RATE, -16, voice._TTS_CHANNELS),
-        init=lambda *a, **k: None,
+        pre_init=lambda **kwargs: calls["pre_init"].append(kwargs),
+        init=lambda *args, **kwargs: calls["init"].append(kwargs),
         quit=lambda *a, **k: None,
         Channel=lambda _index: channel,
         Sound=lambda buffer=None: _FakeSound(buffer),
     )
     clock = types.SimpleNamespace(tick=lambda _fps: 0)
     return types.SimpleNamespace(
-        mixer=mixer, time=types.SimpleNamespace(Clock=lambda: clock)
+        mixer=mixer, time=types.SimpleNamespace(Clock=lambda: clock),
+        calls=calls,
     )
 
 
-def _pcm_block(amplitude=2000):
-    samples = array.array("h", [amplitude] * (voice._TTS_BLOCK_BYTES // 2))
+def _pcm_block(amplitude=2000, size=None):
+    size = voice._TTS_BLOCK_BYTES if size is None else size
+    samples = array.array("h", [amplitude] * (size // 2))
     return samples.tobytes()
 
 
+def test_open_sounddevice_stream_uses_raw_output(monkeypatch):
+    calls = {}
+
+    class FakeRawStream:
+        def __init__(self, **kwargs):
+            calls["kwargs"] = kwargs
+            self.started = False
+
+        def start(self):
+            self.started = True
+
+        def close(self):
+            pass
+
+    fake_sd = types.SimpleNamespace(RawOutputStream=FakeRawStream)
+    monkeypatch.setitem(sys.modules, "sounddevice", fake_sd)
+
+    stream = voice._open_sounddevice_stream()
+
+    assert isinstance(stream, FakeRawStream)
+    assert stream.started is True
+    assert calls["kwargs"] == {
+        "samplerate": voice._TTS_RATE,
+        "channels": voice._TTS_CHANNELS,
+        "dtype": "int16",
+        "blocksize": 0,
+    }
+
+
+def test_open_sounddevice_stream_returns_none_on_failure(monkeypatch):
+    class BrokenRawStream:
+        def __init__(self, **kwargs):
+            raise RuntimeError("no audio device")
+
+    fake_sd = types.SimpleNamespace(RawOutputStream=BrokenRawStream)
+    monkeypatch.setitem(sys.modules, "sounddevice", fake_sd)
+
+    assert voice._open_sounddevice_stream() is None
+
+
 def test_streaming_tts_queues_decoded_chunks(monkeypatch):
-    proc = _FakeProc([_pcm_block(2000), _pcm_block(2000)])
+    proc = _FakeProc([
+        _pcm_block(2000, voice._TTS_FALLBACK_BLOCK_BYTES),
+        _pcm_block(2000, voice._TTS_FALLBACK_BLOCK_BYTES),
+    ])
     channel = _FakeChannel()
+    fake_pygame = _fake_stream_pygame(channel)
     monkeypatch.setattr(voice, "_start_tts_decoder", lambda: proc)
+    monkeypatch.setattr(voice, "_open_sounddevice_stream", lambda: None)
     monkeypatch.setattr(
         voice, "_synthesize_to_decoder",
         lambda text, stdin, stop: stdin.close(),
     )
-    monkeypatch.setattr(voice, "pygame", _fake_stream_pygame(channel))
+    monkeypatch.setattr(voice, "pygame", fake_pygame)
 
     levels = []
     voice.set_level_sink(levels.append)
     assert voice._play_tts_stream("hello") is True
 
     assert len(channel.queued) == 2
+    assert channel.plays == 1          # first Sound starts the channel
+    assert channel.queues == 1         # later Sounds are queued, not played
     assert all(sound.buffer for sound in channel.queued)
     assert any(level > 0 for level in levels)
     assert levels[-1] == 0.0
     assert proc.terminated is True
     assert channel.stopped is True
+    # The fallback asks pygame for a larger buffer before initialising.
+    assert fake_pygame.calls["pre_init"] == [{
+        "frequency": voice._TTS_RATE,
+        "size": -16,
+        "channels": voice._TTS_CHANNELS,
+        "buffer": voice._TTS_PYGAME_BUFFER,
+    }]
+    assert fake_pygame.calls["init"][-1]["buffer"] == voice._TTS_PYGAME_BUFFER
 
 
 def test_streaming_tts_stops_after_the_first_chunk(monkeypatch):
-    proc = _FakeProc([_pcm_block(), _pcm_block(), _pcm_block()])
+    proc = _FakeProc([
+        _pcm_block(size=voice._TTS_FALLBACK_BLOCK_BYTES),
+        _pcm_block(size=voice._TTS_FALLBACK_BLOCK_BYTES),
+        _pcm_block(size=voice._TTS_FALLBACK_BLOCK_BYTES),
+    ])
     channel = _FakeChannel(
         on_queue=lambda count: voice.stop_speaking() if count == 1 else None
     )
     monkeypatch.setattr(voice, "_start_tts_decoder", lambda: proc)
+    monkeypatch.setattr(voice, "_open_sounddevice_stream", lambda: None)
     monkeypatch.setattr(
         voice, "_synthesize_to_decoder",
         lambda text, stdin, stop: stdin.close(),
@@ -430,6 +545,96 @@ def test_streaming_tts_stops_after_the_first_chunk(monkeypatch):
 
     assert len(channel.queued) == 1
     assert channel.stopped is True
+
+
+def test_streaming_tts_uses_one_continuous_sounddevice_stream(monkeypatch):
+    proc = _FakeProc([_pcm_block(2000), _pcm_block(2000)])
+    raw_stream = _FakeRawStream()
+    monkeypatch.setattr(voice, "_start_tts_decoder", lambda: proc)
+
+    def open_stream():
+        raw_stream.start()
+        return raw_stream
+
+    monkeypatch.setattr(voice, "_open_sounddevice_stream", open_stream)
+    monkeypatch.setattr(
+        voice, "_synthesize_to_decoder",
+        lambda text, stdin, stop: stdin.close(),
+    )
+
+    levels = []
+    voice.set_level_sink(levels.append)
+    assert voice._play_tts_stream("hello") is True
+
+    assert raw_stream.started is True
+    assert len(raw_stream.written) == 2
+    assert all(len(block) == voice._TTS_BLOCK_BYTES
+               for block in raw_stream.written)
+    assert raw_stream.stopped is True      # normal completion drains
+    assert raw_stream.aborted is False
+    assert raw_stream.closed is True
+    assert any(level > 0 for level in levels)
+    assert levels[-1] == 0.0
+    assert proc.terminated is True
+
+
+def test_streaming_tts_stop_aborts_sounddevice_stream(monkeypatch):
+    proc = _FakeProc([_pcm_block(), _pcm_block(), _pcm_block()])
+    raw_stream = _FakeRawStream(
+        on_write=lambda count: voice.stop_speaking() if count == 1 else None
+    )
+    monkeypatch.setattr(voice, "_start_tts_decoder", lambda: proc)
+    monkeypatch.setattr(voice, "_open_sounddevice_stream", lambda: raw_stream)
+    monkeypatch.setattr(
+        voice, "_synthesize_to_decoder",
+        lambda text, stdin, stop: stdin.close(),
+    )
+
+    assert voice._play_tts_stream("hello") is True
+
+    assert len(raw_stream.written) == 1
+    assert raw_stream.aborted is True      # Stop cuts the device immediately
+    assert raw_stream.stopped is False
+    assert raw_stream.closed is True
+    assert proc.terminated is True
+
+
+def test_stop_speaking_aborts_active_stream_and_clears_queue():
+    raw_stream = _FakeRawStream()
+    blocks = queue.Queue()
+    blocks.put(b"first")
+    blocks.put(b"second")
+    voice._set_active_tts_playback(raw_stream, blocks)
+
+    voice.stop_speaking()
+
+    assert raw_stream.aborted is True
+    assert blocks.empty() is True
+
+
+def test_decoded_pcm_reader_blocks_when_queue_is_full():
+    blocks_in = [_pcm_block(), _pcm_block(), _pcm_block()]
+    blocks = queue.Queue(maxsize=1)
+    stop = threading.Event()
+    reader = threading.Thread(
+        target=voice._read_decoded_pcm,
+        args=(_FakeStdout(blocks_in), blocks, stop, voice._TTS_BLOCK_BYTES),
+        daemon=True,
+    )
+    reader.start()
+
+    assert blocks.get(timeout=1) == blocks_in[0]
+    deadline = time.monotonic() + 1.0      # let the reader hit the full queue
+    while blocks.qsize() == 0 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert reader.is_alive() is True
+    assert blocks.qsize() == 1             # the second block is waiting
+
+    assert blocks.get(timeout=1) == blocks_in[1]
+    assert blocks.get(timeout=1) == blocks_in[2]
+    assert blocks.get(timeout=1) is None
+    reader.join(timeout=1)
+    assert reader.is_alive() is False
 
 
 def test_play_tts_uses_streaming_when_available(monkeypatch):

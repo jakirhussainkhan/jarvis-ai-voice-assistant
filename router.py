@@ -92,6 +92,29 @@ CREATOR_QUESTION = re.compile(
 )
 CREATOR_REPLY = "I was created and developed by Jakir Hussain Khan."
 
+# Microphone mute is a voice command too. These are anchored whole-utterance
+# matches so "mute" (system volume) and "stop the music" keep their old meaning.
+_MIC_OFF = re.compile(
+    r"^\s*(?:(?:please|jarvis|hey\s+jarvis|can you|could you)\s+)*"
+    r"(?:"
+    r"(?:turn|switch)\s+off\s+(?:the\s+|your\s+)?mic(?:rophone)?|"
+    r"mute\s+(?:yourself|your\s+mic|the\s+mic|mic)|"
+    r"stop\s+listening"
+    r")"
+    r"\s*[.!?]*$",
+    re.I,
+)
+_MIC_ON = re.compile(
+    r"^\s*(?:(?:please|jarvis|hey\s+jarvis|can you|could you)\s+)*"
+    r"(?:"
+    r"(?:turn|switch)\s+on\s+(?:the\s+|your\s+)?mic(?:rophone)?|"
+    r"unmute\s+(?:yourself|your\s+mic|the\s+mic|mic)|"
+    r"start\s+listening"
+    r")"
+    r"\s*[.!?]*$",
+    re.I,
+)
+
 # A command spoken with an explicit marker is run directly, offline -- no model
 # needed. "run firefox" deliberately does NOT match (it has no marker), so it
 # still reaches the agent and is handled as an app launch.
@@ -377,6 +400,15 @@ def try_local(text):
     # --- creator identity: always local, instant and provider-independent --- #
     if CREATOR_QUESTION.search(t):
         return CREATOR_REPLY
+
+    # --- microphone mute/unmute by voice ----------------------------------- #
+    # Before volume ("mute") and close ("stop listening") so those branches
+    # cannot swallow the mic command.
+    if _MIC_OFF.match(t) or _MIC_ON.match(t):
+        from voice import set_mic_muted             # lazy: keeps router light
+        muted = bool(_MIC_OFF.match(t))
+        set_mic_muted(muted)
+        return "Mic muted." if muted else "Mic unmuted."
 
     # Search requests belong to the agent (it can call the search tools).
     if SEARCH_VERB.search(t):

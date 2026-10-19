@@ -23,6 +23,31 @@ _EXIT_FILLER = re.compile(
     re.I,
 )
 
+# Explicit requests to close the application itself. These are deliberately
+# narrow so "close youtube" and "shut down the computer" keep their real
+# meanings; is_exit() still handles the older bare exit/stop/bye words.
+_SHUTDOWN_PHRASE = re.compile(
+    r"^\s*(?:(?:please|okay|ok|hey|now|and|then)[\s,]+)*"
+    r"(?:jarvis[\s,]+)?"
+    r"(?:"
+    r"close\s+(?:yourself(?:\s+down)?|jarvis)|"
+    r"shut\s+(?:yourself\s+down|down\s+jarvis|jarvis\s+down)|"
+    r"shutdown\s+jarvis|"
+    r"exit\s+jarvis|"
+    r"quit\s+jarvis|"
+    r"terminate\s+yourself"
+    r")"
+    r"(?:\s+(?:please|now|okay|ok))?"
+    r"\s*[.!?]*$",
+    re.I,
+)
+
+
+def is_shutdown(text: str) -> bool:
+    """True only for an explicit "close yourself" / "shut down Jarvis" request."""
+    return bool(_SHUTDOWN_PHRASE.match((text or "").strip()))
+
+
 # Type commands instead of speaking (JARVIS_TEXT=1 or `main.py --text`). Useful
 # for trying every command when the microphone is unavailable or noisy. Combine
 # with JARVIS_MUTE=1 for fast, silent testing.
@@ -58,9 +83,12 @@ def is_exit(text: str) -> bool:
     Word boundaries keep substrings like 'stop' in 'unstoppable' (or 'start' in
     'restart') from ending the session. A trailing target is respected: "stop"
     and "please stop" end the session, but "quit youtube" / "stop the music" do
-    not, so they can be routed as commands instead.
+    not, so they can be routed as commands instead. Explicit app-close phrases
+    such as "close yourself" and "shut down Jarvis" are always exits.
     """
     text = text.lower().strip()
+    if is_shutdown(text):
+        return True
     if not any(re.search(rf"\b{re.escape(w)}\b", text) for w in EXIT_WORDS):
         return False
     rest = re.sub(r"\s+", " ", _EXIT_FILLER.sub(" ", text)).strip(" .,!?")
@@ -148,9 +176,8 @@ def main():
             continue
 
         if is_exit(user):
-            speak(f"Shutting down. Session: {local_count} local, "
-                  f"{agent_count} agent, {total_tokens} tokens.")
-            break
+            speak("Goodbye, sir")
+            sys.exit(0)
 
         reply, kind, tok = handle(user, mem)
         if kind == "local":

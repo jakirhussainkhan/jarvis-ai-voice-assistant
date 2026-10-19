@@ -229,7 +229,7 @@ def test_listen_returns_empty_when_arecord_missing(monkeypatch):
     assert voice.listen() == ""
 
 
-def _recognising_listen(monkeypatch, recognise):
+def _recognising_listen(monkeypatch, recognise, **listen_kwargs):
     """Drive one listen() pass over synthetic speech with a fake recogniser."""
     pipe = _Pipe()
     pipe.feed(_silence(0.2) + _tone(0.5, 4000) + _silence(1.2))
@@ -253,7 +253,7 @@ def _recognising_listen(monkeypatch, recognise):
     monkeypatch.setattr(voice, "_spawn_arecord", lambda device=None: FakeProc(pipe.reader))
     monkeypatch.setattr(sr.Recognizer, "recognize_google", recognise)
     try:
-        return voice.listen()
+        return voice.listen(**listen_kwargs)
     finally:
         pipe.close()
 
@@ -276,6 +276,34 @@ def test_google_failure_without_local_model_returns_empty(monkeypatch):
     monkeypatch.setattr(voice, "_local_transcribe", lambda audio: "")
 
     assert _recognising_listen(monkeypatch, request_error) == ""
+
+
+def test_barge_in_stop_phrase_cuts_speech_without_dispatching(monkeypatch):
+    stops = []
+    monkeypatch.setattr(voice, "stop_speaking", lambda: stops.append("speaking"))
+    monkeypatch.setattr(voice, "stop_listening", lambda: stops.append("listening"))
+
+    def recognise(self, audio, language=None):
+        return "stop"
+
+    assert _recognising_listen(monkeypatch, recognise, barge=True) == ""
+    assert stops == ["speaking", "listening"]
+
+
+def test_barge_in_does_not_swallow_the_mic_command(monkeypatch):
+    """'stop listening' is a real mic command, not a bare interruption."""
+    def recognise(self, audio, language=None):
+        return "stop listening"
+
+    assert _recognising_listen(monkeypatch, recognise, barge=True) == "stop listening"
+
+
+def test_stop_phrase_helper_accepts_normal_interruptions():
+    for phrase in ("stop", "please stop", "stop it now", "shut up",
+                   "quiet", "be quiet", "silence"):
+        assert voice.is_stop_phrase(phrase), phrase
+    for phrase in ("stop the music", "stop listening", "don't stop", ""):
+        assert not voice.is_stop_phrase(phrase), phrase
 
 
 def test_local_transcribe_returns_empty_without_faster_whisper(monkeypatch):

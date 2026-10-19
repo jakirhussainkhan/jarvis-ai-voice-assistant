@@ -11,6 +11,7 @@ import array
 import asyncio
 import contextlib
 import queue
+import re
 import select
 import subprocess
 import sys
@@ -25,7 +26,7 @@ import pygame
 import speech_recognition as sr
 
 import desktop
-from config import STT_LANG, TTS_VOICE
+from config import BARGE_HOLD, BARGE_THRESHOLD, STT_LANG, TTS_VOICE
 from platform_adapters import Audio
 
 def _env_int(name, default, minimum):
@@ -125,9 +126,18 @@ _mic_muted = False
 
 
 def set_mic_muted(flag):
-    """Mute/unmute the microphone and return the new state."""
+    """Mute/unmute the microphone and return the new state.
+
+    Barge-in is explicitly paused while muted so its capture thread cannot keep
+    the audio device open (media playback and the mic otherwise fight over it).
+    Unmuting resumes normal barge-in detection.
+    """
     global _mic_muted
     _mic_muted = bool(flag)
+    if _mic_muted:
+        pause_barge_in()
+    else:
+        resume_barge_in()
     return _mic_muted
 
 
@@ -174,10 +184,43 @@ def _emit_level(rms):
 # Set by stop_speaking() to cut the current reply short (the GUI Stop button).
 _stop_speaking = threading.Event()
 
+# The active streaming output and its block queue. stop_speaking() uses these
+# to abort the device stream immediately and release a reader blocked on a full
+# queue; _play_tts_stream() clears them in its finally block.
+_tts_playback_lock = threading.Lock()
+_active_tts_stream = None
+_active_tts_queue = None
+
+
+def _set_active_tts_playback(stream=None, blocks=None):
+    """Register the current output stream and queue for stop_speaking()."""
+    global _active_tts_stream, _active_tts_queue
+    with _tts_playback_lock:
+        _active_tts_stream = stream
+        _active_tts_queue = blocks
+
+
+def _drain_queue(blocks):
+    """Discard every queued block without blocking."""
+    if blocks is None:
+        return
+    while True:
+        try:
+            blocks.get_nowait()
+        except queue.Empty:
+            return
+
 
 def stop_speaking():
     """Interrupt the reply currently being spoken, if any."""
     _stop_speaking.set()
+    with _tts_playback_lock:
+        stream = _active_tts_stream
+        blocks = _active_tts_queue
+    if stream is not None:
+        with contextlib.suppress(Exception):
+            stream.abort()
+    _drain_queue(blocks)
 
 
 # Set by stop_listening() to abandon a listen that is still waiting for speech
@@ -193,15 +236,52 @@ def stop_listening():
 # --- barge-in (talking over a reply) ---------------------------------------- #
 # While Jarvis speaks, a monitor thread watches the microphone. If the user's
 # voice stays above this threshold for _BARGE_HOLD seconds, the reply is cut
-# short and the GUI goes back to listening. The threshold is deliberately high so
-# that Jarvis's own voice leaking back from the speakers (echo) does not trigger
-# it; JARVIS_PTT=1 disables barge-in entirely, since push-to-talk already gives
-# the user explicit control of the microphone.
+# short and the GUI goes back to listening. 1200 is normal conversational
+# volume; raise it via JARVIS_BARGE_THRESHOLD if speaker echo triggers false
+# interruptions. JARVIS_PTT=1 disables barge-in entirely, since push-to-talk
+# already gives the user explicit control of the microphone.
 _BARGE_ENABLED = os.getenv("JARVIS_BARGE_IN", "1").strip().lower() not in (
     "0", "false", "no", "off",
 )
-_BARGE_THRESHOLD = _env_int("JARVIS_BARGE_THRESHOLD", 2600, 300)
-_BARGE_HOLD = _env_float("JARVIS_BARGE_HOLD", 0.5, 0.2)
+_BARGE_THRESHOLD = BARGE_THRESHOLD
+_BARGE_HOLD = BARGE_HOLD
+
+# Explicit media/telephony pause. This is separate from ignoring the live audio:
+# the monitor does not even open the capture device while it is set.
+_barge_paused = threading.Event()
+
+
+def pause_barge_in():
+    """Stop barge-in from opening the microphone (used for media playback)."""
+    _barge_paused.set()
+
+
+def resume_barge_in():
+    """Allow barge-in to watch the microphone again."""
+    _barge_paused.clear()
+
+
+def is_barge_in_paused():
+    """True while barge-in is explicitly paused."""
+    return _barge_paused.is_set()
+
+
+# A short, unambiguous interruption spoken *after* barge-in has already cut the
+# reply. This is intentionally stricter than "contains stop": commands such as
+# "stop listening" or "stop the music" must still reach the router.
+_STOP_PHRASE = re.compile(
+    r"^\s*(?:(?:please|okay|ok|hey|jarvis|just|can\s+you|could\s+you|"
+    r"would\s+you)[\s,]+)*"
+    r"(?:stop|shut\s+up|quiet|be\s+quiet|silence)"
+    r"(?:\s+(?:it|now|please|talking|speaking|that|this))*"
+    r"\s*[.!?]*$",
+    re.I,
+)
+
+
+def is_stop_phrase(text):
+    """True for a pure barge-in interruption like "stop" or "shut up"."""
+    return bool(_STOP_PHRASE.match((text or "").strip()))
 
 
 def _ptt_active():
@@ -322,9 +402,9 @@ class BargeInMonitor:
 
     Detection is deliberately conservative: ``hold`` seconds of *consecutive*
     chunks must stay above ``threshold`` before firing. That is long enough for a
-    real spoken interruption and short enough to feel immediate, while the high
-    default threshold rejects the quieter, intermittent echo of Jarvis's own voice
-    coming back through the speakers.
+    real spoken interruption and short enough to feel immediate. The default
+    threshold is tuned for normal conversational volume; raise it if speaker
+    echo from Jarvis's own voice triggers false interruptions.
 
     :meth:`feed` is split out from :meth:`_run` so the detection rule can be
     unit-tested with synthetic PCM, without a microphone or a real thread.
@@ -343,7 +423,8 @@ class BargeInMonitor:
 
     def start(self):
         """Start watching the mic. Returns False when disabled or unavailable."""
-        if not _BARGE_ENABLED or _ptt_active() or _mic_muted:
+        if (not _BARGE_ENABLED or _ptt_active() or _mic_muted
+                or _barge_paused.is_set()):
             return False
         self._stop.clear()
         self._loud = 0
@@ -647,7 +728,7 @@ def _local_transcribe(audio):
                 os.remove(path)
 
 
-def listen(wait=None, *, label=""):
+def listen(wait=None, *, label="", barge=False):
     """Capture one utterance from the microphone via the platform adapter.
 
     Returns the recognised text in lower case, or "" when nothing usable was
@@ -658,6 +739,11 @@ def listen(wait=None, *, label=""):
     Continuous-chat mode passes a longer one: Jarvis then keeps the mic open
     after each reply instead of going to sleep. Pass ``label`` to tag debug
     output (``listen`` vs ``chat``).
+
+    Set ``barge=True`` for the turn immediately after the user talked over a
+    reply. If that turn is a pure interruption ("stop", "shut up", "quiet"), it
+    cuts speech/listening and returns an empty string instead of dispatching a
+    command.
 
     With ``JARVIS_PTT=1`` this becomes push-to-talk: it waits for Enter, records
     until Enter is pressed again or silence is detected, then transcribes. Media
@@ -749,6 +835,14 @@ def listen(wait=None, *, label=""):
     _dbg(f"recognised: {text!r}")
     if not text:
         return ""
+    if barge and is_stop_phrase(text):
+        # The barge-in monitor already started cutting the reply; this catches
+        # the spoken "stop" itself so it is not dispatched as a command or
+        # answered with another sentence.
+        _dbg(f"barge-in stop phrase: {text!r}")
+        stop_speaking()
+        stop_listening()
+        return ""
     print(f"👤 {text}", flush=True)
     return text.lower()
 
@@ -815,15 +909,22 @@ def _pump_envelope(envelope, started):
 # --- streaming TTS ---------------------------------------------------------- #
 # edge-tts emits 24 kHz mono MP3. Waiting for the whole file before playing costs
 # 2-3 seconds on a normal reply. Instead we pipe the MP3 chunks through ffmpeg as
-# they arrive, queue ~0.2 s raw-PCM pygame Sounds back-to-back on one channel,
-# and start the first words while the rest is still being synthesised.
+# they arrive and feed the decoded PCM into one continuous sounddevice stream.
+# The reader blocks when ten blocks are queued, so synthesis cannot race far
+# ahead of playback. pygame is only a fallback for systems without sounddevice.
 _TTS_RATE = 24000
 _TTS_CHANNELS = 1
 _TTS_SAMPLE_WIDTH = 2
 _TTS_BLOCK_SECONDS = 0.20
 _TTS_BLOCK_BYTES = int(_TTS_RATE * _TTS_BLOCK_SECONDS) * _TTS_SAMPLE_WIDTH
-_TTS_LEAD_SECONDS = 0.60        # max queued-ahead audio; keeps the levels in sync
-_TTS_QUEUE_BLOCKS = 96          # bounded backpressure (~19 s of decoded audio)
+# Larger fallback chunks avoid pygame clipping the edges of tiny Sounds.
+_TTS_FALLBACK_BLOCK_SECONDS = 0.50
+_TTS_FALLBACK_BLOCK_BYTES = (
+    int(_TTS_RATE * _TTS_FALLBACK_BLOCK_SECONDS) * _TTS_SAMPLE_WIDTH
+)
+_TTS_QUEUE_BLOCKS = 10          # bounded backpressure; the reader blocks when full
+_TTS_FALLBACK_LEAD_SECONDS = 1.5  # max audio queued inside the pygame channel
+_TTS_PYGAME_BUFFER = 2048       # ~85 ms at 24 kHz mono S16_LE
 _TTS_STREAM_ENABLED = os.getenv("JARVIS_TTS_STREAM", "1").strip().lower() not in (
     "0", "false", "no", "off",
 )
@@ -846,6 +947,59 @@ def _start_tts_decoder():
         )
     except (OSError, ValueError):
         return None
+
+
+def _open_sounddevice_stream():
+    """Open one continuous 24 kHz mono S16_LE output stream.
+
+    Returns None when sounddevice/PortAudio is unavailable or the device cannot
+    be opened, so the caller can fall back to the pygame queue player.
+    """
+    try:
+        import sounddevice as sd
+    except Exception as exc:
+        _dbg(f"sounddevice unavailable: {type(exc).__name__}: {exc}")
+        return None
+
+    stream = None
+    try:
+        # Let PortAudio choose a generous device buffer: a larger cushion is
+        # smoother than a low-latency stream when edge-tts arrives in bursts.
+        stream = sd.RawOutputStream(
+            samplerate=_TTS_RATE,
+            channels=_TTS_CHANNELS,
+            dtype="int16",
+            blocksize=0,
+        )
+        stream.start()
+        return stream
+    except Exception as exc:
+        _dbg(f"sounddevice output unavailable: {type(exc).__name__}: {exc}")
+        if stream is not None:
+            with contextlib.suppress(Exception):
+                stream.close()
+        return None
+
+
+def _init_pygame_tts():
+    """Initialise the fallback mixer with a larger buffer and 24 kHz mono output."""
+    with contextlib.suppress(Exception):
+        pygame.mixer.quit()
+    pre_init = getattr(pygame.mixer, "pre_init", None)
+    if pre_init is not None:
+        with contextlib.suppress(Exception):
+            pre_init(
+                frequency=_TTS_RATE,
+                size=-16,
+                channels=_TTS_CHANNELS,
+                buffer=_TTS_PYGAME_BUFFER,
+            )
+    pygame.mixer.init(
+        frequency=_TTS_RATE,
+        size=-16,
+        channels=_TTS_CHANNELS,
+        buffer=_TTS_PYGAME_BUFFER,
+    )
 
 
 def _synthesize_to_decoder(text, stdin, stop_event):
@@ -876,23 +1030,53 @@ def _synthesize_to_decoder(text, stdin, stop_event):
         _dbg(f"streaming TTS synthesis failed: {type(exc).__name__}: {exc}")
 
 
-def _read_decoded_pcm(stdout, blocks, stop_event):
-    """Read decoded PCM blocks from ffmpeg and hand them to the playback loop."""
+def _read_decoded_pcm(stdout, blocks, stop_event,
+                      block_bytes=_TTS_BLOCK_BYTES):
+    """Read decoded PCM and apply backpressure through a bounded queue.
+
+    Reads from an unbuffered pipe can be short, so bytes are accumulated into
+    whole blocks first. The reader blocks when ``blocks`` is full, so ffmpeg and
+    synthesis cannot run ahead of playback. The short put timeout keeps Stop
+    responsive even if the consumer has gone away.
+    """
+    buf = bytearray()
+
+    def deliver(data):
+        while not stop_event.is_set():
+            try:
+                blocks.put(data, timeout=0.1)
+                return
+            except queue.Full:
+                continue
+
     try:
         while not stop_event.is_set():
-            data = stdout.read(_TTS_BLOCK_BYTES)
-            if not data:
-                break
-            # pygame.mixer.Sound needs whole samples.
-            if len(data) % _TTS_SAMPLE_WIDTH:
-                data = data[:len(data) - (len(data) % _TTS_SAMPLE_WIDTH)]
-            if data:
-                blocks.put(data, timeout=0.5)
-    except (OSError, ValueError, queue.Full):
+            if len(buf) < block_bytes:
+                data = stdout.read(block_bytes - len(buf))
+                if not data:
+                    break
+                buf.extend(data)
+                continue
+            block = bytes(buf[:block_bytes])
+            del buf[:block_bytes]
+            # Both RawOutputStream and pygame.mixer.Sound need whole samples.
+            if len(block) % _TTS_SAMPLE_WIDTH:
+                block = block[:len(block) - (len(block) % _TTS_SAMPLE_WIDTH)]
+            if block:
+                deliver(block)
+    except (OSError, ValueError):
         pass
     finally:
-        with contextlib.suppress(Exception):
-            blocks.put(None, timeout=0.5)
+        if buf and not stop_event.is_set():
+            block = bytes(buf)
+            if len(block) % _TTS_SAMPLE_WIDTH:
+                block = block[:len(block) - (len(block) % _TTS_SAMPLE_WIDTH)]
+            if block:
+                deliver(block)
+        # Wake the player at EOF. On Stop the player is already exiting and the
+        # queue may intentionally stay full, so do not wait forever here.
+        if not stop_event.is_set():
+            deliver(None)
 
 
 def _pcm_level(data):
@@ -908,16 +1092,27 @@ def _flush_levels(pending, now):
 
 
 def _play_tts_stream(text):
-    """Play edge-tts audio progressively through ffmpeg + pygame.
+    """Play edge-tts audio progressively through ffmpeg + sounddevice.
 
-    Returns False only when no ffmpeg decoder could be started (the caller then
-    uses the whole-file fallback). Once streaming has begun a failure is not
-    replayed from the start, which would repeat the reply.
+    One continuous RawOutputStream is the primary path. If sounddevice or
+    PortAudio is unavailable, a single pygame Channel is fed with larger 0.5 s
+    Sounds as a fallback. Returns False only when no ffmpeg decoder could be
+    started (the caller then uses the whole-file fallback). Once streaming has
+    begun a failure is not replayed from the start, which would repeat words the
+    user already heard.
     """
     proc = _start_tts_decoder()
     if proc is None:
         return False
 
+    raw_stream = _open_sounddevice_stream()
+    block_bytes = (
+        _TTS_BLOCK_BYTES if raw_stream is not None
+        else _TTS_FALLBACK_BLOCK_BYTES
+    )
+
+    # A small bounded queue is the backpressure mechanism: the reader blocks on
+    # put() when the player has not consumed the decoded audio yet.
     blocks = queue.Queue(maxsize=_TTS_QUEUE_BLOCKS)
     writer = threading.Thread(
         target=_synthesize_to_decoder,
@@ -926,9 +1121,10 @@ def _play_tts_stream(text):
     )
     reader = threading.Thread(
         target=_read_decoded_pcm,
-        args=(proc.stdout, blocks, _stop_speaking),
+        args=(proc.stdout, blocks, _stop_speaking, block_bytes),
         daemon=True, name="jarvis-tts-reader",
     )
+    _set_active_tts_playback(raw_stream, blocks)
     writer.start()
     reader.start()
 
@@ -938,79 +1134,125 @@ def _play_tts_stream(text):
     enqueued = 0.0
     started = None
     mixer_started = False
+    first_sound = True
     try:
-        if pygame.mixer.get_init() != (_TTS_RATE, -16, _TTS_CHANNELS):
-            with contextlib.suppress(Exception):
-                pygame.mixer.quit()
-            pygame.mixer.init(frequency=_TTS_RATE, size=-16,
-                              channels=_TTS_CHANNELS)
-        mixer_started = True
-        channel = pygame.mixer.Channel(0)
-        clock = pygame.time.Clock()
-
-        while not _stop_speaking.is_set():
-            try:
-                data = blocks.get(timeout=0.05)
-            except queue.Empty:
-                data = b""
-            now = time.monotonic()
-            _flush_levels(pending, now)
-            if data is None:
-                break
-            if not data:
-                continue
-
-            # After an underrun the queued audio has already finished: restart
-            # the clock so the lead calculation stays honest.
-            if started is None or enqueued - (now - started) <= 0:
-                started = now
-                enqueued = 0.0
-
-            sound = pygame.mixer.Sound(buffer=data)
-            if channel.get_busy():
-                channel.queue(sound)
-            else:
-                channel.play(sound)
-            duration = len(data) / float(_TTS_RATE * _TTS_SAMPLE_WIDTH)
-            pending.append((started + enqueued, _pcm_level(data)))
-            enqueued += duration
-
-            # Synthesis can be much faster than playback. Keep only a short lead
-            # so the envelope stays close to what is actually audible and a long
-            # reply is not buffered entirely in memory.
+        if raw_stream is not None:
             while not _stop_speaking.is_set():
+                try:
+                    data = blocks.get(timeout=0.05)
+                except queue.Empty:
+                    data = b""
                 now = time.monotonic()
                 _flush_levels(pending, now)
-                if enqueued - (now - started) <= _TTS_LEAD_SECONDS:
+                if data is None:
                     break
+                if not data:
+                    continue
+
+                if started is None:
+                    started = time.monotonic()
+                try:
+                    # RawOutputStream.write() blocks until PortAudio has room,
+                    # which also keeps our queue bounded end-to-end.
+                    raw_stream.write(data)
+                except Exception as exc:
+                    if not _stop_speaking.is_set():
+                        _dbg("sounddevice playback failed: "
+                             f"{type(exc).__name__}: {exc}")
+                    break
+                duration = len(data) / float(_TTS_RATE * _TTS_SAMPLE_WIDTH)
+                pending.append((started + enqueued, _pcm_level(data)))
+                enqueued += duration
+                _flush_levels(pending, time.monotonic())
+        else:
+            _init_pygame_tts()
+            mixer_started = True
+            channel = pygame.mixer.Channel(0)
+            clock = pygame.time.Clock()
+
+            while not _stop_speaking.is_set():
+                try:
+                    data = blocks.get(timeout=0.05)
+                except queue.Empty:
+                    data = b""
+                now = time.monotonic()
+                _flush_levels(pending, now)
+                if data is None:
+                    break
+                if not data:
+                    continue
+
+                # After an underrun the channel has already gone silent: restart
+                # the lead clock so the next block is not counted as backlog.
+                if started is None or enqueued - (now - started) <= 0:
+                    started = now
+                    enqueued = 0.0
+                sound = pygame.mixer.Sound(buffer=data)
+                if first_sound or not channel.get_busy():
+                    channel.play(sound)
+                    first_sound = False
+                else:
+                    channel.queue(sound)
+                duration = len(data) / float(_TTS_RATE * _TTS_SAMPLE_WIDTH)
+                pending.append((started + enqueued, _pcm_level(data)))
+                enqueued += duration
+                _flush_levels(pending, time.monotonic())
+
+                # channel.queue() accepts audio instantly, so wait once a short
+                # lead is buffered. That lets the bounded reader queue fill and
+                # block, instead of letting synthesis race ahead indefinitely.
+                while not _stop_speaking.is_set():
+                    now = time.monotonic()
+                    _flush_levels(pending, now)
+                    if enqueued - (now - started) <= _TTS_FALLBACK_LEAD_SECONDS:
+                        break
+                    clock.tick(30)
+
+            # Let already-queued fallback audio finish unless interrupted.
+            while not _stop_speaking.is_set() and channel.get_busy():
+                _flush_levels(pending, time.monotonic())
                 clock.tick(30)
 
-        # Let already-queued audio finish unless the user interrupted us.
-        while not _stop_speaking.is_set() and channel.get_busy():
-            _flush_levels(pending, time.monotonic())
-            clock.tick(30)
         if not _stop_speaking.is_set():
             _flush_levels(pending, time.monotonic() + 1e9)
     finally:
-        if channel is not None:
+        try:
+            # Release a reader blocked on put() before waiting for it to exit.
+            _drain_queue(blocks)
+            if raw_stream is not None:
+                with contextlib.suppress(Exception):
+                    if _stop_speaking.is_set():
+                        raw_stream.abort()
+                    else:
+                        raw_stream.stop()
+                # The stream is drained/aborted now; do not let a concurrent
+                # Stop call abort() while close() is running.
+                _set_active_tts_playback(None, None)
+                with contextlib.suppress(Exception):
+                    raw_stream.close()
+            if channel is not None:
+                with contextlib.suppress(Exception):
+                    channel.stop()
             with contextlib.suppress(Exception):
-                channel.stop()
-        with contextlib.suppress(Exception):
-            if proc.stdin is not None:
-                proc.stdin.close()
-        with contextlib.suppress(Exception):
-            proc.terminate()
-        with contextlib.suppress(Exception):
-            proc.wait(timeout=1.0)
-        with contextlib.suppress(Exception):
-            if proc.stdout is not None:
-                proc.stdout.close()
-        writer.join(timeout=0.5)
-        reader.join(timeout=0.5)
-        if mixer_started:
+                if proc.stdin is not None:
+                    proc.stdin.close()
             with contextlib.suppress(Exception):
-                pygame.mixer.quit()
-        _emit_value(0.0)
+                proc.terminate()
+            with contextlib.suppress(Exception):
+                proc.wait(timeout=1.0)
+            with contextlib.suppress(Exception):
+                if proc.stdout is not None:
+                    proc.stdout.close()
+            writer.join(timeout=0.5)
+            reader.join(timeout=0.5)
+            if mixer_started:
+                with contextlib.suppress(Exception):
+                    pygame.mixer.quit()
+        finally:
+            # Keep the stream registered through stop()/close() so a Stop press
+            # during the final drain can still abort it immediately.
+            _set_active_tts_playback(None, None)
+            _emit_value(0.0)
     return True
 
 

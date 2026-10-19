@@ -11,6 +11,15 @@ import pytest
 import desktop
 from platform_adapters import common, System
 
+@pytest.fixture(autouse=True)
+def _reset_media_mic():
+    """play_youtube mutes the process-wide mic; never leak that into other tests."""
+    import voice
+    voice.set_mic_muted(False)
+    yield
+    voice.set_mic_muted(False)
+
+
 FAKE_APPS = [
     desktop.App("org.telegram.desktop", "Telegram Desktop", "telegram-desktop",
                 ["chat", "messenger"], Path("/a/telegram.desktop")),
@@ -405,6 +414,24 @@ def test_extract_media_query_still_drops_filler_phrases():
 def test_play_youtube_asks_when_query_is_empty(monkeypatch):
     monkeypatch.setattr(common, "has", lambda tool: True)
     assert desktop.play_youtube("play the song on youtube") == "What should I play?"
+
+
+def test_play_youtube_releases_the_mic_before_media(monkeypatch):
+    """YouTube must not compete with barge-in for the audio device."""
+    import voice
+
+    calls = []
+    monkeypatch.setattr(voice, "set_mic_muted",
+                        lambda muted: calls.append(("muted", muted)) or muted)
+    monkeypatch.setattr(voice, "pause_barge_in",
+                        lambda: calls.append(("paused", None)))
+    monkeypatch.setattr(common, "has", lambda tool: False)
+    monkeypatch.setattr(desktop, "_open_url", lambda url: True)
+
+    desktop.play_youtube("despacito")
+
+    assert ("muted", True) in calls
+    assert ("paused", None) in calls
 
 
 def test_play_youtube_uses_top_ytdlp_result(monkeypatch):

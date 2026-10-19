@@ -77,6 +77,30 @@ def test_creator_questions_are_answered_locally(phrase):
     )
 
 
+def test_mic_can_be_muted_and_unmuted_by_voice(monkeypatch):
+    import voice
+
+    calls = []
+    monkeypatch.setattr(voice, "set_mic_muted",
+                        lambda muted: calls.append(muted) or muted)
+
+    assert router.try_local("turn off the mic") == "Mic muted."
+    assert router.try_local("mute yourself") == "Mic muted."
+    assert router.try_local("mute your mic") == "Mic muted."
+    assert router.try_local("stop listening") == "Mic muted."
+    assert router.try_local("turn on the mic") == "Mic unmuted."
+    assert router.try_local("unmute yourself") == "Mic unmuted."
+    assert router.try_local("unmute mic") == "Mic unmuted."
+    assert router.try_local("start listening") == "Mic unmuted."
+    assert calls == [True, True, True, True, False, False, False, False]
+
+
+def test_mic_commands_do_not_steal_volume_or_media(monkeypatch):
+    calls = _spy(monkeypatch, "volume_control", "Volume muted.")
+    assert router.try_local("mute") == "Volume muted."
+    assert calls[0] == (("mute", None), {})
+
+
 # --------------------------------------------------------------------------- #
 # opening apps
 # --------------------------------------------------------------------------- #

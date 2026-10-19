@@ -81,7 +81,10 @@ def test_ask_image_survives_api_error(monkeypatch, tmp_path):
                     raise RuntimeError("model exploded")
 
     monkeypatch.setattr(vision, "_client", Boom)
-    assert "couldn't look" in vision.ask_image(_png(tmp_path), "hi").lower()
+    reply = vision.ask_image(_png(tmp_path), "hi").lower()
+    assert "cannot access my vision" in reply
+    assert "api key" in reply and "rate limits" in reply
+    assert "model exploded" not in reply, "raw provider errors must stay internal"
 
 
 # --------------------------------------------------------------------------- #

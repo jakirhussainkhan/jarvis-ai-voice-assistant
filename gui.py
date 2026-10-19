@@ -32,7 +32,7 @@ from PyQt5.QtWidgets import (QApplication, QHBoxLayout, QLabel, QMenu,
 import voice
 from config import CHAT_ON, CHAT_TIMEOUT
 from icon_art import render_icon
-from main import handle, is_exit
+from main import handle, is_exit, is_shutdown
 from memory import Memory
 from voice import BargeInMonitor, listen, speak
 import wake
@@ -40,6 +40,8 @@ import wake
 # What Jarvis says when a continuous session ends (you said an exit word, went
 # quiet, or pressed Stop).
 _SESSION_END = "Session over. See you soon, sir."
+# Explicit "close yourself" / "shut down Jarvis" commands quit the app itself.
+_FAREWELL = "Goodbye, sir"
 
 IDLE = "Idle"
 LISTENING = "Listening..."
@@ -368,6 +370,8 @@ class JarvisWorker(QThread):
     message = pyqtSignal(str)
     heard = pyqtSignal(str)
     level = pyqtSignal(float)
+    mic_changed = pyqtSignal(bool)
+    exit_requested = pyqtSignal()
 
     def __init__(self, memory, parent=None, chat=False, chat_timeout=CHAT_TIMEOUT):
         super().__init__(parent)
@@ -387,8 +391,12 @@ class JarvisWorker(QThread):
                 self.state_changed.emit(LISTENING)
                 # Talking back and forth should feel natural: the wait between
                 # turns is the chat timeout, so Jarvis stays with you instead of
-                # going to sleep after 30 s.
-                user = listen(None if first_turn else self.chat_timeout)
+                # going to sleep after 30 s. If the previous turn was cut short
+                # by barge-in, tell listen() so a pure "stop" is not dispatched.
+                was_barge = self._barged_in
+                self._barged_in = False
+                user = listen(None if first_turn else self.chat_timeout,
+                              barge=was_barge)
                 first_turn = False
                 if not user:
                     # You went quiet (or pressed Stop / muted the mic): end the
@@ -399,9 +407,16 @@ class JarvisWorker(QThread):
                 # colours here.
                 self.heard.emit(user)
 
+                if is_shutdown(user):
+                    # Explicit "close yourself" / "shut down Jarvis" closes the
+                    # app, not just the conversation.
+                    self.state_changed.emit(SPEAKING)
+                    speak(_FAREWELL)
+                    self.exit_requested.emit()
+                    return
                 if is_exit(user):
-                    # A spoken exit word must end the session by voice, too --
-                    # no need to reach for the terminal.
+                    # A spoken exit word ends the session by voice, but the app
+                    # stays available in the tray.
                     self.state_changed.emit(SPEAKING)
                     speak(_SESSION_END)
                     return
@@ -410,6 +425,9 @@ class JarvisWorker(QThread):
                 # main.handle() is the single dispatch path: it resolves any pending
                 # confirmation, then tries the router and finally the agent.
                 reply, _kind, _tokens = handle(user, self.memory)
+                # A local command can mute/unmute the mic (media playback mutes
+                # it), so keep the GUI button and tray in sync.
+                self.mic_changed.emit(voice.is_mic_muted())
 
                 self.state_changed.emit(SPEAKING)
                 if self._speak_with_barge_in(reply):
@@ -425,7 +443,9 @@ class JarvisWorker(QThread):
         finally:
             voice.set_level_sink(None)
             self.level.emit(0.0)
-            self.state_changed.emit(IDLE)
+            # A voice/media command may have muted the mic: leave the card in
+            # the muted state instead of pretending it is ready to listen.
+            self.state_changed.emit(MUTED if voice.is_mic_muted() else IDLE)
 
     def _barge_monitor(self, on_barge):
         """Build the monitor (a seam tests can replace without a microphone)."""
@@ -711,13 +731,20 @@ class JarvisWidget(QWidget):
         """Mute/unmute the microphone and reflect it everywhere."""
         self.set_mic_muted(not voice.is_mic_muted())
 
-    def set_mic_muted(self, muted):
-        muted = voice.set_mic_muted(muted)
+    def _sync_mic_ui(self, muted):
+        """Reflect the real voice mute state without changing it (worker signal)."""
         self.mic_button.setChecked(muted)
         self.mic_button.setText("🔇 Muted" if muted else "🎤 Mic On")
-        self.mute_action.setChecked(muted)
-        if self.tray is not None:
-            self.tray.sync_mute(muted)
+        action = getattr(self, "mute_action", None)
+        if action is not None:
+            action.setChecked(muted)
+        tray = getattr(self, "tray", None)
+        if tray is not None:
+            tray.sync_mute(muted)
+
+    def set_mic_muted(self, muted):
+        muted = voice.set_mic_muted(muted)
+        self._sync_mic_ui(muted)
         if muted:
             # Muting the mic must also silence the wake word -- no mic, no audio.
             if self._wake is not None:
@@ -834,6 +861,8 @@ class JarvisWidget(QWidget):
         self.worker.message.connect(self._log)
         self.worker.heard.connect(self._on_heard)
         self.worker.level.connect(self._on_level)
+        self.worker.mic_changed.connect(self._sync_mic_ui)
+        self.worker.exit_requested.connect(self.quit)
         self.worker.start()
 
     def toggle_visible(self):

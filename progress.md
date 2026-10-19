@@ -14,10 +14,10 @@ is installed.
 | Area | State |
 | --- | --- |
 | CLI loop (`main.py`) | Working |
-| Voice I/O (STT + TTS) | Working, English-only (STT via `arecord` + Google; streaming TTS) |
+| Voice I/O (STT + TTS) | Working, English-only (STT via `arecord` + Google; continuous sounddevice streaming TTS) |
 | Local command router (offline-first) | Working (apps, folders, windows, media, volume, brightness, clipboard, screenshot, lock, status, time, dictated commands) |
 | Groq agent + 41 tools | Working (needs `GROQ_API_KEY`) |
-| Screen vision (read + operate) | Working on the real screen (`qwen/qwen3.8-27b`) |
+| Screen vision (read + operate) | Working on the real screen (`qwen/qwen3.8-27b`, verified live) |
 | Live internet (search/page/Wikipedia/weather) | Working (keyless, verified live) |
 | Guarded terminal | Working (3-layer guard; power/session commands refused in code) |
 | Offline mode (`main.py --offline`) | Working |
@@ -29,9 +29,24 @@ is installed.
 | Timers / reminders | Working |
 | Offline wake word ("Hey Jarvis") | **Built + unit-tested; NOT yet verified live** (needs `pip install openwakeword onnxruntime`) |
 | Desktop launcher (`run.sh` + app-menu entry) | Working (verified: `desktop-file-validate` clean, GUI starts) |
-| Tests | `pytest` suite — **448 passed, 1 skipped** |
+| Tests | `pytest` suite — **466 passed, 1 skipped** |
 | Spoken voice | `en-GB-RyanNeural` (British male); override with `JARVIS_TTS_VOICE` |
-| Published | GitHub, tags **`v1.0.1`**…**`v1.6.0`** (README + MIT LICENSE) |
+| Published | GitHub, tags **`v1.0.1`**…**`v1.7.0`** (README + MIT LICENSE) |
+
+## Audio Overhaul & Critical Bug Fixes (2026-10-19, v1.7.0)
+
+- **Audio:** Replaced Pygame chunking with a continuous `sounddevice.RawOutputStream`
+  (24000 Hz, int16) with bounded backpressure for smooth, stutter-free TTS.
+- **Vision:** Updated Groq vision handling after `llama-3.2-11b` was
+  decommissioned; live-verified `qwen/qwen3.8-27b` and added a graceful
+  API-key/rate-limit fallback message.
+- **Barge-in:** Lowered the RMS threshold to **1200** and hold to **0.3 s**.
+  Added explicit voice-stop phrases ("stop", "shut up", "quiet").
+- **Exit & Mic:** Added voice commands for "close yourself", "shut down Jarvis",
+  "turn off the mic", "turn on the mic", and related variants.
+- **Media:** `play_youtube()` now mutes the mic and pauses barge-in to prevent
+  audio conflicts, with GUI button/tray synchronization.
+- **Tests:** Expanded suite to **466 passed, 1 skipped.**
 
 ## Creator Identity & CI/CD Pipeline (2026-10-19, v1.6.0)
 

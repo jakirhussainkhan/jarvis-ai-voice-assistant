@@ -431,6 +431,21 @@ def search_youtube(query):
 _YT_ID = re.compile(r"^[A-Za-z0-9_-]{6,}$")
 
 
+def _release_mic_for_media():
+    """Mute the mic and pause barge-in before media starts.
+
+    Browsers and the capture process otherwise compete for the same audio
+    device, which makes YouTube stutter, mute or stop. Importing voice lazily
+    avoids the desktop <-> voice import cycle.
+    """
+    try:
+        import voice
+        voice.set_mic_muted(True)
+        voice.pause_barge_in()
+    except Exception as exc:                       # never block playback
+        _dbg(f"could not pause the mic for media: {type(exc).__name__}: {exc}")
+
+
 def play_youtube(query):
     """Play the top yt-dlp result for a song/video name; else open the results.
 
@@ -443,6 +458,9 @@ def play_youtube(query):
     query = extract_media_query(query)
     if not query:
         return "What should I play?"
+    # Release the microphone before resolving/opening the video: the browser
+    # needs the audio device, and barge-in must not grab it mid-playback.
+    _release_mic_for_media()
     if has("yt-dlp"):
         rc, out = _run(
             ["yt-dlp", f"ytsearch1:{query}", "--flat-playlist",

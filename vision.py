@@ -25,10 +25,15 @@ from pathlib import Path
 from openai import OpenAI
 
 import desktop
-from config import API_KEY, BASE_URL, SCREEN_MAX_WIDTH, SCREEN_STEPS, VISION_MODEL
+from config import (API_KEY, API_TIMEOUT, BASE_URL, SCREEN_MAX_WIDTH,
+                    SCREEN_STEPS, VISION_MODEL)
 from digest import digest_text
 
-_client = OpenAI(api_key=API_KEY, base_url=BASE_URL) if API_KEY else None
+_client = (
+    OpenAI(api_key=API_KEY, base_url=BASE_URL, timeout=API_TIMEOUT,
+           max_retries=0)
+    if API_KEY else None
+)
 
 _SYSTEM = (
     "You are Jarvis, looking at a screenshot of the user's Linux desktop. Reply "
@@ -141,7 +146,11 @@ def ask_image(path, question, model=None, max_tokens=500, system=_SYSTEM):
             max_tokens=max_tokens,
         )
     except Exception as exc:                      # network / model errors
-        return f"I couldn't look at the screen: {exc}"
+        # Keep the raw exception in the terminal log for debugging, but never
+        # put a traceback or provider internals in the spoken reply.
+        print(f"[vision] request failed: {type(exc).__name__}: {exc}", flush=True)
+        return ("I cannot access my vision right now, check the API key or "
+                "rate limits.")
     return (resp.choices[0].message.content or "").strip() or "I couldn't read the screen."
 
 

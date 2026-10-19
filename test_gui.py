@@ -147,7 +147,7 @@ def test_on_heard_truncates_long_phrases(app):
 
 
 def test_worker_clears_the_level_sink_when_done(app, monkeypatch):
-    monkeypatch.setattr(gui, "listen", lambda: "")
+    monkeypatch.setattr(gui, "listen", lambda *args, **kwargs: "")
     worker = gui.JarvisWorker(Memory())
     levels = []
     worker.level.connect(levels.append)
@@ -193,7 +193,7 @@ def test_worker_keeps_talking_until_silence(app, monkeypatch):
     listened = []
     worker.heard.connect(heard.append)
 
-    def record_listen(wait=None):
+    def record_listen(wait=None, **kwargs):
         listened.append(wait)
         return next(turns, "")
 
@@ -306,6 +306,8 @@ class FakeWorker:
         self.message = Signal()
         self.heard = Signal()
         self.level = Signal()
+        self.mic_changed = Signal()
+        self.exit_requested = Signal()
         self.running = False
 
     def isRunning(self):
@@ -625,6 +627,35 @@ def test_barge_in_ignores_echo_and_short_noise(app):
     assert monitor.detected is False
 
 
+def test_barge_in_defaults_are_sensitive_enough_for_normal_speech(app):
+    import config
+
+    assert voice._BARGE_THRESHOLD == config.BARGE_THRESHOLD == 1200
+    assert voice._BARGE_HOLD == config.BARGE_HOLD == 0.3
+
+    monitor = voice.BargeInMonitor()
+    assert monitor.threshold == 1200
+    assert monitor.required == 3
+    assert monitor.feed(_pcm(1300)) is False
+    assert monitor.feed(_pcm(1300)) is False
+    assert monitor.feed(_pcm(1300)) is True
+
+
+def test_barge_in_can_be_explicitly_paused_for_media(app, monkeypatch):
+    monkeypatch.setattr(voice, "_BARGE_ENABLED", True)
+    monkeypatch.setattr(voice, "_ptt_active", lambda: False)
+    voice.set_mic_muted(False)
+    voice.pause_barge_in()
+
+    monitor = voice.BargeInMonitor()
+    assert monitor.start() is False
+    assert monitor._thread is None
+    assert voice.is_barge_in_paused() is True
+
+    voice.resume_barge_in()
+    assert voice.is_barge_in_paused() is False
+
+
 def test_barge_in_is_disabled_in_push_to_talk(app, monkeypatch):
     monkeypatch.setattr(voice, "_BARGE_ENABLED", True)
     monkeypatch.setattr(voice, "_ptt_active", lambda: True)
@@ -688,4 +719,42 @@ def test_worker_returns_to_listening_after_barge_in(app, monkeypatch):
     assert spoken == ["reply to first", "reply to second"]
     assert states.count(gui.LISTENING) >= 2
     assert states[-1] == gui.IDLE
+
+
+def test_worker_syncs_mic_state_after_a_media_command(app, monkeypatch):
+    """play_youtube mutes voice directly; the worker tells the GUI to update."""
+    turns = iter(["play despacito", ""])
+    monkeypatch.setattr(gui, "listen", lambda *a, **k: next(turns, ""))
+
+    def fake_handle(_text, _memory):
+        voice.set_mic_muted(True)
+        return "Playing.", "local", 0
+
+    monkeypatch.setattr(gui, "handle", fake_handle)
+    monkeypatch.setattr(gui, "speak", lambda reply: None)
+
+    worker = gui.JarvisWorker(Memory(), chat=True)
+    mute_states, ui_states = [], []
+    worker.mic_changed.connect(mute_states.append)
+    worker.state_changed.connect(ui_states.append)
+
+    worker.run()
+
+    assert mute_states == [True]
+    assert ui_states[-1] == gui.MUTED
+
+
+def test_worker_explicit_shutdown_requests_app_quit(app, monkeypatch):
+    monkeypatch.setattr(gui, "listen", lambda *a, **k: "close yourself")
+    spoken = []
+    monkeypatch.setattr(gui, "speak", spoken.append)
+
+    worker = gui.JarvisWorker(Memory(), chat=True)
+    exits = []
+    worker.exit_requested.connect(lambda: exits.append(1))
+
+    worker.run()
+
+    assert spoken == ["Goodbye, sir"]
+    assert exits == [1]
 
