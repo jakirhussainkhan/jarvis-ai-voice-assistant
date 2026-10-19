@@ -10,7 +10,6 @@ if os.path.exists(os.environ.get("XDG_RUNTIME_DIR", "") + "/pulse/native"):
 import array
 import asyncio
 import contextlib
-import math
 import select
 import subprocess
 import sys
@@ -25,6 +24,7 @@ import speech_recognition as sr
 
 import desktop
 from config import STT_LANG, TTS_VOICE
+from platform_adapters import Audio
 
 def _env_int(name, default, minimum):
     """Read an int from the environment, clamped and never raising."""
@@ -58,15 +58,15 @@ _RECOGNIZE_TIMEOUT = 15    # max seconds for the speech-to-text HTTP round-trip
 # while speech lands in the thousands, so 300 separates the two cleanly.
 _ENERGY_THRESHOLD = 300
 
-# Capture format. arecord streams headerless S16_LE mono PCM and we wrap it in
+# Capture format. The Linux adapter streams headerless S16_LE mono PCM from
+# arecord (Windows/macOS use sounddevice); either way we wrap it in
 # sr.AudioData(data, _SAMPLE_RATE, _SAMPLE_WIDTH) before Google STT.
 _SAMPLE_RATE = 16000
 _SAMPLE_WIDTH = 2                       # bytes per sample (S16_LE)
 _CHANNELS = 1
 
 # We read (and RMS-gate) fixed 0.1 s chunks ourselves instead of letting PyAudio
-# / PortAudio own the stream: PortAudio never saw this machine's mic, while
-# arecord through the system default does (see progress.md).
+# / PortAudio own the stream, so the platform adapter only has to deliver bytes.
 _CHUNK_SECONDS = 0.1
 _CHUNK_FRAMES = int(_SAMPLE_RATE * _CHUNK_SECONDS)   # 1600
 _CHUNK_BYTES = _CHUNK_FRAMES * _SAMPLE_WIDTH         # 3200
@@ -254,55 +254,24 @@ def _mic_device():
 
 
 def arecord_command(device=None, *, seconds=None, output=None, fmt="raw"):
-    """Build an ``arecord`` command for the shared capture format.
+    """Build the platform recorder command for the shared capture format.
 
     ``fmt="raw"`` streams headerless PCM (used by :func:`listen`); ``fmt="wav"``
     writes a self-describing WAV (used by ``test_mic.py``). ``seconds`` limits
-    the recording and ``output`` names a file (default: stdout).
+    the recording and ``output`` names a file (default: stdout). The actual
+    command is built by the platform adapter (``arecord`` on Linux).
     """
-    cmd = [
-        "arecord",
-        "-D", device or _mic_device(),
-        "-f", "S16_LE",
-        "-r", str(_SAMPLE_RATE),
-        "-c", str(_CHANNELS),
-        "-q",
-        "-t", fmt,
-    ]
-    if seconds is not None:
-        # arecord's -d takes whole seconds only.
-        cmd += ["-d", str(max(1, math.ceil(seconds)))]
-    if output is not None:
-        cmd.append(str(output))
-    return cmd
+    return Audio.record_command(device, seconds=seconds, output=output, fmt=fmt)
 
 
 def _spawn_arecord(device=None):
-    """Start ``arecord`` streaming raw PCM to a pipe."""
-    return subprocess.Popen(
-        arecord_command(device),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        bufsize=0,
-    )
+    """Start a streaming recorder through the platform adapter."""
+    return Audio.spawn_recorder(device)
 
 
 def _stop_arecord(proc):
-    """Terminate an arecord subprocess and reap it (never raises)."""
-    if proc is None:
-        return
-    with contextlib.suppress(Exception):
-        if proc.stdout:
-            proc.stdout.close()
-    if proc.poll() is None:
-        with contextlib.suppress(Exception):
-            proc.terminate()
-        try:
-            proc.wait(timeout=1)
-        except Exception:
-            with contextlib.suppress(Exception):
-                proc.kill()
-                proc.wait(timeout=1)
+    """Terminate a recorder process started by :func:`_spawn_arecord`."""
+    Audio.stop_recorder(proc)
 
 
 def _read_chunk(stream, fd, deadline):
@@ -513,7 +482,7 @@ def _ptt_stop_reader(stop_event):
 
 
 def listen(wait=None, *, label=""):
-    """Capture one utterance from the microphone via ``arecord``.
+    """Capture one utterance from the microphone via the platform adapter.
 
     Returns the recognised text in lower case, or "" when nothing usable was
     heard (timeout, silence, or no microphone). Bounded by the *_TIMEOUT

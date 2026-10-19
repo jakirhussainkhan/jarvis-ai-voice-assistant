@@ -1,14 +1,22 @@
-# Jarvis — Voice Assistant for Linux
+# Jarvis — Cross-Platform Voice Assistant
 
 **Version 1.0.11**
 
-A voice-controlled desktop assistant for Linux that can *see* your screen, use the
-internet, and operate the terminal. You speak a command; Jarvis either handles it
-**locally and offline** (regex router — no API call) or hands it to a
-**Groq-backed agent** that can call 40 tools, then answers out loud in English.
-Speech recognition and replies are **English-only by design**. A PyQt5 "Arc
-Reactor" widget lives in the system tray and talks when you click it — or when you
-just say **"Hey Jarvis"**, once the optional offline wake word is installed.
+A voice-controlled desktop assistant for **Linux, Windows and macOS** that can
+*see* your screen, use the internet, and operate the terminal. You speak a
+command; Jarvis either handles it **locally and offline** (regex router — no API
+call) or hands it to a **Groq-backed agent** that can call 40 tools, then answers
+out loud in English. Speech recognition and replies are **English-only by
+design**. A PyQt5 "Arc Reactor" widget lives in the system tray and talks when you
+click it — or when you just say **"Hey Jarvis"**, once the optional offline wake
+word is installed.
+
+Every OS-specific action lives behind a **platform adapter**
+(`platform_adapters/`): Linux uses `arecord`/`pactl`/`playerctl`/`wmctrl`/`xdotool`/
+`brightnessctl`, Windows uses `sounddevice`/`pycaw`/`pywinctl`, and macOS uses
+`sounddevice`/`osascript`/`pywinctl`. The core (router, agent, memory, TTS, GUI,
+vision) is identical on all three, and a missing library degrades to a clear
+message instead of crashing.
 
 Jarvis **never runs `sudo`** and never runs arbitrary shell from speech — except
 through a guarded terminal tool that refuses anything that could power the device
@@ -248,13 +256,17 @@ copy-paste install command for you to run yourself, but it never executes one.
 
 ## Requirements
 
-- Linux with a working microphone (PipeWire or PulseAudio).
-- `arecord` / `aplay` from `alsa-utils` for capture and playback.
+- **Linux, Windows or macOS**, with a working microphone.
 - Python 3.10+ (developed on 3.12).
 - A Groq API key for the agent, internet tools and screen vision.
 
+Audio capture and playback come from the platform adapter: **Linux** uses
+`arecord`/`aplay` (`alsa-utils`), while **Windows and macOS** use `sounddevice`
+(installed from `requirements.txt`). Volume is `pactl` on Linux, `pycaw` on
+Windows and `osascript` on macOS.
+
 Optional desktop tools — Jarvis degrades gracefully when these are missing, but
-these features need them. Install them with your system package manager
+these features need them. On Linux install them with your system package manager
 (for example, `apt`); `./venv/bin/python doctor.py` prints the exact
 `sudo apt install …` line for whatever is missing (Jarvis never runs it):
 
@@ -297,18 +309,19 @@ the wake word is missing, and Jarvis itself never installs anything.
 
 ---
 
-## Setup
+## Installation
 
-```bash
-python -m venv venv
-./venv/bin/pip install -r requirements.txt
+Pick your platform and run one command. Each installer handles the Python venv, platform-specific dependencies, and the starter configuration — about 3 minutes on broadband.
 
-# Create .env with your Groq API key (starts with "gsk_")
-echo "GROQ_API_KEY=your-key-here" > .env
-```
+| Platform | One-liner |
+| --- | --- |
+| **macOS · Linux · WSL2** | `curl -fsSL https://raw.githubusercontent.com/jakirhussainkhan/jarvis-voice-assistant/main/install.sh \| bash` |
+| **Native Windows** | `irm https://raw.githubusercontent.com/jakirhussainkhan/jarvis-voice-assistant/main/install.ps1 \| iex` |
+| **Desktop GUI** | Download from the [latest release](https://github.com/jakirhussainkhan/jarvis-voice-assistant/releases) |
 
-Get a key at <https://console.groq.com/keys>. `.env`, `venv/`, `TOKEN.txt` and
-caches are gitignored and must never be committed.
+Then run `jarvis` to start. Check your system readiness with `jarvis doctor` or `python main.py --check`.
+
+Platform-specific notes (WSL2 setup, native-Windows scheduled-task service, desktop prerequisites, manual install): see the [installation docs](https://github.com/jakirhussainkhan/jarvis-voice-assistant).
 
 ### Configuration
 
@@ -468,8 +481,9 @@ are enforced in code, not in the prompt.
 - **Weak matches:** if an app name is only a weak match, Jarvis asks
   "Did you mean <app>?" before acting.
 - **Whitelist only:** the agent's tools and the router both call fixed functions in
-  `desktop.py` (`xdotool`/`wmctrl`/`pactl`/… wrappers). Screen actions are limited
-  to move/click/type/key/scroll/wait. The only way to reach a shell is the guarded
+  `desktop.py`, which delegates to fixed adapter methods in `platform_adapters/`
+  (the `xdotool`/`wmctrl`/`pactl`/… wrappers). Screen actions are limited to
+  move/click/type/key/scroll/wait. The only way to reach a shell is the guarded
   terminal above.
 
 ---
@@ -499,7 +513,9 @@ confirmation first, then tries the router, and only sends a miss to the agent.
 | `config.py` | Loads `.env`; holds `__version__`, models, and the screen/shell/history limits. |
 | `voice.py` | `listen()` (arecord + SpeechRecognition, `en-US`) and `speak()` (edge-tts + pygame). Also the runtime mic mute (`set_mic_muted`), the live level sink the GUI animates from, the TTS loudness envelope, and `stop_speaking()` / `stop_listening()` (the 30 s wait for speech is `JARVIS_LISTEN_TIMEOUT`). |
 | `router.py` | `try_local()` — the offline fast path: power, media, volume, brightness, screenshot, lock, windows, clipboard, battery/status/time/date, screen reading, folders, YouTube, dictated commands and app open/close. Search verbs return `None` for the agent. Also holds the spoken `CAPABILITIES` list. |
-| `desktop.py` | Whitelisted desktop actions plus the protected-process list. Media control falls back to the browser tab's own keys when a page's MPRIS cannot skip tracks. |
+| `desktop.py` | The **OS-agnostic facade**: fuzzy app matching, YouTube/media decisions and the protected-process rules, delegating every platform-specific operation to `platform_adapters`. Media control falls back to the browser tab's own keys when a page's MPRIS cannot skip tracks. |
+| `platform_adapters/` | The Platform Adapter Pattern. `base.py` defines the `AudioController`/`WindowController`/`SystemController` interfaces; `common.py` holds the shared runner/process helpers; `linux/`, `windows/` and `macos/` implement them (`arecord`/`pactl`/`playerctl`/`wmctrl`/`xdotool`/`brightnessctl` on Linux, `sounddevice`/`pycaw`/`pywinctl` on Windows, `sounddevice`/`osascript`/`pywinctl` on macOS). `__init__.py` detects the OS and exports `Audio`, `Window` and `System`. |
+| `install.sh` / `install.ps1` | One-line installers: create the venv, install `requirements.txt`, then the platform's helper tools. |
 | `vision.py` | Screen capture, `look()` (ask about the screen) and `act()` (bounded perceive→act loop). |
 | `net.py` | Keyless internet: DuckDuckGo search, page fetch, Wikipedia, weather. |
 | `shell.py` | The guarded terminal (`run`, `explain_refusal`, `_is_risky`). |

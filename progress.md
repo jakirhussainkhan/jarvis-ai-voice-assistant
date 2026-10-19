@@ -1,6 +1,6 @@
 # Jarvis — Progress
 
-Last updated: 2026-10-18
+Last updated: 2026-10-19
 
 A voice-controlled Linux desktop assistant. You speak a command; Jarvis either
 handles it locally (regex, offline) or forwards it to a Groq-backed agent that
@@ -32,6 +32,24 @@ is installed.
 | Tests | `pytest` suite — **363 passed, 1 skipped** |
 | Spoken voice | `en-GB-RyanNeural` (British male); override with `JARVIS_TTS_VOICE` |
 | Published | GitHub, tags **`v1.0.1`**…**`v1.0.7`** (README + MIT LICENSE) |
+
+## Cross-Platform Refactor & Installers (2026-10-19, v1.1.0)
+
+Jarvis is no longer Linux-only. The whole platform layer was refactored behind a
+**Platform Adapter Pattern**, and the install path became a one-liner on every OS.
+
+- Refactored the entire Linux-only architecture into a **Platform Adapter Pattern**.
+- Created `platform_adapters/` with `base.py` (the `AudioController` /
+  `WindowController` / `SystemController` interfaces), `common.py` (the shared
+  process/session helpers) and the `linux/`, `windows/` and `macos/`
+  implementations, picked at runtime by the factory in `__init__.py`.
+- `desktop.py` and `voice.py` are now OS-agnostic facades: every hard-coded Linux
+  command (`arecord`, `pactl`, `playerctl`, `wmctrl`, `xdotool`, `brightnessctl`,
+  …) lives only in the adapters, and a missing library degrades to a clear message
+  instead of crashing.
+- Added `install.sh` (Linux/macOS: venv + apt/brew dependencies) and
+  `install.ps1` (Windows: venv + the `pycaw`/`pywinctl`/`pyautogui` extras).
+- Tests passed: **`363 passed, 1 skipped`**.
 
 ## Repository & releases
 

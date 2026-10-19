@@ -6,3 +6,13 @@ PyQt5
 psutil
 python-dotenv
 pytest
+
+# Cross-platform audio capture and window control for Windows/macOS.
+# On Linux Jarvis uses arecord/wmctrl/xdotool instead, but installing these is
+# harmless there (the adapters import them lazily and degrade gracefully).
+sounddevice
+pywinctl
+
+# Windows-only extras (volume, brightness, screen input) are installed by
+# install.ps1, not here, because they do not install on Linux/macOS:
+#   pycaw comtypes pyautogui screen-brightness-control pillow plyer
