@@ -7,6 +7,7 @@ state label.
 """
 
 import os
+import struct
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -30,14 +31,18 @@ def app():
 
 
 @pytest.fixture(autouse=True)
-def _reset_voice_state():
+def _reset_voice_state(monkeypatch):
+    # Never let a worker test open a real microphone through barge-in.
+    monkeypatch.setattr(voice, "_BARGE_ENABLED", False)
     voice.set_level_sink(None)
     voice.set_mic_muted(False)
     voice._stop_listening.clear()
+    voice._stop_speaking.clear()
     yield
     voice.set_level_sink(None)
     voice.set_mic_muted(False)
     voice._stop_listening.clear()
+    voice._stop_speaking.clear()
 
 
 def test_make_icon_paints_something(app):
@@ -83,7 +88,7 @@ def test_mic_button_toggles_mute_everywhere(app):
     assert widget.mic_button.text() == "🔇 Muted"
     assert widget.mute_action.isChecked() is True
     assert widget.status.text() == gui.MUTED
-    assert widget.reactor._state == gui.MUTED
+    assert widget.orb._state == gui.MUTED
 
     widget.toggle_mute()
 
@@ -116,19 +121,19 @@ def test_stop_button_is_live_whenever_jarvis_is_busy(app, monkeypatch):
     assert listened == [1] and spoken == [1]
 
 
-def test_reactor_paints_with_any_energy(app):
-    reactor = gui.Reactor(80)
+def test_orb_paints_with_any_energy(app):
+    orb = gui.Orb(80)
     for value in (0.0, 0.5, 1.0, 2.0, -1.0, "nonsense"):
-        reactor.set_energy(value)
-        assert 0.0 <= reactor._energy <= 1.0
+        orb.set_energy(value)
+        assert 0.0 <= orb._energy <= 1.0
         canvas = QPixmap(80, 80)
         canvas.fill(Qt.transparent)
-        reactor.render(canvas)             # exercises paintEvent, must not raise
+        orb.render(canvas)                 # exercises paintEvent, must not raise
 
-    reactor.set_state(gui.MUTED)           # the muted badge path too
+    orb.set_state(gui.MUTED)               # the muted badge path too
     canvas = QPixmap(80, 80)
     canvas.fill(Qt.transparent)
-    reactor.render(canvas)
+    orb.render(canvas)
 
 
 def test_on_heard_truncates_long_phrases(app):
@@ -457,7 +462,7 @@ def test_quit_stops_the_wake_listener(app, fake_wake):
 
 
 def test_icon_has_a_margin_so_it_is_never_clipped(app):
-    """The launcher renders this at 256 px, where a fixed 1.5 px margin clipped."""
+    """The launcher renders this at 256 px, so the tile must not touch the edge."""
     image = gui.make_icon(256).pixmap(256, 256).toImage()
 
     edges = [(0, 0), (255, 0), (0, 255), (255, 255), (0, 128), (255, 128)]
@@ -465,58 +470,222 @@ def test_icon_has_a_margin_so_it_is_never_clipped(app):
         assert image.pixelColor(x, y).alpha() == 0, f"({x}, {y}) is painted"
 
     center = image.pixelColor(128, 128)
-    assert center.alpha() > 0, "the core must be painted"
+    assert center.alpha() > 0, "the orb must be painted"
 
 
-def test_reactor_face_shares_the_iron_man_look(app):
-    """The live orb must be the same artwork as the icons, tinted by state."""
-    orb = gui.Reactor(150)
+def test_icon_is_a_dark_tile_with_a_glowing_orb_and_j(app):
+    """The new mark: charcoal rounded tile, azure orb, bright stylised J."""
+    image = gui.make_icon(256).pixmap(256, 256).toImage()
+
+    # The tile edge is dark; the orb core is bright and blue-dominant.
+    tile = image.pixelColor(128, 12)
+    assert tile.alpha() == 255 and tile.value() < 90, \
+        f"the tile must stay dark, got {tile.name()}"
+    core = image.pixelColor(128, 128)
+    assert core.blue() > 180 and core.blue() > core.red() + 40, \
+        f"the orb must glow azure, got {core.name()}"
+
+    # The J stem is a bright stroke over the orb, so its darkest channel is much
+    # higher than the orb immediately beside it.
+    stem = image.pixelColor(151, 120)
+    beside = image.pixelColor(128, 120)
+    assert min(stem.red(), stem.green(), stem.blue()) > \
+        min(beside.red(), beside.green(), beside.blue()) + 40, \
+        f"the J must read against the orb, stem {stem.name()} vs {beside.name()}"
+
+
+def test_orb_listening_glows_green(app):
+    """The live orb takes its colour from the state, not the icon's azure."""
+    orb = gui.Orb(150)
     orb.set_state(gui.LISTENING)
     orb.set_energy(0.6)
-    orb._phase = 0.9                       # freeze the breathe at an open pose
+    orb._phase = 0.0
     image = orb.grab().toImage()
 
-    # The top coil slot reads green: listening state, not the icon's cyan.
-    slot = image.pixelColor(75, 18)
-    assert slot.green() > slot.blue() + 20 and slot.green() > slot.red(), \
-        f"the listening orb must glow green, got {slot.name()}"
-
-    # The core is still white-hot.
-    center = image.pixelColor(75, 75)
-    assert min(center.red(), center.green(), center.blue()) > 200, \
-        f"the core must stay white-hot, got {center.name()}"
+    sample = image.pixelColor(75, 25)
+    assert sample.green() > sample.blue() + 20 and sample.green() > sample.red(), \
+        f"the listening orb must glow green, got {sample.name()}"
 
 
-def test_reactor_muted_greys_out(app):
+def test_orb_muted_greys_out(app):
     """Muted must stop reading as any active colour."""
-    orb = gui.Reactor(150)
+    orb = gui.Orb(150)
     orb.set_state(gui.MUTED)
     image = orb.grab().toImage()
 
-    slot = image.pixelColor(75, 18)
-    saturation = (max(slot.red(), slot.green(), slot.blue())
-                  - min(slot.red(), slot.green(), slot.blue()))
-    assert saturation < 60, f"muted orb must be desaturated, got {slot.name()}"
+    sample = image.pixelColor(75, 25)
+    saturation = (max(sample.red(), sample.green(), sample.blue())
+                  - min(sample.red(), sample.green(), sample.blue()))
+    assert saturation < 60, f"muted orb must be desaturated, got {sample.name()}"
 
 
-def test_icon_looks_like_a_lit_reactor(app):
-    """The Iron Man look: glowing coil slots around a white-hot core."""
-    image = gui.make_icon(256).pixmap(256, 256).toImage()
-    radius = 128.0 - max(1.5, 256 * 0.04)
+# --------------------------------------------------------------------------- #
+# modern UI: rounded card, window controls, breathing, waveform
+# --------------------------------------------------------------------------- #
 
-    # The core: white-hot, not pale blue.
-    core = image.pixelColor(128, 128)
-    assert min(core.red(), core.green(), core.blue()) > 230, \
-        f"the core centre must be white-hot, got {core.name()}"
+def test_card_is_frameless_rounded_and_always_on_top(app):
+    widget = gui.JarvisWidget()
+    assert widget.windowFlags() & Qt.FramelessWindowHint
+    assert widget.windowFlags() & Qt.WindowStaysOnTopHint
+    assert widget.testAttribute(Qt.WA_TranslucentBackground)
 
-    # The coil slot that points straight up, sampled halfway along its length.
-    slot = image.pixelColor(128, round(128 - 0.787 * radius))
-    assert slot.alpha() == 255 and slot.blue() > 190, \
-        f"the top slot must glow electric blue, got {slot.name()}"
+    canvas = QPixmap(widget.size())
+    canvas.fill(Qt.transparent)
+    widget.render(canvas)
+    image = canvas.toImage()
 
-    # Half a pitch away (between two slots) the housing must be darker: the
-    # glowing wedges only read as Iron Man when the metal is gunmetal.
-    gap = image.pixelColor(157, 40)
-    assert gap.alpha() > 0
-    assert gap.value() < slot.value() - 30, \
-        f"the slot must out-glow the housing, slot {slot.name()} vs gap {gap.name()}"
+    assert image.pixelColor(0, 0).alpha() == 0, "the corner must be rounded away"
+    assert image.pixelColor(widget.width() - 1,
+                            widget.height() - 1).alpha() == 0
+    assert image.pixelColor(20, widget.height() // 2).alpha() > 0, \
+        "the dark card must be painted inside the rounded corners"
+
+
+def test_window_has_minimise_and_close_controls(app):
+    widget = gui.JarvisWidget()
+
+    assert widget.minimize_button.objectName() == "minimizeButton"
+    assert widget.close_button.objectName() == "closeButton"
+    assert widget.minimize_button.isEnabled()
+    assert widget.close_button.isEnabled()
+
+    widget._minimize()      # must be safe on the offscreen platform
+
+
+def test_orb_breathes_when_idle_and_stops_when_active(app):
+    orb = gui.Orb(120)
+    assert orb._breathe.state() == gui.QPropertyAnimation.Running
+
+    orb.set_state(gui.LISTENING)
+    assert orb._breathe.state() == gui.QPropertyAnimation.Stopped
+
+    orb.set_state(gui.IDLE)
+    assert orb._breathe.state() == gui.QPropertyAnimation.Running
+
+
+def test_waveform_reacts_to_level_and_paints(app):
+    waveform = gui.Waveform()
+    waveform.resize(286, 58)
+    waveform.set_level(1.0)
+    for _ in range(8):
+        waveform._tick()
+    assert max(waveform._bars) > 0.2, "loud audio must raise the bars"
+
+    canvas = QPixmap(286, 58)
+    canvas.fill(Qt.transparent)
+    waveform.render(canvas)             # exercises paintEvent, must not raise
+    image = canvas.toImage()
+    assert any(image.pixelColor(x, 29).alpha() > 0
+               for x in range(0, 286, 8)), "the bars must be visible"
+
+    waveform.set_state(gui.SPEAKING)
+    waveform.set_level(0.0)
+    for _ in range(4):
+        waveform._tick()
+    assert waveform._bars[-1] < 0.5, "the bars must fall back towards rest"
+
+
+def test_live_level_feeds_both_the_orb_and_the_waveform(app):
+    widget = gui.JarvisWidget()
+    widget._on_level(0.8)
+    assert widget.orb._energy == 0.8
+    assert widget.waveform._level == 0.8
+
+
+# --------------------------------------------------------------------------- #
+# barge-in: talking over a reply
+# --------------------------------------------------------------------------- #
+
+def _pcm(amplitude, frames=None):
+    """One capture chunk of a constant S16_LE amplitude."""
+    frames = voice._CHUNK_FRAMES if frames is None else frames
+    return struct.pack("<h", int(amplitude)) * frames
+
+
+def test_barge_in_needs_sustained_speech(app):
+    monitor = voice.BargeInMonitor(threshold=1000, hold=0.3)
+    loud, quiet = _pcm(3000), _pcm(20)
+
+    assert monitor.required == 3, "0.3 s at 0.1 s chunks is three chunks"
+    assert monitor.feed(quiet) is False
+    assert monitor.feed(loud) is False
+    assert monitor.feed(quiet) is False       # a pause resets the run
+    assert monitor.feed(loud) is False
+    assert monitor.feed(loud) is False
+    assert monitor.feed(loud) is True
+    assert monitor.detected is True
+
+
+def test_barge_in_ignores_echo_and_short_noise(app):
+    monitor = voice.BargeInMonitor(threshold=2600, hold=0.5)
+
+    assert monitor.feed(_pcm(1800)) is False   # speaker echo stays below it
+    assert monitor.feed(_pcm(3200)) is False   # one loud chunk is not enough
+    assert monitor.feed(_pcm(200)) is False    # silence resets the count
+    assert monitor.detected is False
+
+
+def test_barge_in_is_disabled_in_push_to_talk(app, monkeypatch):
+    monkeypatch.setattr(voice, "_BARGE_ENABLED", True)
+    monkeypatch.setattr(voice, "_ptt_active", lambda: True)
+
+    monitor = voice.BargeInMonitor()
+    assert monitor.start() is False
+    assert monitor._thread is None
+
+
+def test_barge_in_is_disabled_while_the_mic_is_muted(app, monkeypatch):
+    monkeypatch.setattr(voice, "_BARGE_ENABLED", True)
+    monkeypatch.setattr(voice, "_ptt_active", lambda: False)
+    voice.set_mic_muted(True)
+
+    monitor = voice.BargeInMonitor()
+    assert monitor.start() is False
+    assert monitor._thread is None
+
+
+def test_worker_returns_to_listening_after_barge_in(app, monkeypatch):
+    """Talking over a reply continues the conversation instead of ending it."""
+    turns = iter(["first", "second", ""])
+    monkeypatch.setattr(gui, "listen", lambda *args, **kwargs: next(turns, ""))
+    monkeypatch.setattr(
+        gui, "handle",
+        lambda text, memory: (f"reply to {text}", "local", 0))
+
+    instances = []
+
+    class FakeMonitor:
+        def __init__(self, on_barge=None):
+            self.on_barge = on_barge
+            instances.append(self)
+
+        def start(self):
+            return True
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(gui, "BargeInMonitor", FakeMonitor)
+
+    spoken = []
+
+    def fake_speak(reply):
+        voice._stop_speaking.clear()       # like the real _play_tts
+        spoken.append(reply)
+        if len(instances) == 1:
+            instances[-1].on_barge()       # the user talks over the first reply
+
+    monkeypatch.setattr(gui, "speak", fake_speak)
+
+    worker = gui.JarvisWorker(Memory(), chat=True)
+    heard, states = [], []
+    worker.heard.connect(heard.append)
+    worker.state_changed.connect(states.append)
+
+    worker.run()
+
+    assert heard == ["first", "second"]
+    assert spoken == ["reply to first", "reply to second"]
+    assert states.count(gui.LISTENING) >= 2
+    assert states[-1] == gui.IDLE
+

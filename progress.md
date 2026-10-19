@@ -5,7 +5,7 @@ Last updated: 2026-10-19
 A voice-controlled Linux desktop assistant. You speak a command; Jarvis either
 handles it locally (regex, offline) or forwards it to a Groq-backed agent that
 can call tools, then answers out loud in English. STT and replies are
-English-only by design. A PyQt5 "Arc Reactor" widget provides a click-to-talk
+English-only by design. A PyQt5 ChatGPT-Voice-style card provides a click-to-talk
 GUI — or a hands-free **"Hey Jarvis"** wake word once the optional offline engine
 is installed.
 
@@ -22,16 +22,29 @@ is installed.
 | Guarded terminal | Working (3-layer guard; power/session commands refused in code) |
 | Offline mode (`main.py --offline`) | Working |
 | Conversation memory | Working |
-| GUI widget + system tray (`gui.py`) | Working (offscreen-tested); **mic mute/unmute, Stop, an orb that reacts to live voice + speech, and the "Hey Jarvis" wake word** |
+| GUI widget + system tray (`gui.py`) | Working (offscreen-tested); **ChatGPT-Voice-style dark card, breathing orb, live 13-bar waveform, mic mute/unmute, Stop, barge-in, and the "Hey Jarvis" wake word** |
 | Microphone diagnostic | Working |
 | Desktop control (apps/YouTube/media/volume/brightness/screenshot/lock) | Working |
 | Confirmation-gated actions | Working (power, risky terminal, risky screen goals) |
 | Timers / reminders | Working |
 | Offline wake word ("Hey Jarvis") | **Built + unit-tested; NOT yet verified live** (needs `pip install openwakeword onnxruntime`) |
 | Desktop launcher (`run.sh` + app-menu entry) | Working (verified: `desktop-file-validate` clean, GUI starts) |
-| Tests | `pytest` suite — **386 passed, 1 skipped** |
+| Tests | `pytest` suite — **396 passed, 1 skipped** |
 | Spoken voice | `en-GB-RyanNeural` (British male); override with `JARVIS_TTS_VOICE` |
-| Published | GitHub, tags **`v1.0.1`**…**`v1.0.7`** (README + MIT LICENSE) |
+| Published | GitHub, tags **`v1.0.1`**…**`v1.3.0`** (README + MIT LICENSE) |
+
+## ChatGPT-Style UI, Barge-in & New Icon (2026-10-19, v1.3.0)
+
+- **UI Overhaul:** Frameless, always-on-top dark theme window (ChatGPT Voice Mode
+  style) with smooth pill controls and a live transcript.
+- **Animations:** Breathing glowing orb (`QPropertyAnimation`) and a live 13-bar
+  audio waveform synced to mic/TTS levels.
+- **Barge-in:** Users can interrupt Jarvis by speaking. Implemented via a daemon
+  `BargeInMonitor` with a 0.5 s high-threshold (`2600`) RMS check and echo
+  mitigation.
+- **Icon:** New futuristic `J` orb icon generated via `gen_icon.py`.
+- **Tests:** Updated `test_gui.py` and the suite now passes with **396 passed,
+  1 skipped**.
 
 ## P0 Stability & P1 Groq Optimization (2026-10-19, v1.2.0)
 

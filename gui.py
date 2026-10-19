@@ -1,35 +1,40 @@
-"""Floating 'Arc Reactor' desktop widget + system-tray for Jarvis (PyQt5).
+"""Floating ChatGPT-Voice-style desktop widget + system tray for Jarvis (PyQt5).
 
-Click the reactor (or the tray icon) to talk; the audio + agent work runs on a
-QThread so the UI never freezes. The app keeps running in the background: closing
-the floating widget hides it to the system tray instead of quitting.
+The window is a frameless, rounded dark card with a breathing gradient orb in the
+centre, a live waveform underneath it, a modern status line and quiet window
+controls. It deliberately gets out of the way: the audio + agent work runs on a
+QThread, the app lives in the system tray, and closing the card hides it instead
+of quitting.
 
-The reactor is alive: it reacts to your voice while it listens (the mic RMS) and
-moves in time with its own speech (the TTS loudness envelope). A mic button mutes
-and unmutes the microphone at any time, and a Stop button cuts a reply short.
+While Jarvis speaks, a :class:`voice.BargeInMonitor` watches the microphone. If
+you start talking over it, the reply is cut short and the widget returns to
+"Listening..." -- no Stop button required.
 
 Controls:
-  floating widget   left-click = talk   ·   drag = move
-                    right-click = menu   ·   Esc = hide to tray
-                    Mic button = mute/unmute   ·   Stop = cut the reply
-  tray icon         left-click = talk   ·   right-click = menu
-                    menu: Talk / Mute mic / Show-Hide / Quit
+  card          left-click = talk          drag = move
+                right-click = menu         Esc = hide to tray
+                – / ✕ (top right) = minimise / hide to tray
+  buttons       Mic = mute/unmute           Stop = cut the reply
+  tray icon     left-click = talk           right-click = menu
 """
 
 import math
 import sys
+from collections import deque
 
-from PyQt5.QtCore import QPointF, Qt, QThread, QTimer, pyqtSignal
-from PyQt5.QtGui import (QBrush, QColor, QIcon, QPainter, QPen, QPixmap,
-                         QRadialGradient)
+from PyQt5.QtCore import (QEasingCurve, QPointF, QPropertyAnimation, QRectF, Qt,
+                          QThread, QTimer, pyqtProperty, pyqtSignal)
+from PyQt5.QtGui import (QBrush, QColor, QIcon, QLinearGradient, QPainter,
+                         QPainterPath, QPen, QPixmap, QRadialGradient)
 from PyQt5.QtWidgets import (QApplication, QHBoxLayout, QLabel, QMenu,
                              QPushButton, QSystemTrayIcon, QVBoxLayout, QWidget)
 
 import voice
 from config import CHAT_ON, CHAT_TIMEOUT
+from icon_art import render_icon
 from main import handle, is_exit
 from memory import Memory
-from voice import listen, speak
+from voice import BargeInMonitor, listen, speak
 import wake
 
 # What Jarvis says when a continuous session ends (you said an exit word, went
@@ -39,226 +44,119 @@ _SESSION_END = "Session over. See you soon, sir."
 IDLE = "Idle"
 LISTENING = "Listening..."
 THINKING = "Thinking..."
-SPEAKING = "Speaking..."
+SPEAKING = "Jarvis is speaking..."
 MUTED = "Muted"
 
-# glow colour per state: (outer glow, core)
+# State palette: (outer glow, core light). Dark-card friendly, saturated enough
+# to read at a glance without feeling like a toy.
 _COLORS = {
-    IDLE:      (QColor(0, 140, 255), QColor(120, 205, 255)),
-    LISTENING: (QColor(0, 220, 140), QColor(140, 255, 210)),
-    THINKING:  (QColor(255, 170, 0), QColor(255, 225, 150)),
-    SPEAKING:  (QColor(170, 90, 255), QColor(220, 180, 255)),
-    MUTED:     (QColor(80, 92, 112), QColor(140, 155, 180)),
+    IDLE:      (QColor(56, 189, 248), QColor(186, 230, 253)),
+    LISTENING: (QColor(52, 211, 153), QColor(167, 243, 208)),
+    THINKING:  (QColor(251, 191, 36), QColor(253, 230, 138)),
+    SPEAKING:  (QColor(167, 139, 250), QColor(221, 214, 254)),
+    MUTED:     (QColor(100, 116, 139), QColor(148, 163, 184)),
 }
 
 _BUTTON_STYLE = """
 QPushButton {
-    color:#dff2ff; background:rgba(20,40,70,190);
-    border:1px solid rgba(150,235,255,120);
-    border-radius:14px; padding:5px 12px;
+    color:#E5E7EB; background:rgba(255,255,255,16);
+    border:1px solid rgba(255,255,255,26);
+    border-radius:16px; padding:7px 16px;
     font-size:12px; font-weight:600;
 }
-QPushButton:hover { background:rgba(30,70,120,230); }
+QPushButton:hover { background:rgba(255,255,255,32); }
+QPushButton:pressed { background:rgba(255,255,255,48); }
 QPushButton:disabled {
-    color:rgba(220,240,255,80); background:rgba(20,40,70,80);
-    border-color:rgba(150,235,255,40);
+    color:rgba(229,231,235,90); background:rgba(255,255,255,8);
+    border-color:rgba(255,255,255,14);
 }
 QPushButton:checked {
-    background:rgba(200,70,70,220); border-color:rgba(255,160,160,190);
+    color:#FEE2E2; background:rgba(229,72,77,220);
+    border-color:rgba(255,160,160,140);
 }
 """
 
-
-def _draw_reactor_face(painter, center, radius, glow, core_light,
-                       energy=1.0, breathe=1.0):
-    """Paint the arc-reactor face: the one source of the Iron Man look.
-
-    Shared by the static launcher icon (:func:`make_icon`) and the live Orb
-    (``Reactor.paintEvent``), so they can never drift apart.
-
-    ``glow`` tints the halo of light around the core; ``core_light`` is the
-    colour the coil light cools towards (both are the widget's per-state
-    colours, so the face still signals Listening/Thinking/Speaking/Muted).
-    ``energy`` (0..1) brightens the light and breath, ``breathe`` scales the
-    glow and core radius for the resting shimmer. Everything is drawn inside
-    ``radius`` and is transparent outside, so corners stay clean at any size.
-    """
-    import math
-    from PyQt5.QtGui import QPainterPath
-
-    painter.setPen(Qt.NoPen)
-
-    # --- backplate: the recessed carbon disc the whole reactor sits on ------
-    plate = QRadialGradient(center, radius)
-    plate.setColorAt(0.0, QColor(24, 34, 43))
-    plate.setColorAt(0.75, QColor(13, 20, 27))
-    plate.setColorAt(1.0, QColor(3, 6, 10))
-    painter.setBrush(QBrush(plate))
-    painter.drawEllipse(center, radius, radius)
-
-    # a whisper of bloom just inside the rim so the metal reads as "powered"
-    bloom = QRadialGradient(center, radius * 0.85)
-    bloom.setColorAt(0.0, QColor(glow.red(), glow.green(), glow.blue(), 28))
-    bloom.setColorAt(1.0, QColor(glow.red(), glow.green(), glow.blue(), 0))
-    painter.setBrush(QBrush(bloom))
-    painter.drawEllipse(center, radius * 0.85, radius * 0.85)
-
-    # --- titanium housing: an annulus with a machined bevel ------------------
-    # The gradient radius spans the whole disc, so each colour stop is a
-    # fraction of `radius`; the ring runs from 0.60 to 0.98. Dark gunmetal:
-    # the glowing slots must be the brightest thing in the icon.
-    housing = QRadialGradient(center, radius)
-    for stop, color in (
-        (0.60, QColor(57, 66, 78)),     # inner bore: shadowed metal
-        (0.645, QColor(107, 122, 140)), # bevel catches the light
-        (0.70, QColor(43, 51, 61)),     # flat of the ring: dark
-        (0.92, QColor(38, 45, 54)),     # flat of the ring
-        (0.965, QColor(92, 103, 116)),  # outer bevel
-        (0.99, QColor(20, 26, 34)),     # dark outer edge
-    ):
-        housing.setColorAt(stop, color)
-
-    housing_path = QPainterPath()
-    housing_path.addEllipse(center, radius * 0.98, radius * 0.98)
-    housing_path.addEllipse(center, radius * 0.60, radius * 0.60)
-    painter.setBrush(QBrush(housing))
-    painter.drawPath(housing_path)
-
-    # --- ten coil slots cut into the housing, glowing white-hot to tint ------
-    slot_path = QPainterPath()
-    half_angle = math.radians(10.5)           # wide slots, thin dark separators
-    inner, outer = radius * 0.615, radius * 0.96
-    # Walk the inner rail left-to-right, then the outer rail right-to-left,
-    # so each polygon goes around its sector exactly once.
-    for segment in range(10):
-        base = math.radians(segment * 36.0) - math.pi / 2.0
-        corners = []
-        for level, sides in ((inner, (-1, 1)), (outer, (1, -1))):
-            for side in sides:
-                theta = base + side * half_angle
-                corners.append(QPointF(
-                    center.x() + level * math.cos(theta),
-                    center.y() + level * math.sin(theta)))
-        slot_path.moveTo(corners[0])
-        for corner in corners[1:]:
-            slot_path.lineTo(corner)
-        slot_path.closeSubpath()
-
-    slot_gradient = QRadialGradient(center, outer)
-    slot_gradient.setColorAt(inner / outer - 0.001, QColor(238, 250, 255))
-    slot_gradient.setColorAt(0.72, core_light)
-    slot_gradient.setColorAt(1.0, glow)
-    painter.fillPath(slot_path, QBrush(slot_gradient))
-    # two slim translucent strokes just kiss the slot edges with light; wide
-    # ones would flood the gaps and wash the ring into a uniform band
-    painter.setBrush(Qt.NoBrush)      # drawPath strokes AND fills: no fill wanted
-    for width, alpha in ((0.038, 66), (0.016, 120)):
-        halo_pen = QPen(QColor(glow.red(), glow.green(), glow.blue(), alpha),
-                        max(0.8, radius * 2 * width))
-        painter.setPen(halo_pen)
-        painter.drawPath(slot_path)
-    painter.setPen(Qt.NoPen)
-
-    # thin machining seams; dim, so they read as shadow lines not chrome
-    rim_pen = QPen(QColor(158, 186, 208, 120))
-    rim_pen.setWidthF(max(0.8, radius * 0.020))
-    painter.setPen(rim_pen)
-    painter.setBrush(Qt.NoBrush)
-    painter.drawEllipse(center, radius * 0.618, radius * 0.618)
-    painter.drawEllipse(center, radius * 0.975, radius * 0.975)
-    painter.setPen(Qt.NoPen)
-
-    # --- the palladium core: a solid light disc with a glow halo -------------
-    glow_radius = radius * (0.58 + 0.10 * energy) * breathe
-    halo = QRadialGradient(center, glow_radius)
-    base = max(0.60, min(1.0, 0.65 + 0.35 * energy))
-    halo.setColorAt(0.0, QColor(core_light.red(), core_light.green(),
-                                core_light.blue(), int(235 * base)))
-    halo.setColorAt(0.42, QColor(glow.red(), glow.green(), glow.blue(),
-                                 int(130 * base)))
-    halo.setColorAt(1.0, QColor(glow.red(), glow.green(), glow.blue(), 0))
-    painter.setBrush(QBrush(halo))
-    painter.drawEllipse(center, glow_radius, glow_radius)
-
-    core_radius = radius * (0.37 + 0.05 * energy) * breathe
-    core = QRadialGradient(center, core_radius)
-    core.setColorAt(0.0, QColor(255, 255, 255))
-    core.setColorAt(0.70, QColor(core_light.red(), core_light.green(),
-                                 core_light.blue()).lighter(115))
-    core.setColorAt(1.0, core_light)
-    painter.setBrush(QBrush(core))
-    painter.drawEllipse(center, core_radius, core_radius)
-
-    # a single specular glint, top-left, like glass over the reactor
-    glint = QPointF(center.x() - core_radius * 0.30,
-                    center.y() - core_radius * 0.30)
-    glint_gradient = QRadialGradient(glint, core_radius * 0.40)
-    glint_gradient.setColorAt(0.0, QColor(255, 255, 255, 110))
-    glint_gradient.setColorAt(1.0, QColor(255, 255, 255, 0))
-    painter.setBrush(QBrush(glint_gradient))
-    painter.drawEllipse(glint, core_radius * 0.40, core_radius * 0.40)
+_WINDOW_BUTTON_STYLE = """
+QPushButton {
+    color:#9CA3AF; background:transparent; border:none;
+    border-radius:12px; font-size:15px; font-weight:700; padding:0px;
+}
+QPushButton:hover { background:rgba(255,255,255,28); color:#F9FAFB; }
+QPushButton#closeButton:hover { background:#E5484D; color:#FFFFFF; }
+"""
 
 
 def make_icon(size=64):
-    """Paint the Iron Man arc-reactor as a QIcon (window, tray and menu PNGs).
-
-    The static face of :func:`_draw_reactor_face` at full energy: a machined
-    titanium housing with ten glowing coil segments around a white-hot core,
-    all over a dark recessed backplate. Everything is drawn inside the
-    proportional ``radius`` margin so the housing is never clipped, and the
-    corners stay transparent so it sits cleanly on any panel.
-    """
-    pixmap = QPixmap(size, size)
-    pixmap.fill(Qt.transparent)
-    painter = QPainter(pixmap)
-    painter.setRenderHint(QPainter.Antialiasing)
-    center = QPointF(size / 2.0, size / 2.0)
-    # Keep a proportional margin so the housing is not clipped at large sizes.
-    radius = size / 2.0 - max(1.5, size * 0.04)
-    _draw_reactor_face(painter, center, radius,
-                       glow=QColor(60, 180, 255), core_light=QColor(160, 222, 255),
-                       energy=1.0)
-    painter.end()
-    return QIcon(pixmap)
+    """Return the modern glowing-orb/J icon at ``size`` px as a ``QIcon``."""
+    return QIcon(QPixmap.fromImage(render_icon(size)))
 
 
-class Reactor(QWidget):
-    """The circular arc-reactor button. Click to talk, drag to move.
+class Orb(QWidget):
+    """The glowing gradient orb: click to talk, drag to move the window.
 
-    The glow breathes gently while idle and grows/quickens with ``set_energy``,
-    which the worker feeds from the live mic level (listening) or the TTS
-    loudness envelope (speaking).
+    Idle uses a looping :class:`QPropertyAnimation` on the ``pulse`` property to
+    breathe. Listening/Speaking stop the breathing animation and instead react to
+    live loudness (``set_energy``) with a phase-driven wave halo.
     """
 
     clicked = pyqtSignal()
     menu_requested = pyqtSignal(object)
 
-    def __init__(self, diameter=150, parent=None):
+    def __init__(self, diameter=180, parent=None):
         super().__init__(parent)
         self.setFixedSize(diameter, diameter)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
         self._state = IDLE
         self._phase = 0.0
         self._energy = 0.0
+        self._pulse = 1.0
         self._press = None
         self._dragged = False
         self.setCursor(Qt.PointingHandCursor)
 
-        self._timer = QTimer(self)
-        self._timer.timeout.connect(self._pulse)
-        self._timer.start(33)              # ~30 fps glow pulse
+        self._breathe = QPropertyAnimation(self, b"pulse", self)
+        self._breathe.setDuration(2600)
+        self._breathe.setStartValue(0.94)
+        self._breathe.setEndValue(1.06)
+        self._breathe.setEasingCurve(QEasingCurve.InOutSine)
+        self._breathe.setLoopCount(-1)
 
-    def _pulse(self):
-        # Faster shimmer while thinking; the resting pace otherwise.
-        speed = 0.14 if self._state == THINKING else 0.06
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+        self._timer.start(33)              # ~30 fps wave motion
+        self._start_breathe()
+
+    # -- animated breathing property ------------------------------------- #
+    def _get_pulse(self):
+        return self._pulse
+
+    def _set_pulse(self, value):
+        self._pulse = float(value)
+        self.update()
+
+    pulse = pyqtProperty(float, fget=_get_pulse, fset=_set_pulse)
+
+    def _start_breathe(self):
+        if self._breathe.state() != QPropertyAnimation.Running:
+            self._breathe.start()
+
+    def _tick(self):
+        # Thinking pulses a little faster than the other active states.
+        speed = 0.22 if self._state == THINKING else 0.13
         self._phase = (self._phase + speed) % (2 * math.pi)
         self.update()
 
     def set_state(self, state):
         self._state = state
+        if state == IDLE:
+            self._start_breathe()
+        else:
+            self._breathe.stop()
+            self._pulse = 1.0
         self.update()
 
     def set_energy(self, value):
-        """Live loudness, 0..1, drives the size/brightness of the glow."""
+        """Live loudness, 0..1, drives the glow radius and brightness."""
         try:
             self._energy = max(0.0, min(1.0, float(value)))
         except (TypeError, ValueError):
@@ -268,31 +166,87 @@ class Reactor(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
 
-        center = QPointF(self.width() / 2.0, self.height() / 2.0)
-        radius = min(center.x(), center.y()) - 2
-        # Quiet: the gentle breathe. Loud: a bigger, springier pulse.
-        breathe = 1.0 + (0.03 + 0.18 * self._energy) * math.sin(self._phase)
-        glow, core_light = _COLORS.get(self._state, _COLORS[IDLE])
+        width, height = self.width(), self.height()
+        center = QPointF(width / 2.0, height / 2.0)
+        # Leave room inside the widget for the bloom and the wave rings, so the
+        # glow never gets clipped into a visible square at the widget's edge.
+        base_radius = min(width, height) / 2.0 * 0.72
+        glow, core = _COLORS.get(self._state, _COLORS[IDLE])
 
-        # The Iron Man face: gunmetal housing, ten glowing coil slots and a
-        # white-hot core -- tinted by the state colour, energy-driven.
-        _draw_reactor_face(painter, center, radius,
-                           glow=glow, core_light=core_light,
-                           energy=self._energy, breathe=breathe)
+        if self._state == IDLE:
+            scale = self._pulse
+        elif self._state == LISTENING:
+            scale = 1.0 + 0.035 * math.sin(self._phase * 1.4) + 0.12 * self._energy
+        elif self._state == SPEAKING:
+            scale = 1.0 + 0.030 * math.sin(self._phase * 2.2) + 0.10 * self._energy
+        elif self._state == THINKING:
+            scale = 1.0 + 0.020 * math.sin(self._phase * 2.8)
+        else:
+            scale = 1.0
+        radius = base_radius * scale
 
-        # muted badge: a small dark disc with a slash
+        # --- ambient bloom ------------------------------------------------- #
+        # Fade the bloom to zero by the widget edge; otherwise the clipped
+        # gradient shows up as a faint square behind the orb.
+        halo_radius = min(base_radius * (1.60 + 0.25 * self._energy),
+                          min(width, height) / 2.0 - 1.0)
+        halo = QRadialGradient(center, halo_radius)
+        halo.setColorAt(0.0, QColor(glow.red(), glow.green(), glow.blue(), 80))
+        halo.setColorAt(0.55, QColor(glow.red(), glow.green(), glow.blue(), 26))
+        halo.setColorAt(1.0, QColor(glow.red(), glow.green(), glow.blue(), 0))
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QBrush(halo))
+        painter.drawEllipse(center, halo_radius, halo_radius)
+
+        # --- travelling wave rings (Listening / Speaking) ------------------- #
+        if self._state in (LISTENING, SPEAKING):
+            painter.setBrush(Qt.NoBrush)
+            max_ring = min(width, height) / 2.0 - 1.5
+            for offset, alpha in ((0.045, 95), (0.105, 55), (0.165, 28)):
+                ring = radius * (1.0 + offset + 0.020 * math.sin(
+                    self._phase + offset * 9.0))
+                ring = min(ring, max_ring)
+                painter.setPen(QPen(
+                    QColor(glow.red(), glow.green(), glow.blue(), alpha),
+                    max(1.0, radius * 0.020)))
+                painter.drawEllipse(center, ring, ring)
+            painter.setPen(Qt.NoPen)
+
+        # --- the orb body --------------------------------------------------- #
+        body = QRadialGradient(
+            QPointF(center.x() - radius * 0.10, center.y() - radius * 0.12),
+            radius * 1.25)
+        body.setColorAt(0.0, core.lighter(112))
+        body.setColorAt(0.55, glow)
+        body.setColorAt(1.0, glow.darker(155))
+        painter.setBrush(QBrush(body))
+        painter.drawEllipse(center, radius, radius)
+
+        # --- inner highlight (glass) ---------------------------------------- #
+        highlight_center = QPointF(center.x() - radius * 0.24,
+                                   center.y() - radius * 0.28)
+        highlight_radius = radius * (0.46 + 0.10 * self._energy)
+        highlight = QRadialGradient(highlight_center, highlight_radius)
+        highlight.setColorAt(0.0, QColor(255, 255, 255, 125))
+        highlight.setColorAt(1.0, QColor(255, 255, 255, 0))
+        painter.setBrush(QBrush(highlight))
+        painter.drawEllipse(highlight_center, highlight_radius, highlight_radius)
+
+        # --- muted badge ---------------------------------------------------- #
         if self._state == MUTED:
-            badge_r = radius * 0.28
-            bx = center.x() + radius * 0.60
-            by = center.y() + radius * 0.60
+            badge_radius = radius * 0.28
+            bx = center.x() + radius * 0.58
+            by = center.y() + radius * 0.58
             painter.setPen(Qt.NoPen)
             painter.setBrush(QBrush(QColor(22, 26, 34, 235)))
-            painter.drawEllipse(QPointF(bx, by), badge_r, badge_r)
-            slash = QPen(QColor(255, 90, 90), max(2.0, radius * 0.09))
+            painter.drawEllipse(QPointF(bx, by), badge_radius, badge_radius)
+            slash = QPen(QColor(248, 113, 113), max(2.0, radius * 0.085))
             slash.setCapStyle(Qt.RoundCap)
             painter.setPen(slash)
-            off = badge_r * 0.5
-            painter.drawLine(QPointF(bx - off, by - off), QPointF(bx + off, by + off))
+            offset = badge_radius * 0.5
+            painter.drawLine(QPointF(bx - offset, by - offset),
+                             QPointF(bx + offset, by + offset))
+
         painter.end()
 
     # -- click vs drag ---------------------------------------------------- #
@@ -323,6 +277,81 @@ class Reactor(QWidget):
         event.accept()
 
 
+# Backwards-compatible name: older code and tests called the orb "Reactor".
+Reactor = Orb
+
+
+class Waveform(QWidget):
+    """A live 13-bar waveform driven by ``voice.set_level_sink``.
+
+    A short rolling history makes the bars scroll rather than twitch. Idle keeps
+    a barely-there ripple so the card never looks frozen.
+    """
+
+    BARS = 13
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(58)
+        self.setMinimumWidth(240)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self._bars = deque([0.0] * self.BARS, maxlen=self.BARS)
+        self._level = 0.0
+        self._phase = 0.0
+        self._state = IDLE
+
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+        self._timer.start(40)              # ~25 fps bar motion
+
+    def set_level(self, value):
+        """Feed one 0..1 loudness sample (mic RMS or TTS envelope)."""
+        try:
+            self._level = max(0.0, min(1.0, float(value)))
+        except (TypeError, ValueError):
+            self._level = 0.0
+
+    def set_state(self, state):
+        self._state = state
+
+    def _tick(self):
+        self._phase += 0.55
+        # Modulate with a travelling wave so neighbouring bars differ, but keep a
+        # healthy floor (60%) so the bars read as a waveform rather than dots.
+        wave = abs(math.sin(self._phase))
+        value = self._level * (0.60 + 0.40 * wave)
+        if self._state == IDLE:
+            # A quiet idle shimmer; never zero, never distracting.
+            value = max(value, 0.035 + 0.030 * abs(math.sin(self._phase * 0.6)))
+        self._bars.append(value)
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        width, height = self.width(), self.height()
+        count = len(self._bars)
+        gap = 6.0
+        bar_width = max(3.0, (width - gap * (count - 1)) / count)
+        total_width = bar_width * count + gap * (count - 1)
+        x = (width - total_width) / 2.0
+        glow, core = _COLORS.get(self._state, _COLORS[IDLE])
+
+        painter.setPen(Qt.NoPen)
+        for value in self._bars:
+            bar_height = max(4.0, (height - 10.0) * value)
+            rect = QRectF(x, (height - bar_height) / 2.0, bar_width, bar_height)
+            gradient = QLinearGradient(rect.topLeft(), rect.bottomLeft())
+            gradient.setColorAt(0.0, core)
+            gradient.setColorAt(1.0, glow)
+            painter.setBrush(QBrush(gradient))
+            painter.drawRoundedRect(rect, bar_width / 2.0, bar_width / 2.0)
+            x += bar_width + gap
+
+        painter.end()
+
+
 class JarvisWorker(QThread):
     """Runs listen -> try_local/run_agent -> speak off the GUI thread.
 
@@ -330,6 +359,9 @@ class JarvisWorker(QThread):
     reply it opens the microphone again, so a normal conversation flows without
     clicking. It leaves on any of: an exit word, silence (you went quiet for the
     chat timeout), the mic being muted, or the Stop button.
+
+    While a reply plays, barge-in is armed: starting to talk over Jarvis cuts the
+    speech and returns to listening instead of ending the session.
     """
 
     state_changed = pyqtSignal(str)
@@ -342,6 +374,7 @@ class JarvisWorker(QThread):
         self.memory = memory
         self.chat = chat
         self.chat_timeout = chat_timeout
+        self._barged_in = False
 
     def run(self):
         # The level sink is a module global in voice; only one worker runs at a
@@ -379,7 +412,10 @@ class JarvisWorker(QThread):
                 reply, _kind, _tokens = handle(user, self.memory)
 
                 self.state_changed.emit(SPEAKING)
-                speak(reply)          # prints "🤖 <reply>" exactly once
+                if self._speak_with_barge_in(reply):
+                    # The user talked over the reply: go straight back to
+                    # listening for the new request instead of ending the session.
+                    continue
                 if voice._stop_speaking.is_set():
                     # Stop cut the reply short: leave the conversation rather
                     # than immediately waiting for the next sentence.
@@ -390,6 +426,31 @@ class JarvisWorker(QThread):
             voice.set_level_sink(None)
             self.level.emit(0.0)
             self.state_changed.emit(IDLE)
+
+    def _barge_monitor(self, on_barge):
+        """Build the monitor (a seam tests can replace without a microphone)."""
+        return BargeInMonitor(on_barge=on_barge)
+
+    def _speak_with_barge_in(self, reply):
+        """Speak ``reply``; return True if the user interrupted it by speaking."""
+        self._barged_in = False
+
+        def on_barge():
+            self._barged_in = True
+            voice.stop_speaking()
+            # Update the UI immediately rather than waiting for speak() to return.
+            self.state_changed.emit(LISTENING)
+
+        monitor = self._barge_monitor(on_barge)
+        try:
+            monitor.start()
+        except Exception:
+            pass
+        try:
+            speak(reply)
+        finally:
+            monitor.stop()
+        return self._barged_in
 
 
 class JarvisTray(QSystemTrayIcon):
@@ -441,7 +502,7 @@ class JarvisTray(QSystemTrayIcon):
 
 
 class JarvisWidget(QWidget):
-    """The floating window: reactor + status + mic/stop buttons."""
+    """The floating rounded card: orb + waveform + status + mic/stop controls."""
 
     # Emitted by the wake-word thread (never touch Qt from that thread).
     wake_heard = pyqtSignal()
@@ -453,15 +514,18 @@ class JarvisWidget(QWidget):
         )
         # Transparent top-level window. WA_TranslucentBackground asks the
         # compositor for an ARGB surface; WA_NoSystemBackground stops Qt from
-        # erasing that surface with an opaque system colour (the usual cause of
-        # the black box on X11/Cinnamon in Linux Mint). The stylesheet makes
-        # the widget and its children paint nothing behind the reactor.
+        # erasing that surface with an opaque system colour. paintEvent() then
+        # draws the rounded dark card, so the corners really are transparent.
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WA_NoSystemBackground, True)
         self.setAutoFillBackground(False)
-        self.setStyleSheet("background: transparent;")
+        # Scope the transparency to the card itself: a bare rule would also make
+        # the context menu and any child dialogs transparent.
+        self.setObjectName("jarvisCard")
+        self.setStyleSheet("#jarvisCard { background: transparent; }")
         self.setWindowTitle("Jarvis")
         self.setWindowIcon(make_icon(64))
+        self.setFixedSize(380, 560)
 
         self.memory = Memory()
         self.worker = None
@@ -474,22 +538,59 @@ class JarvisWidget(QWidget):
         # of touching Qt: Qt then delivers it here on the GUI thread.
         self.wake_heard.connect(self._on_wake_heard)
 
-        self.reactor = Reactor(150)
-        self.reactor.clicked.connect(self.trigger)
-        self.reactor.menu_requested.connect(self._show_menu)
+        self._build_ui()
+        self._build_menu()
+        self.tray = None
+        if QSystemTrayIcon.isSystemTrayAvailable():
+            self.tray = JarvisTray(self)
+            self.tray.show()
+
+        # Started last so both menus already exist and can show the right state.
+        self._start_wake()
+        self._center()
+
+    # -- layout ----------------------------------------------------------- #
+    def _build_ui(self):
+        header = QHBoxLayout()
+        header.setSpacing(4)
+        brand = QLabel("Jarvis")
+        brand.setStyleSheet(
+            "color:#F9FAFB; background:transparent; font-size:14px;"
+            "font-weight:700; letter-spacing:0.6px;"
+        )
+        header.addWidget(brand)
+        header.addStretch(1)
+
+        self.minimize_button = self._window_button("–", "minimizeButton")
+        self.minimize_button.setToolTip("Minimise")
+        self.minimize_button.clicked.connect(self._minimize)
+        self.close_button = self._window_button("✕", "closeButton")
+        self.close_button.setToolTip("Hide to tray")
+        self.close_button.clicked.connect(self.close)
+        header.addWidget(self.minimize_button)
+        header.addWidget(self.close_button)
+
+        self.orb = Orb(230)
+        self.orb.clicked.connect(self.trigger)
+        self.orb.menu_requested.connect(self._show_menu)
+        # Backwards-compatible alias: older code called the orb the "reactor".
+        self.reactor = self.orb
+
+        self.waveform = Waveform()
+        self.waveform.setFixedWidth(300)
 
         self.status = QLabel(IDLE)
         self.status.setAlignment(Qt.AlignCenter)
         self.status.setStyleSheet(
-            "color:#dff2ff; background:transparent;"
-            "font-size:13px; font-weight:600;"
+            "color:#F3F4F6; background:transparent;"
+            "font-size:15px; font-weight:600; letter-spacing:0.2px;"
         )
 
         self.transcript = QLabel("")
         self.transcript.setAlignment(Qt.AlignCenter)
-        self.transcript.setMinimumWidth(190)
+        self.transcript.setMinimumWidth(240)
         self.transcript.setStyleSheet(
-            "color:#9fc4e8; background:transparent; font-size:11px;"
+            "color:#9CA3AF; background:transparent; font-size:11px;"
         )
 
         self.mic_button = QPushButton("🎤 Mic On")
@@ -512,24 +613,46 @@ class JarvisWidget(QWidget):
         buttons.addStretch(1)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 16)
-        layout.setSpacing(4)
-        layout.addWidget(self.reactor, alignment=Qt.AlignCenter)
+        layout.setContentsMargins(22, 16, 22, 18)
+        layout.setSpacing(8)
+        layout.addLayout(header)
+        layout.addStretch(1)
+        layout.addWidget(self.orb, alignment=Qt.AlignCenter)
+        layout.addWidget(self.waveform, alignment=Qt.AlignCenter)
+        layout.addSpacing(4)
         layout.addWidget(self.status, alignment=Qt.AlignCenter)
         layout.addWidget(self.transcript, alignment=Qt.AlignCenter)
+        layout.addStretch(1)
         layout.addLayout(buttons)
 
-        self._build_menu()
-        self.tray = None
-        if QSystemTrayIcon.isSystemTrayAvailable():
-            self.tray = JarvisTray(self)
-            self.tray.show()
+    def _window_button(self, text, name):
+        button = QPushButton(text)
+        button.setObjectName(name)
+        button.setFixedSize(28, 28)
+        button.setCursor(Qt.PointingHandCursor)
+        button.setFocusPolicy(Qt.NoFocus)
+        button.setStyleSheet(_WINDOW_BUTTON_STYLE)
+        return button
 
-        # Started last so both menus already exist and can show the right state.
-        self._start_wake()
+    def paintEvent(self, event):
+        """Paint the rounded dark card behind all the child widgets."""
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
 
-        self.resize(self.sizeHint())
-        self._center()
+        rect = QRectF(self.rect()).adjusted(1.0, 1.0, -1.0, -1.0)
+        path = QPainterPath()
+        path.addRoundedRect(rect, 26.0, 26.0)
+
+        card = QLinearGradient(rect.topLeft(), rect.bottomRight())
+        card.setColorAt(0.0, QColor("#25262B"))
+        card.setColorAt(0.45, QColor("#1E1E1E"))
+        card.setColorAt(1.0, QColor("#141518"))
+        painter.fillPath(path, QBrush(card))
+
+        painter.setBrush(Qt.NoBrush)
+        painter.setPen(QPen(QColor(255, 255, 255, 26), 1.0))
+        painter.drawPath(path)
+        painter.end()
 
     def _build_menu(self):
         talk = self._menu.addAction("Talk")
@@ -558,18 +681,30 @@ class JarvisWidget(QWidget):
         screen = QApplication.primaryScreen().availableGeometry()
         self.move(screen.center() - self.rect().center())
 
+    def _minimize(self):
+        """Minimise the card; the tray keeps Jarvis running."""
+        self.showMinimized()
+
+    # -- state ------------------------------------------------------------ #
     def set_state(self, state):
         self.status.setText(state)
-        self.reactor.set_state(state)
+        self.orb.set_state(state)
+        self.waveform.set_state(state)
         # Stop can cut a reply short *or* abandon a listen that is still waiting
         # for you to speak, so it is live whenever Jarvis is busy.
         self.stop_button.setEnabled(state in (LISTENING, SPEAKING))
         if state == IDLE:
-            self.reactor.set_energy(0.0)
+            self.orb.set_energy(0.0)
+            self.waveform.set_level(0.0)
             # Jarvis is done with the microphone, so let "Hey Jarvis" have it back.
             self._resume_wake()
         if self.tray is not None:
             self.tray.setToolTip(f"Jarvis — {state}")
+
+    def _on_level(self, value):
+        """Feed one live loudness sample to the orb and the waveform."""
+        self.orb.set_energy(value)
+        self.waveform.set_level(value)
 
     # -- mic mute --------------------------------------------------------- #
     def toggle_mute(self, _checked=False):
@@ -698,7 +833,7 @@ class JarvisWidget(QWidget):
         self.worker.state_changed.connect(self.set_state)
         self.worker.message.connect(self._log)
         self.worker.heard.connect(self._on_heard)
-        self.worker.level.connect(self.reactor.set_energy)
+        self.worker.level.connect(self._on_level)
         self.worker.start()
 
     def toggle_visible(self):

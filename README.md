@@ -1,15 +1,15 @@
 # Jarvis — Cross-Platform Voice Assistant
 
-**Version 1.0.11**
+**Version 1.2.0**
 
 A voice-controlled desktop assistant for **Linux, Windows and macOS** that can
 *see* your screen, use the internet, and operate the terminal. You speak a
 command; Jarvis either handles it **locally and offline** (regex router — no API
 call) or hands it to a **Groq-backed agent** that can call 40 tools, then answers
 out loud in English. Speech recognition and replies are **English-only by
-design**. A PyQt5 "Arc Reactor" widget lives in the system tray and talks when you
-click it — or when you just say **"Hey Jarvis"**, once the optional offline wake
-word is installed.
+design**. A PyQt5 ChatGPT-Voice-style card lives in the system tray and talks
+when you click it — or when you just say **"Hey Jarvis"**, once the optional
+offline wake word is installed.
 
 Every OS-specific action lives behind a **platform adapter**
 (`platform_adapters/`): Linux uses `arecord`/`pactl`/`playerctl`/`wmctrl`/`xdotool`/
@@ -25,6 +25,24 @@ confirmation-gated everywhere. When a tool is missing it will *print* a
 copy-paste install command for you to run yourself, but it never executes one.
 
 ---
+
+## What's new in the UI overhaul
+
+- **A ChatGPT-Voice-style window.** The old floating reactor is now a frameless,
+  rounded dark card (`#1E1E1E`), always on top, with minimise/close controls in
+  the top-right and one modern status line ("Listening...", "Thinking...",
+  "Jarvis is speaking...").
+- **A living orb and a live waveform.** The orb is a `QPainter` gradient that
+  breathes with a `QPropertyAnimation` when idle, reacts to your real mic level
+  while listening and to the TTS envelope while speaking. Thirteen bars below it
+  scroll in real time from the same `voice.set_level_sink()` data.
+- **Barge-in.** Start talking while Jarvis is speaking and it stops immediately
+  and returns to listening — no Stop button needed. Echo is rejected with a high,
+  sustained RMS threshold; `JARVIS_BARGE_THRESHOLD`, `JARVIS_BARGE_HOLD` and
+  `JARVIS_BARGE_IN=0` tune it, and push-to-talk (`JARVIS_PTT=1`) disables it.
+- **A new app icon.** A glowing azure orb with a stylised "J" on a charcoal tile,
+  drawn by `icon_art.py` and written to `assets/jarvis-{32,48,64,128,256}.png` by
+  `gen_icon.py`; the window, tray and launcher all share that one artwork.
 
 ## What's new in 1.0.11
 
@@ -209,13 +227,13 @@ copy-paste install command for you to run yourself, but it never executes one.
   shutdown/restart/logout/suspend, before any risky terminal command, and before
   destructive screen-automation goals (delete/buy/send/…). `close/quit/kill X`
   can never become a YouTube search.
-- **Two front ends** — a terminal loop (`main.py`) and a floating, transparent,
-  always-on-top reactor widget with a system tray (`gui.py`). Both share
+- **Two front ends** — a terminal loop (`main.py`) and a floating, rounded,
+  always-on-top voice card with a system tray (`gui.py`). Both share
   `main.handle()`, so confirmation and routing behave identically in each. The
-  widget is a mini voice-chat console: it reacts to your voice, moves while it
-  speaks, and has a mic mute button and a Stop button. One click starts a
-  **continuous conversation**: Jarvis replies, then keeps listening so you can
-  just talk, hands-free.
+  card is a mini voice-chat console: a breathing orb, a live 13-bar waveform, a
+  mic mute button and a Stop button. One click starts a **continuous
+  conversation**: Jarvis replies, then keeps listening so you can just talk,
+  hands-free — and you can interrupt a reply by simply speaking.
 - **Optional offline wake word** — say **"Hey Jarvis"** instead of clicking. The
   GUI listens through `openWakeWord`'s pretrained ONNX model: no network, no
   account, no API key, ~1-2% of one CPU core, and English-only like everything
@@ -382,14 +400,17 @@ In the CLI loop, `[STAT]` lines show token counts and track local vs. agent vs.
 cache hits. Say **"exit"**, **"quit"**, **"bye"** or **"stop"** (on their own) to
 end a session.
 
-**GUI:** left-click the reactor (or the tray icon) to talk — or just say **"Hey
-Jarvis"** once the wake word is installed — drag to move it, right-click for the
-menu, `Esc` or closing the window hides it to the tray, and only **Quit** in the
-tray menu really exits. The orb **reacts to your voice** while it listens and
-**moves while it speaks**; the **Mic** button mutes/unmutes the microphone
-instantly (also `M` or the tray's *Mute mic* — and it silences the wake word too),
-and **Stop** (or `Space`) cuts a reply off mid-sentence — or abandons a listen that
-is still waiting for you — and in continuous chat it also ends the whole exchange.
+**GUI:** left-click the orb (or the tray icon) to talk — or just say **"Hey
+Jarvis"** once the wake word is installed — drag to move the card, right-click
+for the menu, `Esc` or the **✕** button hides it to the tray, and only **Quit**
+in the tray menu really exits. The orb **breathes** when idle, **reacts to your
+voice** while it listens and **moves while it speaks**, and the 13-bar waveform
+under it shows the live level. Start talking while Jarvis speaks to **interrupt
+it** (barge-in): the reply stops and Jarvis goes straight back to listening. The
+**Mic** button mutes/unmutes the microphone instantly (also `M` or the tray's
+*Mute mic* — and it silences the wake word too), and **Stop** (or `Space`) cuts a
+reply off mid-sentence — or abandons a listen that is still waiting for you — and
+in continuous chat it also ends the whole exchange.
 With **Continuous chat** on (the default, `JARVIS_CHAT=0` for the old one-shot
 behaviour), Jarvis **keeps the microphone open after each reply**: you answer, it
 replies, and you just keep talking until you go quiet (60 s,
@@ -399,8 +420,8 @@ tray menu) switch the wake word and the chat mode off and on while Jarvis runs.
 
 **Desktop launcher.** `./run.sh` starts the GUI with the right virtualenv, and
 `./venv/bin/python install_desktop.py` adds Jarvis to your application menu with
-the arc-reactor icon (`--autostart` also starts it at login; `--uninstall` removes
-exactly what it wrote). To keep it running after you close the terminal:
+the glowing-orb icon (`--autostart` also starts it at login; `--uninstall`
+removes exactly what it wrote). To keep it running after you close the terminal:
 
 ```bash
 nohup ./run.sh >/tmp/jarvis.log 2>&1 &     # start in the background
@@ -525,12 +546,14 @@ confirmation first, then tries the router, and only sends a miss to the agent.
 | `tools.py` | The tool functions (see the list below). |
 | `memory.py` | Rolling `deque` window of recent turns. |
 | `main.py` | Entry point and `handle()` dispatch (`--text`, `--offline`, `--screen`, `--gui`, `--check`, `--version`). |
-| `gui.py` | PyQt5 Arc Reactor widget + system tray; the listen/think/speak cycle runs on a `QThread` — and with continuous chat on, that thread loops turn after turn until you go quiet, say an exit word, press Stop or mute. The orb and the launcher icon share one reactor painter (`_draw_reactor_face`), tinted by state and driven by live mic levels / the TTS loudness envelope; the widget adds a mic mute/unmute button and a Stop button. Owns the wake listener's lifecycle (start/pause/resume/stop). |
+| `gui.py` | PyQt5 ChatGPT-Voice-style card + system tray; the listen/think/speak cycle runs on a `QThread` — and with continuous chat on, that thread loops turn after turn until you go quiet, say an exit word, press Stop or mute. The breathing `Orb` and 13-bar `Waveform` are driven by live mic levels / the TTS loudness envelope; the worker arms a `voice.BargeInMonitor` while speaking, so talking over a reply cuts it short and returns to listening. Frameless rounded card with minimise/close controls. Owns the wake listener's lifecycle (start/pause/resume/stop). |
+| `icon_art.py` | The vector artwork for the app icon (charcoal tile, azure orb, stylised "J"), shared by the GUI, the tray and `gen_icon.py`. |
+| `gen_icon.py` | Renders `assets/jarvis-{32,48,64,128,256}.png` from `icon_art.py`, headless and PyQt-only. |
 | `wake.py` | Optional offline **"Hey Jarvis"** wake word (openWakeWord ONNX). `Detector` re-frames audio into 80 ms frames and applies the threshold; `Listener` streams the mic on a daemon thread, hands the device over before any listen cycle, and stays silent while the mic is muted. Importable without openWakeWord. |
 | `doctor.py` | Readiness self-check. Prints a copy-paste install line for missing tools (never runs it), and the wake-word status. |
-| `install_desktop.py` | Adds/removes the application-menu entry (and optionally autostart), pointing at this checkout. Writes only inside your own home directory; `--uninstall` is exact. |
+| `install_desktop.py` | Adds/removes the application-menu entry (and optionally autostart), pointing at this checkout and the regenerated icon. Writes only inside your own home directory; `--uninstall` is exact. |
 | `run.sh` | Starts the GUI through the project's virtualenv without needing `cd`. |
-| `assets/jarvis-*.png` | The Iron Man arc-reactor icon at 32-256 px, generated from `gui.make_icon()`. |
+| `assets/jarvis-*.png` | The glowing-orb/"J" app icon at 32-256 px, generated by `gen_icon.py`. |
 | `test_mic.py` | Standalone mic diagnostic. |
 
 ### Tools (40)

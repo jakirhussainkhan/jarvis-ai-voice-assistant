@@ -189,6 +189,20 @@ def stop_listening():
     _stop_listening.set()
 
 
+# --- barge-in (talking over a reply) ---------------------------------------- #
+# While Jarvis speaks, a monitor thread watches the microphone. If the user's
+# voice stays above this threshold for _BARGE_HOLD seconds, the reply is cut
+# short and the GUI goes back to listening. The threshold is deliberately high so
+# that Jarvis's own voice leaking back from the speakers (echo) does not trigger
+# it; JARVIS_PTT=1 disables barge-in entirely, since push-to-talk already gives
+# the user explicit control of the microphone.
+_BARGE_ENABLED = os.getenv("JARVIS_BARGE_IN", "1").strip().lower() not in (
+    "0", "false", "no", "off",
+)
+_BARGE_THRESHOLD = _env_int("JARVIS_BARGE_THRESHOLD", 2600, 300)
+_BARGE_HOLD = _env_float("JARVIS_BARGE_HOLD", 0.5, 0.2)
+
+
 def _ptt_active():
     """Push-to-talk only makes sense on an interactive terminal."""
     try:
@@ -300,6 +314,95 @@ def _read_chunk(stream, fd, deadline):
             break
         buf.extend(piece)
     return bytes(buf)
+
+
+class BargeInMonitor:
+    """Watch the microphone while Jarvis speaks and detect the user talking over it.
+
+    Detection is deliberately conservative: ``hold`` seconds of *consecutive*
+    chunks must stay above ``threshold`` before firing. That is long enough for a
+    real spoken interruption and short enough to feel immediate, while the high
+    default threshold rejects the quieter, intermittent echo of Jarvis's own voice
+    coming back through the speakers.
+
+    :meth:`feed` is split out from :meth:`_run` so the detection rule can be
+    unit-tested with synthetic PCM, without a microphone or a real thread.
+    """
+
+    def __init__(self, on_barge=None, threshold=None, hold=None):
+        self._on_barge = on_barge
+        self.threshold = _BARGE_THRESHOLD if threshold is None else int(threshold)
+        hold = _BARGE_HOLD if hold is None else float(hold)
+        # Convert the hold time to whole chunks so detection is deterministic.
+        self.required = max(1, int(round(hold / _CHUNK_SECONDS)))
+        self._loud = 0
+        self._stop = threading.Event()
+        self._thread = None
+        self.detected = False
+
+    def start(self):
+        """Start watching the mic. Returns False when disabled or unavailable."""
+        if not _BARGE_ENABLED or _ptt_active() or _mic_muted:
+            return False
+        self._stop.clear()
+        self._loud = 0
+        self.detected = False
+        self._thread = threading.Thread(target=self._run, daemon=True,
+                                        name="jarvis-barge-in")
+        self._thread.start()
+        return True
+
+    def stop(self, timeout=0.6):
+        """Stop watching and wait briefly for the capture thread to finish."""
+        self._stop.set()
+        thread = self._thread
+        if thread is not None:
+            thread.join(timeout)
+        self._thread = None
+
+    def feed(self, data):
+        """Process one PCM chunk; return True once barge-in is confirmed."""
+        if not data:
+            return False
+        rms = _rms(data, _SAMPLE_WIDTH)
+        if rms < self.threshold:
+            self._loud = 0
+            return False
+        self._loud += 1
+        if self._loud >= self.required:
+            self.detected = True
+            return True
+        return False
+
+    def _run(self):
+        """Capture loop: reads chunks until stopped or a barge-in is confirmed."""
+        proc = None
+        try:
+            proc = _spawn_arecord(_mic_device())
+            stream = proc.stdout
+            fd = stream.fileno()
+            # Discard the stream-open spike and let the room settle, exactly as
+            # the normal listen path does.
+            for _ in range(_WARMUP_CHUNKS):
+                if self._stop.is_set():
+                    return
+                _read_chunk(stream, fd,
+                            time.monotonic() + _CHUNK_SECONDS * 2)
+            while not self._stop.is_set():
+                data = _read_chunk(stream, fd,
+                                   time.monotonic() + _CHUNK_SECONDS * 2)
+                if not data:
+                    break
+                if self.feed(data):
+                    if self._on_barge is not None:
+                        with contextlib.suppress(Exception):
+                            self._on_barge()
+                    return
+        except Exception as exc:
+            _dbg(f"barge-in monitor stopped: {type(exc).__name__}: {exc}")
+        finally:
+            if proc is not None:
+                _stop_arecord(proc)
 
 
 def _capture_from_stream(stream, fd=None, ptt=False, stop_event=None,

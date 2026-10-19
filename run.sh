@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Launch the Jarvis GUI: the floating Arc Reactor widget + system tray.
+# Launch the Jarvis GUI: the floating ChatGPT-Voice-style card + system tray.
 #
 #   ./run.sh
 #
-# Left-click the orb (or the tray icon) to talk; Esc or closing the window hides
-# it to the tray. Stop it with Ctrl+C here, or "Quit" in the tray menu.
+# Left-click the orb (or the tray icon) to talk; Esc or the ✕ button hides it to
+# the tray. Start speaking while Jarvis talks to interrupt it. Stop it with
+# Ctrl+C here, or "Quit" in the tray menu.
 #
 # Optional: ./venv/bin/python install_desktop.py   # add it to the app menu
 set -euo pipefail
