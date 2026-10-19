@@ -256,6 +256,26 @@ def fn_recall_facts() -> str:
     )
 
 
+def fn_forget_fact(keyword: str) -> str:
+    """Delete saved personal facts that match ``keyword``.
+
+    Use this when the user asks you to forget something ("forget my name",
+    "forget my birthday") or when they correct a fact you already saved -- for
+    example, delete the old name before saving a new one. Matching is
+    case-insensitive and substring-based, so "name" removes "my name is Jakir".
+    """
+    keyword = " ".join(str(keyword or "").split())
+    if not keyword:
+        return "What should I forget?"
+    try:
+        removed = _fact_memory().delete_fact(keyword)
+    except Exception as exc:
+        return f"I couldn't forget that fact: {exc}"
+    if not removed:
+        return f"I don't have any saved facts matching {keyword}."
+    return f"Forgot facts matching {keyword}"
+
+
 def fn_read_file(path: str) -> str:
     """Return the first 1500 characters of a text file.
 

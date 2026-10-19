@@ -56,6 +56,30 @@ _PHRASE_TIME_LIMIT = _env_int("JARVIS_PHRASE_LIMIT", 15, 3)
 #   so a wordy request is never truncated mid-way.
 _RECOGNIZE_TIMEOUT = 15    # max seconds for the speech-to-text HTTP round-trip
 
+# Bias phrases fed to faster-whisper as ``initial_prompt``. Whisper uses the
+# prompt as preceding context, so it favours these spellings instead of guessing
+# from the acoustics alone. Without it, "Jakir" is regularly transcribed as
+# "Jahan" or "Zaaakir".
+STT_INITIAL_PROMPT = (
+    "My name is Jakir. Jarvis is an AI assistant. Dhaka, Bangladesh."
+)
+
+# Google STT has no prompt/biasing option, so the same corrections are applied
+# to its output. "Jahan" is only rewritten in a name-introduction context (it is
+# a real word elsewhere); the "Zaaakir"-style spellings are unambiguous.
+_MISHEARD_NAME = re.compile(
+    r"\b(my name is|i am|i'm|this is|call me)\s+(?:jahan|zaa+kir|zaakir)\b",
+    re.I,
+)
+_SPELLED_NAME = re.compile(r"\bzaa+kir\b", re.I)
+
+
+def _fix_misheard_name(text):
+    """Correct known STT mishearings of the user's name in ``text``."""
+    text = _SPELLED_NAME.sub("Jakir", text or "")
+    return _MISHEARD_NAME.sub(lambda match: f"{match.group(1)} Jakir", text)
+
+
 # Fixed RMS gate: no ambient auto-calibration and no dynamic threshold.
 # Measured on this machine's onboard mic (ALC245): idle ambient RMS is ~40-80,
 # while speech lands in the thousands, so 300 separates the two cleanly.
@@ -717,7 +741,11 @@ def _local_transcribe(audio):
             wf.setframerate(audio.sample_rate)
             wf.writeframes(audio.get_raw_data())
         language = (STT_LANG or "en").split("-")[0]
-        segments, _info = _whisper_model.transcribe(path, language=language)
+        segments, _info = _whisper_model.transcribe(
+            path,
+            language=language,
+            initial_prompt=STT_INITIAL_PROMPT,
+        )
         return " ".join(segment.text for segment in segments).strip()
     except Exception as exc:
         _dbg(f"offline transcription failed: {type(exc).__name__}: {exc}")
@@ -835,6 +863,10 @@ def listen(wait=None, *, label="", barge=False):
     _dbg(f"recognised: {text!r}")
     if not text:
         return ""
+    fixed = _fix_misheard_name(text)
+    if fixed != text:
+        _dbg(f"corrected name: {fixed!r}")
+        text = fixed
     if barge and is_stop_phrase(text):
         # The barge-in monitor already started cutting the reply; this catches
         # the spoken "stop" itself so it is not dispatched as a command or

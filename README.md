@@ -2,12 +2,12 @@
 
 # Jarvis — Cross-Platform Voice Assistant
 
-**Version 2.0.0**
+**Version 2.0.1**
 
 A voice-controlled desktop assistant for **Linux, Windows and macOS** that can
 *see* your screen, use the internet, and operate the terminal. You speak a
 command; Jarvis either handles it **locally and offline** (regex router — no API
-call) or hands it to a **Groq-backed agent** that can call 43 tools, then answers
+call) or hands it to a **Groq-backed agent** that can call 44 tools, then answers
 out loud in English. Speech recognition and replies are **English-only by
 design**. A PyQt5 ChatGPT-Voice-style card lives in the system tray and talks
 when you click it — or when you just say **"Hey Jarvis"**, once the optional
@@ -252,8 +252,10 @@ copy-paste install command for you to run yourself, but it never executes one.
 - **Long-term memory** — durable personal facts (name, preferences, birthdays)
   are stored in the same local SQLite database under `user_facts`. The agent
   saves them with `fn_remember_fact`, recalls them with `fn_recall_facts`, and
-  receives the 15 most recent facts as a `[SYSTEM MEMORY: ...]` message before
-  each prompt. The static system instruction stays unchanged for prefix caching.
+  deletes or replaces them with `fn_forget_fact` (say "forget my name", or give
+  a new name and the old one is removed first). The agent receives the 15 most
+  recent facts as a `[SYSTEM MEMORY: ...]` message before each prompt. The static
+  system instruction stays unchanged for prefix caching.
 - **Readiness report** — `./venv/bin/python doctor.py` (or `main.py --check`)
   prints the session type, which tools are installed and what each missing one
   costs, the model and vision model, the app count, how to try every command, and
@@ -269,7 +271,7 @@ copy-paste install command for you to run yourself, but it never executes one.
   abandons a pending wait. Playing media is paused while Jarvis listens and
   resumed afterwards (best effort), and `JARVIS_PTT=1` switches to push-to-talk
   for noisy rooms.
-- **Tests** — a `pytest` suite of **488 tests** (1 skipped) covering routing, app
+- **Tests** — a `pytest` suite of **501 tests** (1 skipped) covering routing, app
   matching, the protected list, the confirmation flow, the terminal guardrails,
   screen routing, clipboard fallbacks, offline behaviour, the internet tools,
   vision parsing, timers, the YouTube path (play-by-name and on-screen picks),
@@ -559,7 +561,7 @@ confirmation first, then tries the router, and only sends a miss to the agent.
 | `shell.py` | The guarded terminal (`run`, `explain_refusal`, `_is_risky`). |
 | `timers.py` | In-process timers and reminders. |
 | `confirm.py` | Pending "Are you sure?" state: yes runs, anything else cancels, 15 s expiry. |
-| `agent.py` | Groq orchestration with an optional Ollama backend: response cache, token accounting, tool schemas from function signatures, English-only system instruction, bounded tool loop, long-term fact injection, 43 tools. |
+| `agent.py` | Groq orchestration with an optional Ollama backend: response cache, token accounting, tool schemas from function signatures, English-only system instruction, bounded tool loop, long-term fact injection, 44 tools. |
 | `tools.py` | The tool functions (see the list below). |
 | `memory.py` | SQLite conversation history plus the persistent `user_facts` table for long-term personal memory. |
 | `main.py` | Entry point and `handle()` dispatch (`--text`, `--offline`, `--local`, `--screen`, `--gui`, `--check`, `--version`). |
@@ -585,7 +587,7 @@ Internet: `fn_web_search`, `fn_web_lookup`, `fn_fetch_page`, `fn_wikipedia`,
 System & files: `fn_open_path`, `fn_find_files`, `fn_clipboard`, `fn_notify`,
 `fn_lock_screen`, `fn_system_status`, `fn_system_info`, `fn_kill_process`.
 Notes & timers: `fn_save_note`, `fn_read_file`, `fn_set_timer`, `fn_set_reminder`.
-Long-term memory: `fn_remember_fact`, `fn_recall_facts`.
+Long-term memory: `fn_remember_fact`, `fn_recall_facts`, `fn_forget_fact`.
 
 ---
 

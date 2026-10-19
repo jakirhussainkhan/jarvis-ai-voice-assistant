@@ -326,6 +326,62 @@ def test_local_transcribe_returns_empty_without_faster_whisper(monkeypatch):
     assert voice._whisper_unavailable is True
 
 
+# --------------------------------------------------------------------------- #
+# STT name biasing (initial_prompt) and misheard-name correction
+# --------------------------------------------------------------------------- #
+
+class _FakeWhisperModel:
+    """Stand-in for faster_whisper.WhisperModel that records the call kwargs."""
+
+    def __init__(self, text="my name is Jakir"):
+        self.text = text
+        self.calls = []
+
+    def transcribe(self, path, **kwargs):
+        self.calls.append({"path": path, **kwargs})
+        segment = type("Segment", (), {"text": self.text})
+        return [segment], {"language": "en"}
+
+
+def test_local_transcribe_passes_the_name_biased_initial_prompt(monkeypatch):
+    model = _FakeWhisperModel()
+    monkeypatch.setattr(voice, "_whisper_model", model)
+    monkeypatch.setattr(voice, "_whisper_unavailable", False)
+
+    audio = sr.AudioData(b"\x00\x00" * 100, voice._SAMPLE_RATE, voice._SAMPLE_WIDTH)
+    assert voice._local_transcribe(audio) == "my name is Jakir"
+
+    assert len(model.calls) == 1
+    assert model.calls[0]["initial_prompt"] == voice.STT_INITIAL_PROMPT
+    assert model.calls[0]["initial_prompt"] == (
+        "My name is Jakir. Jarvis is an AI assistant. Dhaka, Bangladesh."
+    )
+    # The language hint must still be sent alongside the prompt.
+    assert model.calls[0]["language"] == voice.STT_LANG.split("-")[0]
+
+
+def test_google_output_is_corrected_when_the_name_is_misheard(monkeypatch):
+    def recognise(self, audio, language=None):
+        return "my name is Jahan"
+
+    assert _recognising_listen(monkeypatch, recognise) == "my name is jakir"
+
+
+def test_zaaakir_spelling_is_corrected(monkeypatch):
+    def recognise(self, audio, language=None):
+        return "hello zaaakir"
+
+    assert _recognising_listen(monkeypatch, recognise) == "hello jakir"
+
+
+def test_name_correction_leaves_unrelated_sentences_alone():
+    assert voice._fix_misheard_name("the jahan dynasty was famous") == (
+        "the jahan dynasty was famous"
+    )
+    assert voice._fix_misheard_name("my name is Jakir") == "my name is Jakir"
+    assert voice._fix_misheard_name("") == ""
+
+
 def test_listen_returns_empty_without_capturing_when_muted(monkeypatch):
     """A muted mic must not even open arecord (nor call STT)."""
     monkeypatch.setattr(voice, "_mic_muted", True)

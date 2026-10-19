@@ -111,3 +111,59 @@ def test_clear_history_keeps_long_term_facts(tmp_path):
 
     mem.clear_facts()
     assert mem.get_facts() == []
+
+
+# --------------------------------------------------------------------------- #
+# forgetting / replacing facts
+# --------------------------------------------------------------------------- #
+
+def test_delete_fact_removes_only_matching_facts(tmp_path):
+    mem = Memory(db_path=str(tmp_path / "m.db"))
+    mem.add_fact("my name is Jakir")
+    mem.add_fact("I prefer tea over coffee")
+
+    assert mem.delete_fact("Jakir") == 1
+    assert mem.get_facts() == ["I prefer tea over coffee"]
+
+
+def test_delete_fact_is_case_insensitive_and_substring(tmp_path):
+    mem = Memory(db_path=str(tmp_path / "m.db"))
+    mem.add_fact("my name is Jakir")
+    mem.add_fact("my birthday is in May")
+
+    assert mem.delete_fact("name") == 1
+    assert mem.get_facts() == ["my birthday is in May"]
+
+    mem.add_fact("MY NAME IS JAKIR")
+    assert mem.delete_fact("my name") == 1
+    assert mem.get_facts() == ["my birthday is in May"]
+
+
+def test_delete_fact_returns_zero_when_nothing_matches(tmp_path):
+    mem = Memory(db_path=str(tmp_path / "m.db"))
+    mem.add_fact("I prefer tea over coffee")
+
+    assert mem.delete_fact("Jakir") == 0
+    assert mem.get_facts() == ["I prefer tea over coffee"]
+
+
+def test_delete_fact_with_empty_keyword_deletes_nothing(tmp_path):
+    mem = Memory(db_path=str(tmp_path / "m.db"))
+    mem.add_fact("my name is Jakir")
+
+    assert mem.delete_fact("") == 0
+    assert mem.delete_fact("   ") == 0
+    assert mem.get_facts() == ["my name is Jakir"]
+
+
+def test_deleted_fact_does_not_come_back_after_restart(tmp_path):
+    path = str(tmp_path / "m.db")
+    first = Memory(db_path=path)
+    first.add_fact("my name is Jakir")
+    first.add_fact("my name is John")
+    assert first.delete_fact("Jakir") == 1
+    first.close()
+
+    second = Memory(db_path=path)
+    assert second.get_facts() == ["my name is John"]
+

@@ -78,11 +78,64 @@ def test_agent_does_not_inject_an_empty_memory_message(tmp_path, monkeypatch):
 def test_memory_tools_are_registered_and_pruned_for_memory_queries():
     assert agent._DISPATCH["fn_remember_fact"] is tools.fn_remember_fact
     assert agent._DISPATCH["fn_recall_facts"] is tools.fn_recall_facts
+    assert agent._DISPATCH["fn_forget_fact"] is tools.fn_forget_fact
     names = {
         schema["function"]["name"]
         for schema in agent.tools_for("Please remember my name is Jakir")
     }
-    assert {"fn_remember_fact", "fn_recall_facts"} <= names
+    assert {"fn_remember_fact", "fn_recall_facts", "fn_forget_fact"} <= names
+
+    # A correction or forget request must also expose the new tool.
+    for utterance in ("forget my name", "my name is Jakir, not John"):
+        names = {schema["function"]["name"] for schema in agent.tools_for(utterance)}
+        assert "fn_forget_fact" in names
+
+
+def test_system_prompt_teaches_name_corrections():
+    prompt = agent.SYSTEM_INSTRUCTION
+    assert "fn_forget_fact" in prompt
+    assert "My name is X" in prompt
+    assert "Forget my name" in prompt
+
+
+def test_forget_fact_deletes_matching_saved_facts(tmp_path, monkeypatch):
+    monkeypatch.setenv("JARVIS_MEMORY_DB", str(tmp_path / "facts.db"))
+    memory.reset_default_memory()
+    try:
+        tools.fn_remember_fact("my name is Jakir")
+        tools.fn_remember_fact("I prefer tea over coffee")
+
+        out = tools.fn_forget_fact("Jakir")
+        assert out == "Forgot facts matching Jakir"
+
+        recalled = tools.fn_recall_facts()
+        assert "Jakir" not in recalled
+        assert "I prefer tea over coffee" in recalled
+    finally:
+        memory.reset_default_memory()
+
+
+def test_forget_fact_reports_when_nothing_matches(tmp_path, monkeypatch):
+    monkeypatch.setenv("JARVIS_MEMORY_DB", str(tmp_path / "facts.db"))
+    memory.reset_default_memory()
+    try:
+        tools.fn_remember_fact("I prefer tea over coffee")
+        assert "don't have any saved facts" in tools.fn_forget_fact("Jakir")
+        assert "What should I forget" in tools.fn_forget_fact("  ")
+    finally:
+        memory.reset_default_memory()
+
+
+def test_forget_fact_uses_the_active_turn_memory(tmp_path):
+    mem = Memory(db_path=str(tmp_path / "memory.db"))
+    mem.add_fact("my name is Jakir")
+    token = tools.set_active_memory(mem)
+    try:
+        assert tools.fn_forget_fact("name") == "Forgot facts matching name"
+    finally:
+        tools.reset_active_memory(token)
+
+    assert mem.get_facts() == []
 
 
 def test_memory_tools_save_and_recall_facts(tmp_path, monkeypatch):

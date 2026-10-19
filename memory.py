@@ -135,6 +135,23 @@ class Memory:
             self._conn.execute("DELETE FROM user_facts")
             self._conn.commit()
 
+    def delete_fact(self, keyword: str):
+        """Delete saved facts whose text contains ``keyword``.
+
+        Matching is case-insensitive for ASCII text (SQLite's ``LIKE``), so
+        ``delete_fact("jakir")`` also removes "my name is Jakir". Returns the
+        number of rows removed; an empty keyword deletes nothing.
+        """
+        keyword = " ".join(str(keyword or "").split())
+        if not keyword:
+            return 0
+        with self._lock:
+            cursor = self._conn.execute(
+                "DELETE FROM user_facts WHERE fact LIKE ?", (f"%{keyword}%",)
+            )
+            self._conn.commit()
+        return max(0, int(cursor.rowcount or 0))
+
     def get_transcript(self, limit=None):
         """Return the last ``limit`` turns as a readable transcript."""
         limit = self.limit if limit is None else limit

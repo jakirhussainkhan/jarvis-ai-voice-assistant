@@ -39,6 +39,7 @@ from tools import (
     fn_fetch_page,
     fn_find_files,
     fn_focus_window,
+    fn_forget_fact,
     fn_kill_process,
     fn_list_running,
     fn_list_windows,
@@ -132,7 +133,13 @@ SYSTEM_INSTRUCTION = (
     "Memory: When the user tells you a personal fact, preference, or their name, "
     "use fn_remember_fact to save it for future sessions. If the user asks what "
     "you know about them, use fn_recall_facts. Relevant saved facts also appear "
-    "in a [SYSTEM MEMORY: ...] user message before the current question.\n"
+    "in a [SYSTEM MEMORY: ...] user message before the current question. "
+    "If the user says 'My name is X' and you already have a different name saved, "
+    "use fn_forget_fact to delete the old name before saving the new one. "
+    "If the user says 'Forget my name', use fn_forget_fact. "
+    "Use fn_forget_fact for any other 'forget ...' or correction request too "
+    "(for example 'forget my birthday', 'forget my old address'), then save the "
+    "replacement with fn_remember_fact when one is given.\n"
     "If a tool reports it needs confirmation, the user will hear the question and "
     "can say yes -- do not ask again yourself.\n"
     "IDENTITY RULE: If the user asks who created you, who made you, who built "
@@ -185,6 +192,7 @@ _TOOLS = [
     fn_read_file,
     fn_remember_fact,
     fn_recall_facts,
+    fn_forget_fact,
     fn_set_timer,
     fn_set_reminder,
     fn_kill_process,
@@ -311,7 +319,7 @@ _INTENT_PATTERNS = [
     ("MEMORY", re.compile(
         r"\b(remember|recall|memory|facts?|know about me|my name|my birthday|"
         r"my preferences?|prefer|favorites?|favourites?|profile|call me|"
-        r"myself)\b", re.I)),
+        r"forget|myself)\b", re.I)),
     ("MEDIA", re.compile(
         r"\b(play|watch|listen|song|songs|music|video|youtube|pause|unpause|"
         r"resume|next|previous|skip|seek|now playing|what'?s playing|volume|"
@@ -335,7 +343,7 @@ _INTENT_PATTERNS = [
 # 3-5 tools per intent. Kept deliberately tight -- this is the token saver.
 _INTENT_TOOLS = {
     "VISION": [fn_see_screen, fn_screen_do, fn_click, fn_type_text, fn_press_keys],
-    "MEMORY": [fn_remember_fact, fn_recall_facts, fn_save_note],
+    "MEMORY": [fn_remember_fact, fn_recall_facts, fn_forget_fact, fn_save_note],
     "MEDIA": [fn_youtube, fn_media, fn_media_seek, fn_now_playing, fn_volume],
     "CODE": [fn_execute_python, fn_run_command, fn_read_file, fn_find_files,
              fn_open_path],

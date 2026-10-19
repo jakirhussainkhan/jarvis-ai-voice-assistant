@@ -16,7 +16,7 @@ is installed.
 | CLI loop (`main.py`) | Working |
 | Voice I/O (STT + TTS) | Working, English-only (STT via `arecord` + Google; continuous sounddevice streaming TTS) |
 | Local command router (offline-first) | Working (apps, folders, windows, media, volume, brightness, clipboard, screenshot, lock, status, time, dictated commands) |
-| Groq agent + 43 tools | Working (needs `GROQ_API_KEY`) |
+| Groq agent + 44 tools | Working (needs `GROQ_API_KEY`) |
 | Screen vision (read + operate) | Working on the real screen (`qwen/qwen3.8-27b`, verified live) |
 | Live internet (search/page/Wikipedia/weather) | Working (keyless, verified live) |
 | Guarded terminal | Working (3-layer guard; power/session commands refused in code) |
@@ -29,9 +29,31 @@ is installed.
 | Timers / reminders | Working |
 | Offline wake word ("Hey Jarvis") | **Built + unit-tested; NOT yet verified live** (needs `pip install openwakeword onnxruntime`) |
 | Desktop launcher (`run.sh` + app-menu entry) | Working (verified: `desktop-file-validate` clean, GUI starts) |
-| Tests | `pytest` suite — **477+ passed, 1 skipped** |
+| Tests | `pytest` suite — **501 passed, 1 skipped** |
 | Spoken voice | `en-GB-RyanNeural` (British male); override with `JARVIS_TTS_VOICE` |
-| Published | GitHub, tags **`v1.0.1`**…**`v2.0.0`** (README + MIT LICENSE) |
+| Published | GitHub, tags **`v1.0.1`**…**`v2.0.1`** (README + MIT LICENSE) |
+
+## STT Name Correction & Forget Memory Tool (2026-10-19, v2.0.1)
+
+A focused patch release that makes Jarvis reliably recognise the user's name and
+gives it a way to delete or replace facts it has already saved.
+
+- **STT Biasing:** The offline `faster-whisper` path now passes an
+  `initial_prompt` ("My name is Jakir. Jarvis is an AI assistant. Dhaka,
+  Bangladesh.") so the model favours the correct spellings, and the Google STT
+  output is run through a conservative regex correction that rewrites "Jahan"
+  (in a name-introduction context) and "Zaaakir" to "Jakir". This fixes the
+  user's name being transcribed as "Jahan" or "Zaaakir".
+- **Memory Tool:** Added `fn_forget_fact(keyword)`, backed by a new
+  `Memory.delete_fact(keyword)` that runs `DELETE FROM user_facts WHERE fact LIKE
+  ?` with `%keyword%`. It is registered in the agent's tool list and the MEMORY
+  intent set, and the system prompt now instructs Jarvis to delete an old name
+  before saving a new one when the user says "My name is X", and to use the tool
+  for "Forget my name" and other correction requests.
+- **Tests:** Expanded the suite with cases for `delete_fact` (matching,
+  case-insensitivity, no-match, empty keyword, persistence) and for the STT
+  `initial_prompt` / misheard-name correction, plus tool registration and system
+  prompt coverage — **501 passed, 1 skipped**.
 
 ## The Ultimate v2.0.0 Release (2026-10-19)
 
