@@ -2,7 +2,7 @@
 
 Last updated: 2026-10-19
 
-A voice-controlled Linux desktop assistant. You speak a command; Jarvis either
+A voice-controlled cross-platform desktop assistant. You speak a command; Jarvis either
 handles it locally (regex, offline) or forwards it to a Groq-backed agent that
 can call tools, then answers out loud in English. STT and replies are
 English-only by design. A PyQt5 ChatGPT-Voice-style card provides a click-to-talk
@@ -16,7 +16,7 @@ is installed.
 | CLI loop (`main.py`) | Working |
 | Voice I/O (STT + TTS) | Working, English-only (STT via `arecord` + Google; continuous sounddevice streaming TTS) |
 | Local command router (offline-first) | Working (apps, folders, windows, media, volume, brightness, clipboard, screenshot, lock, status, time, dictated commands) |
-| Groq agent + 41 tools | Working (needs `GROQ_API_KEY`) |
+| Groq agent + 43 tools | Working (needs `GROQ_API_KEY`) |
 | Screen vision (read + operate) | Working on the real screen (`qwen/qwen3.8-27b`, verified live) |
 | Live internet (search/page/Wikipedia/weather) | Working (keyless, verified live) |
 | Guarded terminal | Working (3-layer guard; power/session commands refused in code) |
@@ -29,9 +29,44 @@ is installed.
 | Timers / reminders | Working |
 | Offline wake word ("Hey Jarvis") | **Built + unit-tested; NOT yet verified live** (needs `pip install openwakeword onnxruntime`) |
 | Desktop launcher (`run.sh` + app-menu entry) | Working (verified: `desktop-file-validate` clean, GUI starts) |
-| Tests | `pytest` suite — **466 passed, 1 skipped** |
+| Tests | `pytest` suite — **477+ passed, 1 skipped** |
 | Spoken voice | `en-GB-RyanNeural` (British male); override with `JARVIS_TTS_VOICE` |
-| Published | GitHub, tags **`v1.0.1`**…**`v1.7.0`** (README + MIT LICENSE) |
+| Published | GitHub, tags **`v1.0.1`**…**`v2.0.0`** (README + MIT LICENSE) |
+
+## The Ultimate v2.0.0 Release (2026-10-19)
+
+Jarvis v2.0.0 is the largest milestone since the first public release. It turns
+the original Linux voice loop into a complete, cross-platform AI desktop
+assistant with persistent memory, safer local automation, and a production CI/CD
+pipeline.
+
+- **Cross-platform architecture:** The platform adapter layer now supports Linux,
+  Windows, and macOS with OS-specific audio, window, and system controllers while
+  keeping the agent, router, memory, TTS, and GUI core OS-agnostic.
+- **ChatGPT-style UI with streaming audio:** A floating PyQt5 card with a
+  breathing orb, live waveform, mic/Stop controls, barge-in, and continuous
+  `sounddevice` streaming at 24 kHz for smooth, low-latency speech.
+- **Advanced intelligence:** Intent-based Tool Pruning cuts tool payload tokens
+  by about 87%, the semantic cache serves paraphrased stable questions, and the
+  sub-agent digest condenses large web/vision outputs before they reach the main
+  context.
+- **CodeAct:** A guarded `fn_execute_python` tool lets Jarvis write and run short
+  Python programs for multi-step tasks while an AST allow/deny pass and timeout
+  block dangerous operations.
+- **Circuit Breaker:** A shared CLOSED/OPEN/HALF_OPEN breaker stops repeated
+  transient API failures, avoids retry storms, and recovers automatically after a
+  cooldown.
+- **Long-Term Memory:** SQLite-backed `user_facts` persistence remembers names,
+  preferences, and other personal details across sessions. The agent can save
+  and recall facts through tools without changing the static prefix-cached system
+  prompt.
+- **Ollama local LLM integration:** Optional, offline, and opt-in local inference
+  through an OpenAI-compatible Ollama endpoint, with a graceful fallback message
+  when the local server is unavailable.
+- **Full CI/CD pipeline:** GitHub Actions runs the test suite on Ubuntu, Windows,
+  and macOS across Python 3.10 and 3.11, including offscreen Qt and platform
+  dependency setup.
+- **Tests:** **488 passed, 1 skipped** at release time.
 
 ## Audio Overhaul & Critical Bug Fixes (2026-10-19, v1.7.0)
 
@@ -132,7 +167,7 @@ Jarvis is no longer Linux-only. The whole platform layer was refactored behind a
 
 ## Repository & releases
 
-- Remote: <https://github.com/jakirhussainkhan/jarvis-voice-assistant>
+- Remote: <https://github.com/jakirhussainkhan/jarvis-ai-voice-assistant>
 - Default branch: `main`
 - Release tags: **`v1.0.0`** (initial), **`v1.0.1`** (screen vision, live
   internet, guarded terminal, offline-first, terminal hardening),

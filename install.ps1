@@ -3,7 +3,7 @@
 #   # from a checkout:
 #   powershell -ExecutionPolicy Bypass -File .\install.ps1
 #   # or, one line:
-#   irm https://raw.githubusercontent.com/<you>/jarvis/main/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/jakirhussainkhan/jarvis-ai-voice-assistant/main/install.ps1 | iex
 #
 # It creates .\venv, installs requirements.txt, then the Windows-only extras that
 # give Jarvis volume control (pycaw), window control (pywinctl), screen input

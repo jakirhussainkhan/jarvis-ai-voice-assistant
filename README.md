@@ -1,11 +1,13 @@
+![CI](https://github.com/jakirhussainkhan/jarvis-ai-voice-assistant/actions/workflows/ci.yml/badge.svg)
+
 # Jarvis — Cross-Platform Voice Assistant
 
-**Version 1.2.0**
+**Version 2.0.0**
 
 A voice-controlled desktop assistant for **Linux, Windows and macOS** that can
 *see* your screen, use the internet, and operate the terminal. You speak a
 command; Jarvis either handles it **locally and offline** (regex router — no API
-call) or hands it to a **Groq-backed agent** that can call 40 tools, then answers
+call) or hands it to a **Groq-backed agent** that can call 43 tools, then answers
 out loud in English. Speech recognition and replies are **English-only by
 design**. A PyQt5 ChatGPT-Voice-style card lives in the system tray and talks
 when you click it — or when you just say **"Hey Jarvis"**, once the optional
@@ -247,6 +249,11 @@ copy-paste install command for you to run yourself, but it never executes one.
 - **Usable without a microphone** — `JARVIS_TEXT=1 ./venv/bin/python main.py`
   (or `main.py --text`) takes *typed* commands through the exact same
   router/agent path.
+- **Long-term memory** — durable personal facts (name, preferences, birthdays)
+  are stored in the same local SQLite database under `user_facts`. The agent
+  saves them with `fn_remember_fact`, recalls them with `fn_recall_facts`, and
+  receives the 15 most recent facts as a `[SYSTEM MEMORY: ...]` message before
+  each prompt. The static system instruction stays unchanged for prefix caching.
 - **Readiness report** — `./venv/bin/python doctor.py` (or `main.py --check`)
   prints the session type, which tools are installed and what each missing one
   costs, the model and vision model, the app count, how to try every command, and
@@ -262,7 +269,7 @@ copy-paste install command for you to run yourself, but it never executes one.
   abandons a pending wait. Playing media is paused while Jarvis listens and
   resumed afterwards (best effort), and `JARVIS_PTT=1` switches to push-to-talk
   for noisy rooms.
-- **Tests** — a `pytest` suite of **350 tests** (1 skipped) covering routing, app
+- **Tests** — a `pytest` suite of **488 tests** (1 skipped) covering routing, app
   matching, the protected list, the confirmation flow, the terminal guardrails,
   screen routing, clipboard fallbacks, offline behaviour, the internet tools,
   vision parsing, timers, the YouTube path (play-by-name and on-screen picks),
@@ -333,13 +340,13 @@ Pick your platform and run one command. Each installer handles the Python venv, 
 
 | Platform | One-liner |
 | --- | --- |
-| **macOS · Linux · WSL2** | `curl -fsSL https://raw.githubusercontent.com/jakirhussainkhan/jarvis-voice-assistant/main/install.sh \| bash` |
-| **Native Windows** | `irm https://raw.githubusercontent.com/jakirhussainkhan/jarvis-voice-assistant/main/install.ps1 \| iex` |
-| **Desktop GUI** | Download from the [latest release](https://github.com/jakirhussainkhan/jarvis-voice-assistant/releases) |
+| **macOS · Linux · WSL2** | `curl -fsSL https://raw.githubusercontent.com/jakirhussainkhan/jarvis-ai-voice-assistant/main/install.sh \| bash` |
+| **Native Windows** | `irm https://raw.githubusercontent.com/jakirhussainkhan/jarvis-ai-voice-assistant/main/install.ps1 \| iex` |
+| **Desktop GUI** | Download from the [latest release](https://github.com/jakirhussainkhan/jarvis-ai-voice-assistant/releases) |
 
 Then run `jarvis` to start. Check your system readiness with `jarvis doctor` or `python main.py --check`.
 
-Platform-specific notes (WSL2 setup, native-Windows scheduled-task service, desktop prerequisites, manual install): see the [installation docs](https://github.com/jakirhussainkhan/jarvis-voice-assistant).
+Platform-specific notes (WSL2 setup, native-Windows scheduled-task service, desktop prerequisites, manual install): see the [installation docs](https://github.com/jakirhussainkhan/jarvis-ai-voice-assistant).
 
 ### Configuration
 
@@ -351,6 +358,9 @@ All configuration lives in `config.py` and can be overridden from `.env`:
 | `GROQ_BASE_URL` | `https://api.groq.com/openai/v1` | OpenAI-compatible endpoint |
 | `GROQ_MODEL` | `openai/gpt-oss-120b` | Main model ID (must support tools) |
 | `GROQ_VISION_MODEL` | `qwen/qwen3.8-27b` | Multimodal model for screen vision (verified live) |
+| `USE_LOCAL_LLM` | `False` | `True` sends agent requests to local Ollama instead of Groq |
+| `OLLAMA_BASE_URL` | `http://localhost:11434/v1` | OpenAI-compatible Ollama endpoint |
+| `OLLAMA_MODEL` | `llama3` | Model pulled in Ollama (for example `llama3`) |
 | `JARVIS_SCREEN_MAX_WIDTH` | `1280` | Downscale width for vision screenshots |
 | `JARVIS_SCREEN_STEPS` | `6` | Max perceive→act steps per screen goal |
 | `JARVIS_SHELL_TIMEOUT` | `20` | Seconds before a terminal command is killed |
@@ -374,6 +384,12 @@ All configuration lives in `config.py` and can be overridden from `.env`:
 | `JARVIS_WAKE_VAD` | *(off)* | Voice-activity threshold to ignore non-speech noise |
 | `JARVIS_WAKE_SPEEX` | *(off)* | `1` enables Speex noise suppression (needs the extra speexdsp wheel) |
 
+**Optional local LLM:** install and start
+[Ollama](https://ollama.com), pull a model (`ollama pull llama3`), then set
+`USE_LOCAL_LLM=True` in `.env` or pass `--local` for one session. Jarvis uses
+Ollama's OpenAI-compatible `/v1` endpoint, so no extra Python package is needed.
+With the flag unset, Ollama is never contacted during normal Groq operation.
+
 STT language (`en-US`), TTS voice (`en-GB-RyanNeural`), history window, output
 token cap and tool-round limit are constants in `config.py`.
 
@@ -386,6 +402,7 @@ token cap and tool-round limit are constants in `config.py`.
 ./venv/bin/python main.py                    # terminal voice loop
 ./venv/bin/python main.py --text             # type commands instead of speaking
 ./venv/bin/python main.py --offline          # router only (no network)
+./venv/bin/python main.py --local            # this session uses local Ollama
 ./venv/bin/python main.py --check            # readiness report (same as doctor.py)
 ./venv/bin/python main.py --version          # print the version
 ./venv/bin/python main.py --screen "what is on my screen?"   # one screen answer
@@ -542,10 +559,10 @@ confirmation first, then tries the router, and only sends a miss to the agent.
 | `shell.py` | The guarded terminal (`run`, `explain_refusal`, `_is_risky`). |
 | `timers.py` | In-process timers and reminders. |
 | `confirm.py` | Pending "Are you sure?" state: yes runs, anything else cancels, 15 s expiry. |
-| `agent.py` | Groq orchestration: response cache, token accounting, tool schemas from function signatures, English-only system instruction, bounded tool loop, 40 tools. |
+| `agent.py` | Groq orchestration with an optional Ollama backend: response cache, token accounting, tool schemas from function signatures, English-only system instruction, bounded tool loop, long-term fact injection, 43 tools. |
 | `tools.py` | The tool functions (see the list below). |
-| `memory.py` | Rolling `deque` window of recent turns. |
-| `main.py` | Entry point and `handle()` dispatch (`--text`, `--offline`, `--screen`, `--gui`, `--check`, `--version`). |
+| `memory.py` | SQLite conversation history plus the persistent `user_facts` table for long-term personal memory. |
+| `main.py` | Entry point and `handle()` dispatch (`--text`, `--offline`, `--local`, `--screen`, `--gui`, `--check`, `--version`). |
 | `gui.py` | PyQt5 ChatGPT-Voice-style card + system tray; the listen/think/speak cycle runs on a `QThread` — and with continuous chat on, that thread loops turn after turn until you go quiet, say an exit word, press Stop or mute. The breathing `Orb` and 13-bar `Waveform` are driven by live mic levels / the TTS loudness envelope; the worker arms a `voice.BargeInMonitor` while speaking, so talking over a reply cuts it short and returns to listening. Frameless rounded card with minimise/close controls. Owns the wake listener's lifecycle (start/pause/resume/stop). |
 | `icon_art.py` | The vector artwork for the app icon (charcoal tile, azure orb, stylised "J"), shared by the GUI, the tray and `gen_icon.py`. |
 | `gen_icon.py` | Renders `assets/jarvis-{32,48,64,128,256}.png` from `icon_art.py`, headless and PyQt-only. |
@@ -556,7 +573,7 @@ confirmation first, then tries the router, and only sends a miss to the agent.
 | `assets/jarvis-*.png` | The glowing-orb/"J" app icon at 32-256 px, generated by `gen_icon.py`. |
 | `test_mic.py` | Standalone mic diagnostic. |
 
-### Tools (40)
+### Tools (43)
 
 Apps & windows: `fn_open_app`, `fn_close_app`, `fn_list_running`, `fn_list_windows`,
 `fn_focus_window`, `fn_minimize_window`, `fn_maximize_window`.
@@ -568,6 +585,7 @@ Internet: `fn_web_search`, `fn_web_lookup`, `fn_fetch_page`, `fn_wikipedia`,
 System & files: `fn_open_path`, `fn_find_files`, `fn_clipboard`, `fn_notify`,
 `fn_lock_screen`, `fn_system_status`, `fn_system_info`, `fn_kill_process`.
 Notes & timers: `fn_save_note`, `fn_read_file`, `fn_set_timer`, `fn_set_reminder`.
+Long-term memory: `fn_remember_fact`, `fn_recall_facts`.
 
 ---
 

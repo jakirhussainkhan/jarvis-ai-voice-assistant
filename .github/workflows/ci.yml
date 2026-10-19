@@ -11,12 +11,14 @@ permissions:
 
 jobs:
   test:
-    name: Test (${{ matrix.os }})
+    name: Test (${{ matrix.os }}, Python ${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ["3.10", "3.11"]
 
     env:
       # The suite exercises the PyQt5 GUI and SDL-backed audio without a real
@@ -29,16 +31,39 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Set up Python 3.11
+      - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
           cache: pip
 
-      - name: Install dependencies
+      - name: Install system dependencies (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            portaudio19-dev \
+            libasound2-dev \
+            ffmpeg \
+            xvfb
+
+      - name: Install system dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install portaudio ffmpeg
+
+      - name: Install system dependencies (Windows)
+        if: runner.os == 'Windows'
+        run: choco install ffmpeg --yes --no-progress
+
+      - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
+          python -m pip install -r requirements.txt pytest
 
-      - name: Run tests
+      - name: Run tests (Ubuntu)
+        if: runner.os == 'Linux'
+        run: xvfb-run --auto-servernum python -m pytest
+
+      - name: Run tests (Windows and macOS)
+        if: runner.os != 'Linux'
         run: python -m pytest

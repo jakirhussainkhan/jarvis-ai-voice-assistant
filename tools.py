@@ -19,6 +19,7 @@ import re
 import subprocess
 import sys
 import tempfile
+from contextvars import ContextVar
 from datetime import datetime
 from pathlib import Path
 
@@ -26,6 +27,7 @@ import psutil
 
 import confirm
 import desktop
+import memory as memory_store
 import net
 import shell
 import timers
@@ -33,6 +35,28 @@ import vision
 
 _NOTES_PATH = os.path.expanduser("~/jarvis_notes.md")
 _READ_LIMIT = 1500
+
+# The conversation Memory for the current agent turn. run_agent() sets this so
+# fact tools write to exactly the same store that supplies the prompt. Direct
+# tool calls fall back to the shared default store.
+_ACTIVE_MEMORY = ContextVar("jarvis_active_memory", default=None)
+
+
+def set_active_memory(memory):
+    """Bind ``memory`` to the current turn and return a reset token."""
+    return _ACTIVE_MEMORY.set(memory)
+
+
+def reset_active_memory(token):
+    """Restore the previous turn's memory binding."""
+    _ACTIVE_MEMORY.reset(token)
+
+
+def _fact_memory():
+    """Return the Memory store used by the long-term fact tools."""
+    active = _ACTIVE_MEMORY.get()
+    return active if active is not None else memory_store.default_memory()
+
 
 # Directories fn_read_file may read from. Anything outside this allowlist is
 # refused, so a misheard or hostile path cannot be used to walk the filesystem.
@@ -198,6 +222,38 @@ def fn_save_note(text: str) -> str:
     except OSError as exc:
         return f"Could not save note: {exc}"
     return f"Note saved to {_NOTES_PATH}."
+
+
+def fn_remember_fact(fact: str) -> str:
+    """Save a personal fact, preference, or name for future sessions.
+
+    Use this whenever the user says something durable about themselves, such as
+    "my name is Jakir", "I prefer tea", or "remember my birthday is in May".
+    Do not use it for temporary details that only matter in this conversation.
+    """
+    fact = " ".join(str(fact or "").split())
+    if not fact:
+        return "What fact should I remember?"
+    try:
+        saved = _fact_memory().add_fact(fact)
+    except Exception as exc:
+        return f"I couldn't save that fact: {exc}"
+    if not saved:
+        return "I couldn't save that fact."
+    return f"I'll remember that: {fact}."
+
+
+def fn_recall_facts() -> str:
+    """Return the personal facts saved about the user."""
+    try:
+        facts = _fact_memory().get_facts(limit=None)
+    except Exception as exc:
+        return f"I couldn't read my saved facts: {exc}"
+    if not facts:
+        return "I don't have any saved facts about you yet."
+    return "Here is what I remember:\n" + "\n".join(
+        f"- {fact}" for fact in facts
+    )
 
 
 def fn_read_file(path: str) -> str:

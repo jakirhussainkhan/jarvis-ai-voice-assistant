@@ -11,9 +11,19 @@ runs a desktop action.
 import importlib.util
 import os
 import shutil
+import urllib.request
+from urllib.error import HTTPError
 
 import desktop
-from config import API_KEY, BASE_URL, MODEL_NAME, VISION_MODEL
+from config import (
+    API_KEY,
+    BASE_URL,
+    MODEL_NAME,
+    OLLAMA_BASE_URL,
+    OLLAMA_MODEL,
+    USE_LOCAL_LLM,
+    VISION_MODEL,
+)
 
 # (tool, required?, what it powers, Debian/Ubuntu package to install it)
 _TOOLS = [
@@ -46,6 +56,29 @@ def _has_module(name):
     try:
         return importlib.util.find_spec(name) is not None
     except (ImportError, ValueError):
+        return False
+
+
+def _ollama_root_url():
+    """Return the Ollama server root (without the OpenAI-compatible /v1)."""
+    root = OLLAMA_BASE_URL.rstrip("/")
+    if root.endswith("/v1"):
+        root = root[:-3].rstrip("/")
+    return root
+
+
+def _ollama_running():
+    """Ping the local Ollama server with a short, hard timeout.
+
+    Any HTTP response (even an error status) means the server is up. Connection
+    failures are expected for the optional backend and are never fatal.
+    """
+    try:
+        with urllib.request.urlopen(_ollama_root_url(), timeout=1):
+            return True
+    except HTTPError:
+        return True
+    except Exception:
         return False
 
 
@@ -85,6 +118,16 @@ def report():
     out.append(f"Model: {MODEL_NAME}")
     out.append(f"Vision model: {VISION_MODEL}")
     out.append(f"Endpoint: {BASE_URL}")
+    if USE_LOCAL_LLM:
+        out.append(f"Local AI mode: ON -- Ollama {OLLAMA_MODEL} at {OLLAMA_BASE_URL}")
+    else:
+        out.append("Local AI mode: OFF -- Groq is primary; Ollama is used only "
+                   "if the Groq circuit opens")
+    if _ollama_running():
+        out.append("Ollama (Local AI): OK (Running)")
+    else:
+        out.append("Ollama (Local AI): Not running (Optional - used only if "
+                   "USE_LOCAL_LLM=True)")
     out.append("Internet: live search / page fetch / Wikipedia / weather "
                "(keyless, needs a connection)")
     out.append("Offline: apps, folders, windows, media, volume, brightness, "

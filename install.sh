@@ -2,7 +2,7 @@
 #
 # One-line installer for Jarvis on Linux and macOS.
 #
-#   curl -fsSL https://raw.githubusercontent.com/<you>/jarvis/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/jakirhussainkhan/jarvis-ai-voice-assistant/main/install.sh | bash
 #   # or, from a checkout:
 #   ./install.sh
 #

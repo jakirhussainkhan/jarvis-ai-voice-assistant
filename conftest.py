@@ -10,5 +10,17 @@ model; tests that exercise the cache inject a fake embedder.
 
 import os
 
+import pytest
+
 os.environ.setdefault("JARVIS_MEMORY_DB", ":memory:")
 os.environ.setdefault("JARVIS_SEMANTIC_CACHE", "0")
+
+
+@pytest.fixture(autouse=True)
+def _reset_fact_store():
+    """Keep the process-wide facts store isolated between tests."""
+    import memory
+
+    memory.reset_default_memory()
+    yield
+    memory.reset_default_memory()

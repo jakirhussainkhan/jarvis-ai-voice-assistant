@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-__version__ = "1.7.0"
+__version__ = "2.0.0"
 
 # Groq (https://console.groq.com) exposes an OpenAI-compatible Chat Completions
 # API. The key is read from GROQ_API_KEY in .env; Groq keys start with "gsk_".
@@ -28,6 +28,19 @@ VISION_MODEL = os.getenv("GROQ_VISION_MODEL", "qwen/qwen3.8-27b")
 # 120B model has a strict requests-per-minute cap on the free tier; falling back
 # to a small 8B model keeps the turn from failing outright.
 FALLBACK_MODEL = os.getenv("GROQ_FALLBACK_MODEL", "llama3-8b-8192")
+
+# --- optional local Ollama fallback ---------------------------------------- #
+# Off by default: Jarvis keeps using Groq and never contacts Ollama unless this
+# is explicitly enabled (USE_LOCAL_LLM=1 or `main.py --local`), or the Groq
+# circuit breaker opens. Ollama is OpenAI-compatible, so no extra SDK is needed.
+USE_LOCAL_LLM = os.getenv("USE_LOCAL_LLM", "").strip().lower() in (
+    "1", "true", "yes", "on",
+)
+OLLAMA_BASE_URL = (
+    (os.getenv("OLLAMA_BASE_URL") or "").strip().rstrip("/")
+    or "http://localhost:11434/v1"
+)
+OLLAMA_MODEL = (os.getenv("OLLAMA_MODEL") or "llama3").strip() or "llama3"
 
 STT_LANG = "en-US"  # English-only by design.
 # The Iron-Man Jarvis voice: a British male neural voice ("Ryan"). Override it

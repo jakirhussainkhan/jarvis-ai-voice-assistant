@@ -1,9 +1,14 @@
-"""Conversation memory and persistence for Jarvis.
+"""Conversation memory and long-term facts for Jarvis.
 
 History is stored in a small SQLite database instead of an in-memory deque, so a
 conversation survives a restart. Only the most recent turns are read back for the
 model (:meth:`Memory.get_transcript`), which keeps the prompt small and therefore
 cheap on the token-limited Groq free tier.
+
+The same database also holds :class:`Memory`'s ``user_facts`` table. Facts are
+kept separate from the rolling transcript, survive ``clear()``, and are read back
+by the agent as a small synthetic memory message so the static system prompt can
+stay unchanged for prefix caching.
 """
 
 import os
@@ -18,6 +23,13 @@ _ROLE_LABELS = {
     "assistant": "Jarvis",
     "model": "Jarvis",
 }
+
+# Fallback store for memory tools called outside an agent turn (direct calls and
+# tests). Inside run_agent(), tools use the conversation's Memory instance via a
+# ContextVar instead. Both paths point at the same SQLite database in production,
+# so facts persist across turns and sessions.
+_DEFAULT_MEMORY = None
+_DEFAULT_MEMORY_LOCK = threading.Lock()
 
 
 def default_db_path():
@@ -41,6 +53,7 @@ class Memory:
         self.path = db_path or default_db_path()
         self.limit = limit
         self._lock = threading.RLock()
+        self._closed = False
         if self.path != ":memory:":
             parent = os.path.dirname(os.path.abspath(self.path))
             os.makedirs(parent, exist_ok=True)
@@ -55,6 +68,15 @@ class Memory:
             "  timestamp TEXT NOT NULL"
             ")"
         )
+        # Long-term facts survive conversation clears and restarts. They are
+        # deliberately kept separate from the rolling conversation transcript.
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS user_facts ("
+            "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "  fact TEXT NOT NULL,"
+            "  timestamp TEXT NOT NULL"
+            ")"
+        )
         self._conn.commit()
 
     def add(self, role, text):
@@ -65,6 +87,52 @@ class Memory:
                 "VALUES (?, ?, ?)",
                 (role, text, datetime.now().isoformat(timespec="seconds")),
             )
+            self._conn.commit()
+
+    def add_fact(self, fact: str):
+        """Persist one long-term fact about the user.
+
+        Empty/whitespace-only facts are ignored. Returns ``True`` when a row was
+        inserted, otherwise ``False``.
+        """
+        fact = " ".join(str(fact or "").split())
+        if not fact:
+            return False
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO user_facts (fact, timestamp) VALUES (?, ?)",
+                (fact, datetime.now().isoformat(timespec="seconds")),
+            )
+            self._conn.commit()
+        return True
+
+    def get_facts(self, limit: int = 15):
+        """Return up to ``limit`` recent facts, newest first.
+
+        Pass ``None`` to retrieve every saved fact (used by ``fn_recall_facts``).
+        """
+        with self._lock:
+            if limit is None:
+                rows = self._conn.execute(
+                    "SELECT fact FROM user_facts ORDER BY id DESC"
+                ).fetchall()
+            else:
+                try:
+                    limit = max(0, int(limit))
+                except (TypeError, ValueError):
+                    limit = 15
+                if limit == 0:
+                    return []
+                rows = self._conn.execute(
+                    "SELECT fact FROM user_facts ORDER BY id DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+        return [row[0] for row in rows]
+
+    def clear_facts(self):
+        """Delete every saved long-term fact."""
+        with self._lock:
+            self._conn.execute("DELETE FROM user_facts")
             self._conn.commit()
 
     def get_transcript(self, limit=None):
@@ -86,12 +154,48 @@ class Memory:
         return self.get_transcript()
 
     def clear(self):
-        """Drop all stored turns."""
+        """Drop all stored turns (long-term facts are kept)."""
         with self._lock:
             self._conn.execute("DELETE FROM conversations")
             self._conn.commit()
 
+    @property
+    def closed(self):
+        """True after :meth:`close` has been called."""
+        return self._closed
+
     def close(self):
         """Close the underlying database connection."""
         with self._lock:
-            self._conn.close()
+            if not self._closed:
+                self._conn.close()
+                self._closed = True
+
+
+def default_memory():
+    """Return the shared Memory store used by the memory tools.
+
+    The database path is checked on every call so tests and environment changes
+    cannot accidentally keep using an old store. With the default on-disk path,
+    facts persist across processes and sessions.
+    """
+    global _DEFAULT_MEMORY
+    path = default_db_path()
+    with _DEFAULT_MEMORY_LOCK:
+        if (_DEFAULT_MEMORY is None
+                or _DEFAULT_MEMORY.path != path
+                or _DEFAULT_MEMORY.closed):
+            _DEFAULT_MEMORY = Memory(db_path=path)
+        return _DEFAULT_MEMORY
+
+
+def reset_default_memory():
+    """Close and clear the shared facts store (used by tests and session resets)."""
+    global _DEFAULT_MEMORY
+    with _DEFAULT_MEMORY_LOCK:
+        if _DEFAULT_MEMORY is not None:
+            try:
+                _DEFAULT_MEMORY.close()
+            except Exception:
+                pass
+        _DEFAULT_MEMORY = None

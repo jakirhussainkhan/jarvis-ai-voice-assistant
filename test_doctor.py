@@ -1,6 +1,14 @@
 """Tests for the readiness self-check (doctor.py). Read-only, no system access."""
 
+import pytest
+
 import doctor
+
+
+@pytest.fixture(autouse=True)
+def _ollama_is_offline(monkeypatch):
+    """Keep the readiness tests deterministic and off the network."""
+    monkeypatch.setattr(doctor, "_ollama_running", lambda: False)
 
 
 def test_report_lists_tools_and_text_mode(monkeypatch):
@@ -59,3 +67,22 @@ def test_report_shows_the_wake_word_switched_off(monkeypatch):
     monkeypatch.setattr(wake, "enabled", lambda: False)
 
     assert "switched off" in doctor.report()
+
+
+# --------------------------------------------------------------------------- #
+# optional Ollama backend
+# --------------------------------------------------------------------------- #
+
+def test_report_reports_ollama_running(monkeypatch):
+    monkeypatch.setattr(doctor, "_ollama_running", lambda: True)
+    assert "Ollama (Local AI): OK (Running)" in doctor.report()
+
+
+def test_report_reports_ollama_not_running():
+    assert ("Ollama (Local AI): Not running "
+            "(Optional - used only if USE_LOCAL_LLM=True)") in doctor.report()
+
+
+def test_ollama_probe_uses_the_server_root(monkeypatch):
+    monkeypatch.setattr(doctor, "OLLAMA_BASE_URL", "http://localhost:11434/v1")
+    assert doctor._ollama_root_url() == "http://localhost:11434"

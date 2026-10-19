@@ -22,10 +22,12 @@ class _Clock:
 
 
 @pytest.fixture(autouse=True)
-def _clean_agent_state():
-    """The breaker and reply cache are module globals; never leak state."""
+def _clean_agent_state(monkeypatch):
+    """The breaker, cache and local-LLM globals must never leak across tests."""
     agent._breaker.reset()
     agent._CACHE.clear()
+    monkeypatch.setattr(agent, "_local_client", None)
+    monkeypatch.setattr(agent, "USE_LOCAL_LLM", False)
     yield
     agent._breaker.reset()
     agent._CACHE.clear()
@@ -155,9 +157,15 @@ def _always_fail(_kwargs):
     raise _ServerError("upstream is down")
 
 
+def _local_is_down(_kwargs):
+    raise ConnectionError("connection refused")
+
+
 def test_three_transient_failures_open_the_breaker(monkeypatch):
     client = _FakeClient(_always_fail)
+    local = _FakeClient(_local_is_down)
     monkeypatch.setattr(agent, "_client", client)
+    monkeypatch.setattr(agent, "_local_client", local)
     monkeypatch.setattr("router.try_local", lambda _text: None)
 
     for i in range(3):
@@ -167,31 +175,33 @@ def test_three_transient_failures_open_the_breaker(monkeypatch):
     assert agent._breaker.state == resilience.OPEN
     assert client.calls == 3
 
-    # While open, the API is skipped entirely and the user hears a graceful reply.
+    # While open, Groq is skipped and the local backend is attempted once.
     reply, tokens = agent.run_agent("query 3")
     assert client.calls == 3
-    assert reply == agent.API_FALLBACK
+    assert local.calls == 1
+    assert reply == agent.LOCAL_AI_FALLBACK
     assert tokens == 0
 
 
-def test_open_circuit_routes_to_the_local_router(monkeypatch):
+def test_open_circuit_uses_the_local_llm(monkeypatch):
     client = _FakeClient(_always_fail)
+    local = _FakeClient(lambda _kwargs: _response("Local answer, sir."))
     monkeypatch.setattr(agent, "_client", client)
-    monkeypatch.setattr("router.try_local", lambda _text: None)
+    monkeypatch.setattr(agent, "_local_client", local)
 
     for i in range(3):
         with pytest.raises(_ServerError):
             agent.run_agent(f"query {i}")
 
-    monkeypatch.setattr(
-        "router.try_local", lambda _text: "It is four o'clock, sir.")
     reply, tokens = agent.run_agent("what time is it")
 
-    assert reply == "It is four o'clock, sir."
-    assert tokens == 0
+    assert reply == "Local answer, sir."
+    assert tokens == 1
     assert client.calls == 3
-    # A transient fallback must not poison the cache for the next real attempt.
-    assert agent._cache_key("what time is it") not in agent._CACHE
+    assert local.calls == 1
+    # A successful local answer is cached like a normal answer.
+    assert agent._cache_key("what time is it") in agent._CACHE
+    assert agent._CACHE[agent._cache_key("what time is it")] == "Local answer, sir."
 
 
 def test_success_resets_the_streak_and_closes_the_circuit(monkeypatch):
@@ -252,7 +262,9 @@ def test_half_open_probe_failure_reopens_the_circuit(monkeypatch):
     breaker = resilience.CircuitBreaker(3, 30, clock=clock)
     monkeypatch.setattr(agent, "_breaker", breaker)
     client = _FakeClient(_always_fail)
+    local = _FakeClient(_local_is_down)
     monkeypatch.setattr(agent, "_client", client)
+    monkeypatch.setattr(agent, "_local_client", local)
     monkeypatch.setattr("router.try_local", lambda _text: None)
 
     for _ in range(3):
@@ -265,5 +277,6 @@ def test_half_open_probe_failure_reopens_the_circuit(monkeypatch):
     assert client.calls == 1
 
     reply, _tokens = agent.run_agent("after the failed probe")
-    assert reply == agent.API_FALLBACK
+    assert reply == agent.LOCAL_AI_FALLBACK
     assert client.calls == 1
+    assert local.calls == 1

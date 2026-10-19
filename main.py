@@ -4,6 +4,8 @@ import os
 import re
 import sys
 
+import agent
+import config
 import confirm
 from voice import listen, speak
 from router import try_local, CAPABILITIES, OFFLINE_REPLY
@@ -136,6 +138,11 @@ def main():
     global total_tokens, local_count, agent_count, _TEXT, _OFFLINE
 
     args = sys.argv[1:]
+    if "--local" in args:
+        # Force the opt-in Ollama backend for this process only. The default
+        # remains Groq, and no Ollama connection is attempted otherwise.
+        config.USE_LOCAL_LLM = True
+        agent.USE_LOCAL_LLM = True
     if "--check" in args:
         from doctor import report
         print(report())
