@@ -536,7 +536,7 @@ def test_open_youtube_falls_back_when_activation_is_refused(monkeypatch):
     opened = []
     monkeypatch.setattr(desktop, "_open_url", lambda url: opened.append(url) or True)
     monkeypatch.setattr(
-        desktop, "_run",
+        common, "run",
         lambda args, timeout=6: (0, {("xdotool", "getwindowfocus"): "999"}
                                  .get(tuple(args[:2]), "")))
 
@@ -592,7 +592,7 @@ def test_close_youtube_never_closes_a_random_focused_tab(monkeypatch):
     monkeypatch.setattr(desktop, "_youtube_window", lambda: None)
     monkeypatch.setattr(desktop, "_browser_media_player", lambda: False)
     monkeypatch.setattr(
-        desktop, "_run",
+        common, "run",
         lambda args, timeout=6: (0, "My important essay - Brave"))
 
     assert desktop.close_youtube() == "There is no YouTube tab open."
@@ -605,7 +605,7 @@ def test_close_youtube_closes_a_focused_playing_tab(monkeypatch):
     monkeypatch.setattr(desktop, "_youtube_window", lambda: None)
     monkeypatch.setattr(desktop, "_browser_media_player", lambda: True)
     monkeypatch.setattr(
-        desktop, "_run",
+        common, "run",
         lambda args, timeout=6: (0, "Never Gonna Give You Up - Brave"))
 
     assert desktop.close_youtube() == "Closing the YouTube tab."
