@@ -82,7 +82,10 @@ jobs:
 
   build-dmg:
     name: Build macOS DMG
-    runs-on: macos-latest
+    # GitHub's arm64 macOS pool has repeatedly failed to assign a runner
+    # within 15 minutes. The Intel image is available and its .app also runs on
+    # Apple Silicon through Rosetta 2.
+    runs-on: macos-15-intel
     timeout-minutes: 45
     steps:
       - name: Check out repository
