@@ -941,7 +941,7 @@ def resolve_folder(name):
     return path if os.path.isdir(path) else None
 
 
-def notify(message, title="Jarvis"):
+def notify(message, title="JARVIS"):
     """Show a desktop notification."""
     return System.notify(message, title)
 

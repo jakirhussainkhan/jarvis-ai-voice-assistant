@@ -10,7 +10,11 @@
 # (pyautogui), brightness, screenshots and notifications.
 
 $ErrorActionPreference = "Stop"
-Set-Location -Path $PSScriptRoot
+# Support both `.\install.ps1` and `irm ... | iex`: when the script is piped,
+# PowerShell leaves $PSScriptRoot empty, so fall back to the current directory
+# (the cloned checkout the user is standing in).
+$ScriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
+Set-Location -Path $ScriptDir
 
 $python = Get-Command python -ErrorAction SilentlyContinue
 if (-not $python) {

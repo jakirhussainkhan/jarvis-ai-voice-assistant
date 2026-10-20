@@ -47,7 +47,7 @@ _FAREWELL = "Goodbye, sir"
 IDLE = "Idle"
 LISTENING = "Listening..."
 THINKING = "Thinking..."
-SPEAKING = "Jarvis is speaking..."
+SPEAKING = "JARVIS is speaking..."
 MUTED = "Muted"
 
 # State palette: (outer glow, core light). Dark-card friendly, saturated enough
@@ -480,7 +480,7 @@ class JarvisTray(QSystemTrayIcon):
     def __init__(self, widget):
         super().__init__(make_icon(64), widget)
         self.widget = widget
-        self.setToolTip("Jarvis — click to talk")
+        self.setToolTip("JARVIS — click to talk")
 
         menu = QMenu()
         talk = menu.addAction("Talk")
@@ -488,7 +488,7 @@ class JarvisTray(QSystemTrayIcon):
         self.mute_action = menu.addAction("Mute mic")
         self.mute_action.setCheckable(True)
         self.mute_action.triggered.connect(widget.toggle_mute)
-        self.wake_action = menu.addAction("Hey Jarvis")
+        self.wake_action = menu.addAction("Hey JARVIS")
         self.wake_action.setCheckable(True)
         self.wake_action.setChecked(widget._wake is not None)
         self.wake_action.triggered.connect(widget.toggle_wake)
@@ -570,7 +570,7 @@ class JarvisWidget(QWidget):
         # the context menu and any child dialogs transparent.
         self.setObjectName("jarvisCard")
         self.setStyleSheet("#jarvisCard { background: transparent; }")
-        self.setWindowTitle("Jarvis")
+        self.setWindowTitle("JARVIS")
         self.setWindowIcon(make_icon(64))
         # Frameless windows have no system resize border, so the card resizes
         # through the QSizeGrip in the corner and the custom edge dragging in the
@@ -614,10 +614,10 @@ class JarvisWidget(QWidget):
     def _build_ui(self):
         header = QHBoxLayout()
         header.setSpacing(4)
-        brand = QLabel("Jarvis")
+        brand = QLabel("JARVIS")
         brand.setStyleSheet(
-            "color:#F9FAFB; background:transparent; font-size:14px;"
-            "font-weight:700; letter-spacing:0.6px;"
+            "color:#F9FAFB; background:transparent; font-size:17px;"
+            "font-weight:800; letter-spacing:1.2px;"
         )
         header.addWidget(brand)
         header.addStretch(1)
@@ -733,7 +733,7 @@ class JarvisWidget(QWidget):
         self.mute_action = self._menu.addAction("Mute mic")
         self.mute_action.setCheckable(True)
         self.mute_action.triggered.connect(self.toggle_mute)
-        self.wake_action = self._menu.addAction("Hey Jarvis")
+        self.wake_action = self._menu.addAction("Hey JARVIS")
         self.wake_action.setCheckable(True)
         self.wake_action.setChecked(self._wake is not None)
         self.wake_action.triggered.connect(self.toggle_wake)
@@ -780,7 +780,7 @@ class JarvisWidget(QWidget):
             # Jarvis is done with the microphone, so let "Hey Jarvis" have it back.
             self._resume_wake()
         if self.tray is not None:
-            self.tray.setToolTip(f"Jarvis — {state}")
+            self.tray.setToolTip(f"JARVIS — {state}")
 
     def _on_level(self, value):
         """Feed one live loudness sample to the orb and the waveform."""
@@ -924,7 +924,7 @@ class JarvisWidget(QWidget):
             self._flash(f"Wake word: {wake.install_hint()}")
             return
         self._start_wake()
-        self._flash("Wake word on — say “Hey Jarvis”")
+        self._flash("Wake word on — say “Hey JARVIS”")
 
     def toggle_chat(self, _checked=False):
         """Switch continuous mode on or off, starting with the next session."""
@@ -1145,14 +1145,14 @@ class JarvisWidget(QWidget):
         if self.tray is not None:
             self.tray.show()               # make sure the icon stays visible
             self.tray.showMessage(
-                "Jarvis", "Still running in the tray. Click the icon to talk.",
+                "JARVIS", "Still running in the tray. Click the icon to talk.",
                 QSystemTrayIcon.Information, 3000,
             )
 
 
 def main():
     app = QApplication(sys.argv)
-    app.setApplicationName("Jarvis")
+    app.setApplicationName("JARVIS")
     app.setWindowIcon(make_icon(64))
     # Keep running after the floating window is hidden/closed -> tray lives on.
     app.setQuitOnLastWindowClosed(False)

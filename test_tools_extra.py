@@ -100,7 +100,7 @@ def test_kill_process_not_found(monkeypatch):
 
 
 def test_notify_and_clipboard_delegate(monkeypatch):
-    monkeypatch.setattr(desktop, "notify", lambda m, t="Jarvis": f"n:{m}")
+    monkeypatch.setattr(desktop, "notify", lambda m, t="JARVIS": f"n:{m}")
     monkeypatch.setattr(desktop, "clipboard", lambda a: f"c:{a}")
     assert tools.fn_notify("hi") == "n:hi"
     assert tools.fn_clipboard("copy") == "c:copy"

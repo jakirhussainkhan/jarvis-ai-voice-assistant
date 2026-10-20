@@ -86,7 +86,7 @@ def test_install_writes_a_menu_entry(tmp_path):
     text = written[0].read_text()
     assert text.startswith("[Desktop Entry]")
     assert "Type=Application" in text
-    assert "Name=Jarvis" in text
+    assert "Name=JARVIS" in text
     assert "Terminal=false" in text, "a GUI entry must not ask for a terminal"
 
 

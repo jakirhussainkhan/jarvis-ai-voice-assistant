@@ -342,17 +342,18 @@ the wake word is missing, and Jarvis itself never installs anything.
 
 ## Installation
 
-Pick your platform and run one command. Each installer handles the Python venv, platform-specific dependencies, and the starter configuration — about 3 minutes on broadband.
+Pick your platform and follow its guide. Each installer handles the Python venv, platform-specific dependencies, and the starter configuration — about 3 minutes on broadband.
 
-| Platform | One-liner |
-| --- | --- |
-| **macOS · Linux · WSL2** | `curl -fsSL https://raw.githubusercontent.com/jakirhussainkhan/jarvis-ai-voice-assistant/main/install.sh \| bash` |
-| **Native Windows** | `irm https://raw.githubusercontent.com/jakirhussainkhan/jarvis-ai-voice-assistant/main/install.ps1 \| iex` |
-| **Desktop GUI** | Download from the [latest release](https://github.com/jakirhussainkhan/jarvis-ai-voice-assistant/releases) |
+| Platform | Installation guide | One-liner |
+| --- | --- | --- |
+| **Linux** | [Linux Instructions](docs/install-linux.md) | `curl -fsSL https://raw.githubusercontent.com/jakirhussainkhan/jarvis-ai-voice-assistant/main/install.sh \| bash` |
+| **Native Windows** | [Windows Instructions](docs/install-windows.md) | `irm https://raw.githubusercontent.com/jakirhussainkhan/jarvis-ai-voice-assistant/main/install.ps1 \| iex` |
+| **macOS** | [macOS Instructions](docs/install-macos.md) | `curl -fsSL https://raw.githubusercontent.com/jakirhussainkhan/jarvis-ai-voice-assistant/main/install.sh \| bash` |
+| **Desktop GUI** | Download from the [latest release](https://github.com/jakirhussainkhan/jarvis-ai-voice-assistant/releases) | — |
 
-Then run `jarvis` to start. Check your system readiness with `jarvis doctor` or `python main.py --check`.
+Run the one-liner from inside the cloned repository folder. Then launch JARVIS with `./run.sh` (Linux/macOS) or `.\venv\Scripts\python.exe main.py --gui` (Windows), and check readiness with `./venv/bin/python doctor.py` or `python main.py --check`.
 
-Platform-specific notes (WSL2 setup, native-Windows scheduled-task service, desktop prerequisites, manual install): see the [installation docs](https://github.com/jakirhussainkhan/jarvis-ai-voice-assistant).
+Platform-specific notes (WSL2 setup, native-Windows scheduled-task service, desktop prerequisites, manual install) are covered in the three guides above.
 
 ### Configuration
 

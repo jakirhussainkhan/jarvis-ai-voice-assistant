@@ -189,7 +189,7 @@ def test_notify(monkeypatch):
     monkeypatch.setattr(common, "has", lambda t: t == "notify-send")
     monkeypatch.setattr(common, "spawn", lambda args: spawned.append(args) or True)
     assert desktop.notify("hello") == "Notification sent."
-    assert spawned == [["notify-send", "Jarvis", "hello"]]
+    assert spawned == [["notify-send", "JARVIS", "hello"]]
 
 
 def test_clipboard_copy_sends_shortcut(monkeypatch):
