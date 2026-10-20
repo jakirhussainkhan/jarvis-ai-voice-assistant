@@ -34,6 +34,7 @@ echo "==> Building JARVIS.app"
     --hidden-import pynput.keyboard._darwin \
     --hidden-import pynput.mouse._darwin \
     --collect-all sounddevice \
+    --collect-data tzdata \
     --exclude-module faster_whisper \
     --exclude-module fastembed \
     --exclude-module openwakeword \

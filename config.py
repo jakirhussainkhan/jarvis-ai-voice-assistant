@@ -66,7 +66,7 @@ PROJECT_ENV = Path(__file__).resolve().parent / ".env"
 load_dotenv(USER_ENV)
 load_dotenv(PROJECT_ENV)
 
-__version__ = "2.2.0"
+__version__ = "2.2.1"
 
 # Groq (https://console.groq.com) exposes an OpenAI-compatible Chat Completions
 # API. The key is read from GROQ_API_KEY in .env; Groq keys start with "gsk_".

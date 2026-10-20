@@ -7,6 +7,10 @@ psutil
 python-dotenv
 pytest
 
+# IANA timezone database used by zoneinfo (Asia/Dhaka in router.py). Frozen
+# Windows/macOS builds have no system tz database, so this must be bundled.
+tzdata
+
 # Offline speech-to-text fallback. If Google's online STT is unreachable,
 # Jarvis transcribes locally instead (see voice._local_transcribe).
 faster-whisper

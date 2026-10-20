@@ -42,6 +42,7 @@ echo "==> Building the frozen GUI binary"
     --hidden-import pynput.keyboard._xorg \
     --hidden-import pynput.mouse._xorg \
     --collect-all sounddevice \
+    --collect-data tzdata \
     --exclude-module faster_whisper \
     --exclude-module fastembed \
     --exclude-module openwakeword \

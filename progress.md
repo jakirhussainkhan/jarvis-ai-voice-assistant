@@ -31,7 +31,22 @@ is installed.
 | Desktop launcher (`run.sh` + app-menu entry) | Working (verified: `desktop-file-validate` clean, GUI starts) |
 | Tests | `pytest` suite — **593 passed, 1 skipped** |
 | Spoken voice | `en-GB-RyanNeural` (British male); override with `JARVIS_TTS_VOICE` |
-| Published | GitHub, tags **`v1.0.1`**…**`v2.2.0`** (README + MIT LICENSE) |
+| Published | GitHub, tags **`v1.0.1`**…**`v2.2.1`** (README + MIT LICENSE) |
+
+## Timezone Data Fix (2026-10-20, v2.2.1)
+
+A patch release for the packaged builds.
+
+- **Windows crash fix:** The frozen `.exe` raised
+  `ZoneInfoNotFoundError: 'No time zone found with key Asia/Dhaka'` because
+  Windows has no system IANA timezone database. `tzdata` is now an explicit
+  runtime dependency.
+- **Bundled everywhere:** `--collect-data tzdata` is passed to PyInstaller for
+  the Windows, macOS, and Linux builds, so `zoneinfo.ZoneInfo("Asia/Dhaka")`
+  works even when the app is one-file or sandboxed.
+- **Verification:** The rebuilt Debian binary contains
+  `tzdata/zoneinfo/Asia/Dhaka`, starts the GUI headlessly, and reports
+  `Jarvis 2.2.1`; the test suite remains at **593 passed, 1 skipped**.
 
 ## Stable v2.2.0 Release & Automated Builds (2026-10-20)
 

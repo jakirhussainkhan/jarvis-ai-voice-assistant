@@ -27,6 +27,7 @@ python -m PyInstaller `
     --hidden-import pynput.keyboard._win32 `
     --hidden-import pynput.mouse._win32 `
     --collect-all sounddevice `
+    --collect-data tzdata `
     --exclude-module faster_whisper `
     --exclude-module fastembed `
     --exclude-module openwakeword `
