@@ -406,6 +406,10 @@ class JarvisWorker(QThread):
                 if not user:
                     # You went quiet (or pressed Stop / muted the mic): end the
                     # conversation instead of grabbing the microphone again.
+                    # Emit IDLE explicitly so a failed/timed-out capture never
+                    # leaves the orb stuck on LISTENING.
+                    self.state_changed.emit(
+                        MUTED if voice.is_mic_muted() else IDLE)
                     return
                 # listen() already prints the "👤 <user>" line to stdout and speak()
                 # prints "🤖 <reply>" exactly once, so we only drive the state
@@ -444,6 +448,9 @@ class JarvisWorker(QThread):
                     # than immediately waiting for the next sentence.
                     return
         except Exception as exc:                      # never kill the UI
+            print(f"[gui] worker error: {type(exc).__name__}: {exc}",
+                  flush=True)
+            self.state_changed.emit(IDLE)
             self.message.emit(f"⚠️ {exc}")
         finally:
             voice.set_level_sink(None)

@@ -150,6 +150,36 @@ def test_pre_roll_keeps_soft_onset(monkeypatch):
         pipe.close()
 
 
+def test_windows_uses_a_more_sensitive_start_gate():
+    """Windows mics often report lower amplitude, so the start gate is 150."""
+    assert voice._default_energy_threshold("win32") == 150
+    assert voice._default_energy_threshold("darwin") == 300
+    assert voice._default_energy_threshold("linux") == 300
+
+
+def test_start_gate_rises_with_noisy_background(monkeypatch):
+    monkeypatch.setattr(voice, "_ENERGY_THRESHOLD", 150)
+
+    assert voice._start_gate([]) == 150
+    assert voice._start_gate([40, 40, 40]) == 150
+    assert voice._start_gate([200, 200, 200]) == 300
+
+
+def test_low_amplitude_speech_passes_the_windows_gate(monkeypatch):
+    """A 220 RMS utterance is below Linux's 300 gate but valid on Windows."""
+    monkeypatch.setattr(voice, "_ENERGY_THRESHOLD", 150)
+    pipe = _Pipe()
+    try:
+        pipe.feed(_silence(0.3) + _tone(0.4, 220) + _silence(1.2))
+
+        data = _capture(pipe, monkeypatch)
+
+        assert data, "Windows-level speech must not be dropped by the gate"
+        assert voice._rms(data) < 300
+    finally:
+        pipe.close()
+
+
 def test_short_dip_in_middle_is_not_cut(monkeypatch):
     """Regression: a dip between words must not truncate the phrase.
 

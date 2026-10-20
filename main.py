@@ -290,10 +290,45 @@ def ensure_api_key(input_fn=input, print_fn=print):
     return True
 
 
+def list_microphones():
+    """Print sounddevice input devices and exit with a status code."""
+    from platform_adapters import _sd
+
+    try:
+        devices = _sd.list_input_devices()
+    except Exception as exc:
+        print(f"Could not list microphones: {type(exc).__name__}: {exc}",
+              file=sys.stderr)
+        print("Install the capture dependency with "
+              "'pip install sounddevice'.", file=sys.stderr)
+        return 1
+
+    print("sounddevice input devices:")
+    if not devices:
+        print("  <none found>")
+        print("No microphone is visible to PortAudio. Check the Windows "
+              "privacy setting for microphone access.", file=sys.stderr)
+        return 1
+
+    for device in devices:
+        marker = " (default)" if device.get("default") else ""
+        rate = device.get("default_samplerate")
+        rate_text = f", default rate {rate:g} Hz" if isinstance(rate, (int, float)) else ""
+        print(f"  [{device['index']}] {device['name']}{marker}")
+        print(f"      host API: {device.get('hostapi_name', 'unknown')}, "
+              f"input channels: {device.get('channels', '?')}{rate_text}")
+    print("\nChoose one with JARVIS_MIC_DEVICE=<index or name substring>, "
+          "for example JARVIS_MIC_DEVICE=1 or "
+          "JARVIS_MIC_DEVICE=\"USB Microphone\".")
+    return 0
+
+
 def main():
     global _TEXT, _OFFLINE
 
     args = sys.argv[1:]
+    if "--list-mics" in args:
+        return list_microphones()
     if "--autostart-enable" in args or "--autostart-disable" in args:
         enable = "--autostart-enable" in args
         try:

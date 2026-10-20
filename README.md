@@ -373,7 +373,8 @@ All configuration lives in `config.py` and can be overridden from `.env`:
 | `JARVIS_SHELL_TIMEOUT` | `20` | Seconds before a terminal command is killed |
 | `JARVIS_SHELL_MAX_OUTPUT` | `4000` | Output characters returned to the model |
 | `JARVIS_OFFLINE` | *(unset)* | `1` disables the agent (router only) |
-| `JARVIS_MIC_DEVICE` | `default` | ALSA PCM name for `arecord -D` |
+| `JARVIS_MIC_DEVICE` | `default` | ALSA PCM name on Linux; sounddevice input index or name substring on Windows/macOS |
+| `JARVIS_ENERGY_THRESHOLD` | `150` Windows / `300` Linux | RMS level that starts a phrase (Mac uses 300) |
 | `JARVIS_LISTEN_TIMEOUT` | `30` | Seconds to wait for you to start speaking |
 | `JARVIS_SILENCE_END` | `2.0` | Seconds of a pause that ends the phrase |
 | `JARVIS_PHRASE_LIMIT` | `15` | Max seconds of a single utterance |
@@ -411,6 +412,7 @@ token cap and tool-round limit are constants in `config.py`.
 ./venv/bin/python main.py --offline          # router only (no network)
 ./venv/bin/python main.py --local            # this session uses local Ollama
 ./venv/bin/python main.py --check            # readiness report (same as doctor.py)
+./venv/bin/python main.py --list-mics        # list sounddevice input devices and exit
 ./venv/bin/python main.py --version          # print the version
 ./venv/bin/python main.py --screen "what is on my screen?"   # one screen answer
 ./venv/bin/python main.py --gui              # floating widget + system tray

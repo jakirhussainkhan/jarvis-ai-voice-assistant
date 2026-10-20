@@ -25,7 +25,7 @@ import edge_tts
 import pygame
 import speech_recognition as sr
 
-from config import BARGE_HOLD, BARGE_THRESHOLD, STT_LANG, TTS_VOICE
+from config import BARGE_HOLD, BARGE_THRESHOLD, MIC_DEVICE, STT_LANG, TTS_VOICE
 from platform_adapters import Audio
 
 def _env_int(name, default, minimum):
@@ -79,10 +79,24 @@ def _fix_misheard_name(text):
     return _MISHEARD_NAME.sub(lambda match: f"{match.group(1)} Jakir", text)
 
 
-# Fixed RMS gate: no ambient auto-calibration and no dynamic threshold.
-# Measured on this machine's onboard mic (ALC245): idle ambient RMS is ~40-80,
-# while speech lands in the thousands, so 300 separates the two cleanly.
-_ENERGY_THRESHOLD = 300
+def _default_energy_threshold(platform_name=None):
+    """Return the speech-start RMS for ``platform_name``.
+
+    Windows microphone drivers (especially MME/WASAPI shared mode) often report
+    a noticeably lower amplitude than ALSA for the same physical mic. 150 still
+    clears normal room noise on Windows, while 300 remains the tuned value for
+    the Linux arecord path. ``JARVIS_ENERGY_THRESHOLD`` overrides both.
+    """
+    name = str(platform_name or sys.platform).lower()
+    return 150 if name.startswith("win") else 300
+
+
+# Start gate for a chunk to be treated as speech. It is raised dynamically when
+# the measured room noise is already high (see ``_start_gate``), so a lower
+# Windows baseline does not turn a noisy room into a false trigger.
+_ENERGY_THRESHOLD = _env_int(
+    "JARVIS_ENERGY_THRESHOLD", _default_energy_threshold(), 50,
+)
 
 # Capture format. The Linux adapter streams headerless S16_LE mono PCM from
 # arecord (Windows/macOS use sounddevice); either way we wrap it in
@@ -97,15 +111,19 @@ _CHUNK_SECONDS = 0.1
 _CHUNK_FRAMES = int(_SAMPLE_RATE * _CHUNK_SECONDS)   # 1600
 _CHUNK_BYTES = _CHUNK_FRAMES * _SAMPLE_WIDTH         # 3200
 
-# Speech starts on a chunk above _ENERGY_THRESHOLD (300). The level that counts
-# as "still speaking" is auto-calibrated on every listen: we measure the room's
-# background noise first and set the stop floor to 1.5x its median, clamped to
-# [_SILENCE_THRESHOLD, _MAX_SILENCE_THRESHOLD] (150..300). Hysteresis then keeps
-# recording through brief dips between words; the phrase only ends after
-# _SILENCE_SECONDS (2 s) below that floor.
+# Speech starts on a chunk above _ENERGY_THRESHOLD (300 on Linux, 150 on
+# Windows). The level that counts as "still speaking" is auto-calibrated on
+# every listen: we measure the room's background noise first and set the stop
+# floor to 1.5x its median, clamped to [_SILENCE_THRESHOLD,
+# _MAX_SILENCE_THRESHOLD] (150..300). Hysteresis then keeps recording through
+# brief dips between words; the phrase only ends after _SILENCE_SECONDS (2 s)
+# below that floor.
 _SILENCE_THRESHOLD = 150        # minimum floor (also the fallback)
 _MAX_SILENCE_THRESHOLD = 300    # maximum floor
 _SILENCE_FACTOR = 1.5
+# The start gate can rise above _ENERGY_THRESHOLD in a noisy room, but never
+# arbitrarily high: this bounds a bad background estimate.
+_MAX_START_THRESHOLD = 1200
 _SILENCE_SECONDS = _env_float("JARVIS_SILENCE_END", 2.0, 0.5)
 # ^ how long a pause may last before the phrase is treated as finished (was 1.2 s).
 #   Longer by default so a thinking pause mid-sentence does not cut you off. The
@@ -374,16 +392,31 @@ def _calibrate(samples):
                    max(_SILENCE_THRESHOLD, round(_SILENCE_FACTOR * background))))
 
 
-def _mic_device():
-    """ALSA PCM name to capture from (passed to ``arecord -D``).
+def _start_gate(samples):
+    """Start threshold for speech, adapted to the measured room noise.
 
-    Defaults to ``default`` (the system/PipeWire input), which is the device
-    that records this machine's voice correctly. Override with
-    ``JARVIS_MIC_DEVICE=plughw:1,0`` (any name from ``arecord -L``) if needed.
-    The old PyAudio-index override is obsolete now that capture goes through
-    arecord.
+    The platform default is the lower bound, so Windows keeps its more sensitive
+    150 RMS gate in a quiet room. If the background itself is loud, the gate
+    rises to 1.5x its median (capped) instead of letting noise start a phrase.
     """
-    return os.getenv("JARVIS_MIC_DEVICE", "").strip() or "default"
+    if not samples:
+        return _ENERGY_THRESHOLD
+    background = _median(samples)
+    return int(min(_MAX_START_THRESHOLD,
+                   max(_ENERGY_THRESHOLD,
+                       round(_SILENCE_FACTOR * background))))
+
+
+def _mic_device():
+    """Microphone preference for the active capture backend.
+
+    On Linux this is an ALSA PCM name passed to ``arecord -D`` (default
+    ``default``). On Windows/macOS the shared sounddevice adapter resolves it as
+    a PortAudio input index (``0``, ``1``, ...) or a case-insensitive device
+    name substring. Override it with ``JARVIS_MIC_DEVICE``.
+    """
+    return (os.getenv("JARVIS_MIC_DEVICE", "").strip()
+            or MIC_DEVICE or "default")
 
 
 def arecord_command(device=None, *, seconds=None, output=None, fmt="raw"):
@@ -410,9 +443,14 @@ def _stop_arecord(proc):
 def _read_chunk(stream, fd, deadline):
     """Read one full 0.1 s chunk before ``deadline``; b"" on timeout / EOF.
 
-    ``select`` bounds the read even if arecord stalls and produces no data, so
-    a wedged capture can never block past the deadline.
+    The Linux/macOS recorders expose an OS pipe, so ``select`` bounds the read
+    even if arecord stalls. The sounddevice recorder exposes ``read_chunk``
+    instead because Windows ``select`` cannot wait on pipes; that reader has its
+    own condition-variable timeout, so a wedged device cannot block the worker.
     """
+    if hasattr(stream, "read_chunk"):
+        return stream.read_chunk(deadline, _CHUNK_BYTES)
+
     buf = bytearray()
     while len(buf) < _CHUNK_BYTES:
         remaining = deadline - time.monotonic()
@@ -499,7 +537,7 @@ class BargeInMonitor:
         try:
             proc = _spawn_arecord(_mic_device())
             stream = proc.stdout
-            fd = stream.fileno()
+            fd = None if hasattr(stream, "read_chunk") else stream.fileno()
             # Discard the stream-open spike and let the room settle, exactly as
             # the normal listen path does.
             for _ in range(_WARMUP_CHUNKS):
@@ -530,8 +568,9 @@ def _capture_from_stream(stream, fd=None, ptt=False, stop_event=None,
 
     Reads ``_CHUNK_SECONDS`` chunks. The arecord stream-open spike is discarded
     and the "still speaking" floor is auto-calibrated from the background noise
-    (1.5x its median, clamped to 150..300). Speech starts on RMS >
-    ``_ENERGY_THRESHOLD``; recording then continues through brief dips (any chunk
+    (1.5x its median, clamped to 150..300). Speech starts on RMS above the
+    platform start gate (300 on Linux, 150 on Windows) raised to 1.5x the median
+    in a noisy room; recording then continues through brief dips (any chunk
     above the calibrated floor resets the silence run) until
     ~``_SILENCE_SECONDS`` below that floor, the phrase hits ``_PHRASE_TIME_LIMIT``,
     or the stream ends. A ~0.3 s pre-roll is kept so a quiet onset is never
@@ -542,7 +581,7 @@ def _capture_from_stream(stream, fd=None, ptt=False, stop_event=None,
     as ``stop_event`` is set (Enter pressed again). Returns the raw bytes
     captured (possibly empty).
     """
-    if fd is None:
+    if fd is None and not hasattr(stream, "read_chunk"):
         fd = stream.fileno()
 
     pre_roll = deque(maxlen=_PRE_ROLL_CHUNKS)
@@ -551,6 +590,7 @@ def _capture_from_stream(stream, fd=None, ptt=False, stop_event=None,
     started = False
     silent_run = 0
     stop_threshold = _SILENCE_THRESHOLD
+    gate = _ENERGY_THRESHOLD
     warm_left = _WARMUP_CHUNKS
     spike_rms = None
     first_chunk = True
@@ -606,6 +646,9 @@ def _capture_from_stream(stream, fd=None, ptt=False, stop_event=None,
         if stop_event is not None and stop_event.is_set():
             reason = "ptt"
             break
+        if not started and time.monotonic() >= wait_deadline:
+            reason = "timeout"
+            break
         deadline = phrase_deadline if started else wait_deadline
         chunk = _read_chunk(stream, fd, deadline)
         if not chunk:
@@ -622,14 +665,14 @@ def _capture_from_stream(stream, fd=None, ptt=False, stop_event=None,
             # phrase, and keep it out of the background estimate.
             if first_chunk:
                 first_chunk = False
-                if rms > _ENERGY_THRESHOLD:
+                if rms > gate:
                     spike_rms = rms
                     if _DEBUG:
-                        _dbg(f"chunk rms={rms:.0f} gate={_ENERGY_THRESHOLD} "
+                        _dbg(f"chunk rms={rms:.0f} gate={gate} "
                              f"state=warmup spike=discarded")
                     continue
 
-            if rms > _ENERGY_THRESHOLD:
+            if rms > gate:
                 # A decaying tail of the open spike (bounded by the warm-up
                 # window) is discarded; anything else is speech and starts now,
                 # so a phrase that begins immediately is never cut off.
@@ -637,21 +680,23 @@ def _capture_from_stream(stream, fd=None, ptt=False, stop_event=None,
                     spike_rms = rms
                     warm_left -= 1
                     if _DEBUG:
-                        _dbg(f"chunk rms={rms:.0f} gate={_ENERGY_THRESHOLD} "
+                        _dbg(f"chunk rms={rms:.0f} gate={gate} "
                              f"state=warmup spike=decay left={warm_left}")
                     continue
                 spike_rms = None
                 begin_recording()
                 continue
 
-            # Quiet chunk: this is background. Re-estimate the floor each time.
+            # Quiet chunk: this is background. Re-estimate both the start gate
+            # and the stop floor from the room noise seen so far.
             spike_rms = None
             warm_left = max(0, warm_left - 1)
             bg_samples.append(rms)
             stop_threshold = _calibrate(bg_samples)
+            gate = _start_gate(bg_samples)
             if _DEBUG:
                 state = "warmup" if warm_left > 0 else "waiting"
-                _dbg(f"chunk rms={rms:.0f} gate={_ENERGY_THRESHOLD} "
+                _dbg(f"chunk rms={rms:.0f} gate={gate} "
                      f"state={state} floor={stop_threshold}")
             continue
 
@@ -661,7 +706,7 @@ def _capture_from_stream(stream, fd=None, ptt=False, stop_event=None,
         else:
             silent_run += 1
         if _DEBUG:
-            _dbg(f"chunk rms={rms:.0f} gate={_ENERGY_THRESHOLD} "
+            _dbg(f"chunk rms={rms:.0f} gate={gate} "
                  f"state=recording floor={stop_threshold} "
                  f"silence={silent_run}/{silence_chunks_to_stop}")
 
@@ -815,6 +860,9 @@ def listen(wait=None, *, label="", barge=False):
         print("🎤 Listening...", flush=True)
         proc = _spawn_arecord(device)
     except Exception as exc:
+        if sys.platform.startswith(("win", "darwin")):
+            print("Failed to open microphone. Try a different device index "
+                  "using JARVIS_MIC_DEVICE.", flush=True)
         _dbg(f"capture error: {type(exc).__name__}: {exc}")
         return ""
 

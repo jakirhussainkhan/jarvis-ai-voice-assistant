@@ -384,6 +384,22 @@ def test_worker_clears_the_level_sink_when_done(app, monkeypatch):
     assert 0.0 in levels
 
 
+def test_worker_returns_to_idle_when_capture_crashes(app, monkeypatch):
+    def boom(*args, **kwargs):
+        raise RuntimeError("microphone unavailable")
+
+    monkeypatch.setattr(gui, "listen", boom)
+    worker = gui.JarvisWorker(Memory())
+    states, messages = [], []
+    worker.state_changed.connect(states.append)
+    worker.message.connect(messages.append)
+
+    worker.run()                            # run inline; nothing blocks
+
+    assert states[-1] == gui.IDLE, "a capture crash must release the orb"
+    assert any("microphone unavailable" in message for message in messages)
+
+
 def test_worker_reports_heard_and_speaks(app, monkeypatch):
     # One exchange, then silence: with chat mode that is a complete session.
     turns = iter(["hello", ""])

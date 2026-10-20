@@ -97,7 +97,15 @@ Fix anything the readiness report marks as missing.
   `powershell -ExecutionPolicy Bypass -File .\install.ps1`, which only relaxes
   the policy for that one process.
 - **No microphone input** — open **Settings → Privacy & security → Microphone**
-  and allow desktop apps to use the microphone.
+  and allow desktop apps to use the microphone. Then list the devices Jarvis can
+  see and choose the right one:
+  ```powershell
+  .\venv\Scripts\python.exe main.py --list-mics
+  $env:JARVIS_MIC_DEVICE="1"   # or part of the device name, e.g. "USB"
+  .\venv\Scripts\python.exe main.py
+  ```
+  The index must be one of the input devices printed by `--list-mics` (indices
+  are PortAudio device numbers, not Windows Sound settings positions).
 - **No sound** — check the Windows volume mixer and make sure the default
   playback device is correct.
 - **Antivirus blocks a helper** — the optional automation packages

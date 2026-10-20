@@ -66,7 +66,7 @@ PROJECT_ENV = Path(__file__).resolve().parent / ".env"
 load_dotenv(USER_ENV)
 load_dotenv(PROJECT_ENV)
 
-__version__ = "2.2.1"
+__version__ = "2.2.2"
 
 # Groq (https://console.groq.com) exposes an OpenAI-compatible Chat Completions
 # API. The key is read from GROQ_API_KEY in .env; Groq keys start with "gsk_".
@@ -107,6 +107,10 @@ OLLAMA_BASE_URL = (
 OLLAMA_MODEL = (os.getenv("OLLAMA_MODEL") or "llama3").strip() or "llama3"
 
 STT_LANG = "en-US"  # English-only by design.
+# Microphone override. On Linux this is an ALSA PCM name (``arecord -L``); on
+# Windows/macOS it is a sounddevice input index (0, 1, ...) or a device-name
+# substring (for example "USB"). Empty means the system default input.
+MIC_DEVICE = (os.getenv("JARVIS_MIC_DEVICE") or "").strip() or None
 # The Iron-Man Jarvis voice: a British male neural voice ("Ryan"). Override it
 # (or go back to a female voice) from .env, e.g. JARVIS_TTS_VOICE=en-US-AriaNeural.
 TTS_VOICE = os.getenv("JARVIS_TTS_VOICE", "en-GB-RyanNeural")

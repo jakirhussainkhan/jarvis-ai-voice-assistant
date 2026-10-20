@@ -1,6 +1,6 @@
 # Jarvis — Progress
 
-Last updated: 2026-10-20
+Last updated: 2026-10-21
 
 A voice-controlled cross-platform desktop assistant. You speak a command; Jarvis either
 handles it locally (regex, offline) or forwards it to a Groq-backed agent that
@@ -29,9 +29,37 @@ is installed.
 | Timers / reminders | Working |
 | Offline wake word ("Hey Jarvis") | **Built + unit-tested; NOT yet verified live** (needs `pip install openwakeword onnxruntime`) |
 | Desktop launcher (`run.sh` + app-menu entry) | Working (verified: `desktop-file-validate` clean, GUI starts) |
-| Tests | `pytest` suite — **593 passed, 1 skipped** |
+| Tests | `pytest` suite — **608 passed, 1 skipped** |
 | Spoken voice | `en-GB-RyanNeural` (British male); override with `JARVIS_TTS_VOICE` |
-| Published | GitHub, tags **`v1.0.1`**…**`v2.2.1`** (README + MIT LICENSE) |
+| Published | GitHub, tags **`v1.0.1`**…**`v2.2.2`** (README + MIT LICENSE) |
+
+## Windows Microphone Capture Fix (2026-10-21, v2.2.2)
+
+A patch release for the Windows build, where the GUI stayed on "Listening..."
+and speech was never transcribed while text mode and TTS worked.
+
+- **Windows-safe capture reader:** `sounddevice` capture no longer exposes an OS
+  pipe read through `select.select`, which is Unix-only for pipes on Windows.
+  A condition-variable reader now feeds 0.1 s PCM chunks with a hard deadline,
+  so a dead or silent device returns an empty utterance instead of hanging.
+- **Device selection:** the sounddevice adapter calls `sd.query_devices()`,
+  finds the PortAudio default input explicitly, and passes that index to
+  `RawInputStream(device=...)`. `JARVIS_MIC_DEVICE` accepts an input index
+  (`0`, `1`, ...) or a case-insensitive device-name substring; invalid values
+  fall back to the default with a warning.
+- **`--list-mics`:** `main.py --list-mics` prints every input device with its
+  PortAudio index, host API, channel count, default sample rate, and marks the
+  system default. It exits without loading the API key or GUI.
+- **Windows VAD tuning:** the speech-start gate defaults to 150 RMS on Windows
+  (300 on Linux) and rises to 1.5x the measured background median in a noisy
+  room. Both the start wait and phrase capture remain bounded; no speech returns
+  `""`.
+- **State and errors:** the GUI worker now emits `IDLE` explicitly when a
+  capture returns empty or raises, and logs the error. A failed device open
+  prints: `Failed to open microphone. Try a different device index using
+  JARVIS_MIC_DEVICE.`
+- **Tests:** **608 passed, 1 skipped**, including device resolution, reader
+  timeout, CLI listing, low-amplitude Windows VAD, and GUI crash-to-IDLE cases.
 
 ## Timezone Data Fix (2026-10-20, v2.2.1)
 
