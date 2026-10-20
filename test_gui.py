@@ -16,7 +16,7 @@ import pytest
 pytest.importorskip("PyQt5")
 
 from PyQt5.QtCore import QPoint, Qt        # noqa: E402
-from PyQt5.QtGui import QPixmap            # noqa: E402
+from PyQt5.QtGui import QCloseEvent, QPixmap        # noqa: E402
 from PyQt5.QtWidgets import QApplication, QSizeGrip   # noqa: E402
 
 import gui                                 # noqa: E402
@@ -111,6 +111,65 @@ def test_close_to_tray_keeps_the_app_alive(app):
 
     assert widget.isVisible() is False
     assert widget._quitting is False
+
+
+def test_halt_for_hide_stops_the_worker_and_forces_idle(monkeypatch):
+    """The ✕ path stops the worker, clears the voice events, and goes Idle."""
+    calls = []
+
+    class FakeSignal:
+        def disconnect(self, slot):
+            calls.append(("disconnect", slot))
+
+    class FakeWorker:
+        def __init__(self):
+            self.state_changed = FakeSignal()
+            self.stops = 0
+
+        def stop(self):
+            self.stops += 1
+            calls.append("worker.stop")
+
+    class Stub:
+        def set_state(self, state):
+            calls.append(("state", state))
+
+    stub = Stub()
+    worker = FakeWorker()
+    stub.worker = worker
+    monkeypatch.setattr(gui.voice, "stop_listening",
+                        lambda: calls.append("listen"))
+    monkeypatch.setattr(gui.voice, "stop_speaking",
+                        lambda: calls.append("speak"))
+
+    gui.JarvisWidget._halt_for_hide(stub)
+
+    assert worker.stops == 1
+    assert ("disconnect", stub.set_state) in calls
+    assert calls[-1] == ("state", gui.IDLE)
+    assert "listen" in calls
+    assert "speak" in calls
+
+
+def test_close_event_halts_the_session_before_hiding():
+    """The window close path ends the turn first, then hides to the tray."""
+    calls = []
+
+    class Stub:
+        _quitting = False
+        tray = None
+
+        def _halt_for_hide(self):
+            calls.append("halt")
+
+        def hide(self):
+            calls.append("hide")
+
+    event = QCloseEvent()
+    gui.JarvisWidget.closeEvent(Stub(), event)
+
+    assert calls == ["halt", "hide"]
+    assert event.isAccepted() is False, "close must be ignored (hide to tray)"
 
 
 def test_real_quit_is_allowed_to_close(app):
@@ -717,8 +776,104 @@ def test_window_has_minimise_and_close_controls(app):
     assert widget.close_button.objectName() == "closeButton"
     assert widget.minimize_button.isEnabled()
     assert widget.close_button.isEnabled()
+    assert widget.autostart_action.text() == "Start on Boot"
+    assert widget.autostart_action.isCheckable()
+    if widget.tray is not None:
+        assert widget.tray.autostart_action.text() == "Start on Boot"
+        assert widget.tray.autostart_action.isCheckable()
 
     widget._minimize()      # must be safe on the offscreen platform
+
+
+def test_toggle_autostart_updates_both_menus_and_notifies(monkeypatch):
+    """The menu action installs the login entry and confirms via the tray."""
+    class FakeAction:
+        def __init__(self):
+            self.checked = None
+
+        def setChecked(self, value):
+            self.checked = value
+
+    class FakeTray:
+        def __init__(self):
+            self.synced = []
+            self.messages = []
+
+        def sync_autostart(self, value):
+            self.synced.append(value)
+
+        def showMessage(self, *args):
+            self.messages.append(args)
+
+    class Stub:
+        def __init__(self):
+            self.tray = FakeTray()
+            self.autostart_action = FakeAction()
+            self.flashes = []
+
+        _sync_autostart = gui.JarvisWidget._sync_autostart
+
+        def _flash(self, text):
+            self.flashes.append(text)
+
+    state = {"enabled": False}
+    monkeypatch.setattr(gui.startup, "is_autostart_enabled",
+                        lambda: state["enabled"])
+
+    def fake_set(enable):
+        state["enabled"] = enable
+
+    monkeypatch.setattr(gui.startup, "set_autostart", fake_set)
+
+    stub = Stub()
+    gui.JarvisWidget.toggle_autostart(stub)
+
+    assert state["enabled"] is True
+    assert stub.autostart_action.checked is True
+    assert stub.tray.synced == [True]
+    assert stub.flashes[-1] == "Auto-start enabled"
+    assert any(message[1] == "Auto-start enabled"
+               for message in stub.tray.messages)
+
+    gui.JarvisWidget.toggle_autostart(stub)
+
+    assert state["enabled"] is False
+    assert stub.autostart_action.checked is False
+    assert stub.flashes[-1] == "Auto-start disabled"
+
+
+def test_toggle_autostart_reports_failures_and_restores_the_check(app,
+                                                                 monkeypatch):
+    class FakeAction:
+        def __init__(self):
+            self.checked = None
+
+        def setChecked(self, value):
+            self.checked = value
+
+    class Stub:
+        def __init__(self):
+            self.tray = None
+            self.autostart_action = FakeAction()
+            self.flashes = []
+
+        _sync_autostart = gui.JarvisWidget._sync_autostart
+
+        def _flash(self, text):
+            self.flashes.append(text)
+
+    monkeypatch.setattr(gui.startup, "is_autostart_enabled", lambda: False)
+
+    def fail(_enable):
+        raise PermissionError("read-only home")
+
+    monkeypatch.setattr(gui.startup, "set_autostart", fail)
+
+    stub = Stub()
+    gui.JarvisWidget.toggle_autostart(stub)
+
+    assert stub.autostart_action.checked is False
+    assert "read-only home" in stub.flashes[-1]
 
 
 def test_orb_breathes_when_idle_and_stops_when_active(app):

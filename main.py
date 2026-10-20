@@ -7,6 +7,7 @@ import sys
 import agent
 import config
 import confirm
+import startup
 import voice
 from voice import listen, speak
 from router import try_local, CAPABILITIES, OFFLINE_REPLY
@@ -219,10 +220,90 @@ def _run_loop():
         barge_pending = _speak_with_barge_in(reply)
 
 
+SETUP_WELCOME = (
+    "Welcome to JARVIS! You need a Groq API key to use the AI features. "
+    "Get a free one at https://console.groq.com/keys"
+)
+
+
+def enable_offline_mode():
+    """Restrict the session to local router commands (no LLM calls)."""
+    global _OFFLINE
+    _OFFLINE = True
+
+
+def prompt_for_api_key(input_fn=input, print_fn=print):
+    """First-run CLI setup: explain, read a key, and save it securely.
+
+    Returns the saved key, or ``None`` when the user enters nothing, cancels,
+    or the file cannot be written. ``input_fn``/``print_fn`` are injectable so
+    the flow can be tested without a real terminal.
+    """
+    print_fn(SETUP_WELCOME)
+    try:
+        key = input_fn(
+            "Paste your Groq API key (or press Enter to use offline mode): "
+        )
+    except (EOFError, KeyboardInterrupt):
+        print_fn("")
+        key = ""
+    key = (key or "").strip()
+
+    if not key:
+        print_fn(
+            "No key entered. Starting in offline mode: only local commands "
+            "will work."
+        )
+        return None
+    if not config.is_api_key_configured(key):
+        print_fn(
+            "That is a placeholder, not a real key. Starting in offline mode."
+        )
+        return None
+    if not key.startswith("gsk_"):
+        print_fn(
+            "Note: Groq keys normally start with 'gsk_'. Saving this key anyway."
+        )
+
+    try:
+        path = config.save_api_key(key)
+    except (OSError, ValueError) as exc:
+        print_fn(f"Could not save the API key: {exc}")
+        print_fn("Starting in offline mode instead.")
+        return None
+
+    print_fn(f"API key saved to {path}. Starting JARVIS...")
+    return key
+
+
+def ensure_api_key(input_fn=input, print_fn=print):
+    """Run the CLI setup flow when no usable key is configured.
+
+    The GUI handles this itself with a modal dialog, so ``main()`` only calls
+    this for non-GUI starts. Returns ``True`` when a key is available.
+    """
+    if config.is_api_key_configured():
+        return True
+    if prompt_for_api_key(input_fn=input_fn, print_fn=print_fn) is None:
+        enable_offline_mode()
+        return False
+    return True
+
+
 def main():
     global _TEXT, _OFFLINE
 
     args = sys.argv[1:]
+    if "--autostart-enable" in args or "--autostart-disable" in args:
+        enable = "--autostart-enable" in args
+        try:
+            startup.set_autostart(enable)
+        except OSError as exc:
+            print(f"Could not update auto-start: {exc}", file=sys.stderr)
+            return 1
+        print("Auto-start enabled." if enable else "Auto-start disabled.")
+        print(f"Current status: {startup.status_text()}")
+        return 0
     if "--local" in args:
         # Force the opt-in Ollama backend for this process only. The default
         # remains Groq, and no Ollama connection is attempted otherwise.
@@ -236,6 +317,16 @@ def main():
         from config import __version__
         print(f"Jarvis {__version__}")
         return
+
+    gui_mode = "--gui" in args or "--wake" in args
+    # The GUI opens its own modal setup dialog. CLI (and --screen) prompts here.
+    # --offline and --local explicitly do not need a Groq key.
+    if (not gui_mode
+            and "--offline" not in args
+            and not config.USE_LOCAL_LLM
+            and not config.is_api_key_configured()):
+        ensure_api_key()
+
     for flag in ("--screen", "--see", "--look"):
         if flag in args:
             index = args.index(flag)

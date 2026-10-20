@@ -15,6 +15,7 @@ import urllib.request
 from urllib.error import HTTPError
 
 import desktop
+import startup
 from config import (
     API_KEY,
     BASE_URL,
@@ -163,6 +164,7 @@ def report():
     out.append("Clipboard read: " + ("xclip/xsel" if clip else
                ("Qt fallback" if qt else "unavailable")))
     out.append(_wake_status())
+    out.append(f"Auto-start on boot: {startup.status_text()}")
     out.append("")
 
     if missing:

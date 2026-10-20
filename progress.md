@@ -29,9 +29,40 @@ is installed.
 | Timers / reminders | Working |
 | Offline wake word ("Hey Jarvis") | **Built + unit-tested; NOT yet verified live** (needs `pip install openwakeword onnxruntime`) |
 | Desktop launcher (`run.sh` + app-menu entry) | Working (verified: `desktop-file-validate` clean, GUI starts) |
-| Tests | `pytest` suite — **557 passed, 1 skipped** |
+| Tests | `pytest` suite — **593 passed, 1 skipped** |
 | Spoken voice | `en-GB-RyanNeural` (British male); override with `JARVIS_TTS_VOICE` |
-| Published | GitHub, tags **`v1.0.1`**…**`v2.1.1`** (README + MIT LICENSE) |
+| Published | GitHub, tags **`v1.0.1`**…**`v2.2.0`** (README + MIT LICENSE) |
+
+## Stable v2.2.0 Release & Automated Builds (2026-10-20)
+
+The first fully packaged, cross-platform release. It also completes the
+onboarding, tray behaviour, and desktop-integration work finished earlier the
+same day.
+
+- **First-run setup:** A missing or placeholder `GROQ_API_KEY` now opens a setup
+  wizard in both the CLI and the GUI. Keys are saved to `~/.jarvis/.env` with
+  mode `0600`; dismissing the wizard continues in offline/local mode with a
+  clear warning.
+- **Close-to-tray stops work:** Closing the GUI (X button, Escape, or "Hide to
+  tray") now stops active listening and speech before hiding, and immediately
+  restores the blue **Idle** orb. Reopening the window does not leave a stale
+  microphone or TTS worker running.
+- **Start on Boot:** A new cross-platform `startup.py` installs a per-user login
+  entry — XDG autostart on Linux, `HKCU\...\Run` on Windows, and a LaunchAgent on
+  macOS. It is exposed as a checkable **Start on Boot** item in both GUI menus,
+  as `--autostart-enable` / `--autostart-disable` on the CLI, and in the doctor
+  report.
+- **Packaging:** `build_exe.ps1` produces a single-file Windows `JARVIS.exe`,
+  `build_deb.sh` produces a self-contained `jarvis_2.2.0_amd64.deb` (binary,
+  desktop entry, and icon), and `build_mac.sh` produces an ad-hoc-signed
+  `JARVIS.dmg`. Optional local-ML extras stay lazy so the bundles remain
+  portable.
+- **Automated release:** `.github/workflows/release.yml` runs the three builds
+  in parallel on a `v*` tag, then publishes the `.exe`, `.deb`, and `.dmg`
+  together through `softprops/action-gh-release`.
+- **Tests:** **593 passed, 1 skipped**, including setup-wizard, secure key
+  storage, close-to-tray, auto-start (mocked filesystem and `winreg`), CLI flag,
+  and doctor-report coverage.
 
 ## YouTube Autoplay Verification & Smart Routing (2026-10-20, v2.1.1)
 

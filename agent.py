@@ -210,6 +210,24 @@ _client = (
     if API_KEY else None
 )
 
+
+def refresh_client():
+    """Rebuild the Groq client after the first-run wizard stores a key.
+
+    Clients are created at import time, which is correct for a configured
+    install but leaves ``_client`` as ``None`` when the key is entered later.
+    Resetting the breaker also clears any "not configured" failures from the
+    setup attempt so the first real request is allowed through.
+    """
+    global _client
+    _client = (
+        OpenAI(api_key=config.API_KEY, base_url=BASE_URL,
+               timeout=API_TIMEOUT, max_retries=0)
+        if config.API_KEY else None
+    )
+    _breaker.reset()
+    return _client
+
 # The local Ollama client is created lazily, only when local mode is active.
 # Keeping it out of module import means a missing Ollama server has zero cost
 # and cannot slow down or crash the normal Groq path.

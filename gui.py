@@ -23,17 +23,21 @@ import sys
 from collections import deque
 
 from PyQt5.QtCore import (QEasingCurve, QPointF, QPropertyAnimation, QRect,
-                          QRectF, Qt, QThread, QTimer, pyqtProperty, pyqtSignal)
-from PyQt5.QtGui import (QBrush, QColor, QIcon, QLinearGradient, QPainter,
-                         QPainterPath, QPen, QPixmap, QRadialGradient)
-from PyQt5.QtWidgets import (QApplication, QHBoxLayout, QLabel, QMenu,
-                             QPushButton, QSizeGrip, QSystemTrayIcon, QVBoxLayout,
-                             QWidget)
+                          QRectF, Qt, QThread, QTimer, QUrl, pyqtProperty,
+                          pyqtSignal)
+from PyQt5.QtGui import (QBrush, QColor, QDesktopServices, QIcon,
+                         QLinearGradient, QPainter, QPainterPath, QPen, QPixmap,
+                         QRadialGradient)
+from PyQt5.QtWidgets import (QApplication, QDialog, QHBoxLayout, QLabel,
+                             QLineEdit, QMenu, QPushButton, QSizeGrip,
+                             QSystemTrayIcon, QVBoxLayout, QWidget)
 
+import config
+import startup
 import voice
 from config import CHAT_ON, CHAT_TIMEOUT
 from icon_art import render_icon
-from main import handle, is_exit, is_shutdown
+from main import enable_offline_mode, handle, is_exit, is_shutdown
 from memory import Memory
 from voice import BargeInMonitor, listen, speak
 import wake
@@ -448,6 +452,17 @@ class JarvisWorker(QThread):
             # the muted state instead of pretending it is ready to listen.
             self.state_changed.emit(MUTED if voice.is_mic_muted() else IDLE)
 
+    # -- stop ------------------------------------------------------------- #
+    def stop(self):
+        """Ask the loop to abandon listening/speaking and leave.
+
+        Safe to call from the GUI thread: both helpers only set the same
+        threading events the Stop button uses, so the worker ends at its next
+        checkpoint instead of being terminated abruptly.
+        """
+        voice.stop_listening()
+        voice.stop_speaking()
+
     def _barge_monitor(self, on_barge):
         """Build the monitor (a seam tests can replace without a microphone)."""
         return BargeInMonitor(on_barge=on_barge)
@@ -474,6 +489,131 @@ class JarvisWorker(QThread):
         return self._barged_in
 
 
+class ApiKeyDialog(QDialog):
+    """Modal first-run wizard for the user's own Groq API key.
+
+    The key is masked while typing and is never logged. ``Save & Start`` writes
+    it to the per-user ``.env`` through :func:`config.save_api_key`, which uses
+    mode ``0600``. Closing the dialog (or choosing ``Continue offline``) leaves
+    the key unset; the caller then starts JARVIS in offline/local mode.
+    """
+
+    CONSOLE_URL = "https://console.groq.com/keys"
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.saved_path = None
+        self.setWindowTitle("JARVIS Setup")
+        self.setModal(True)
+        self.setMinimumWidth(440)
+        self.setStyleSheet(
+            "QDialog { background:#1E1E1E; }"
+            "QLabel { color:#E5E7EB; background:transparent; }"
+            "QLineEdit { color:#F9FAFB; background:rgba(255,255,255,12);"
+            " border:1px solid rgba(255,255,255,40); border-radius:8px;"
+            " padding:9px; font-size:13px; }"
+            "QLineEdit:focus { border-color:#38BDF8; }"
+            "QPushButton { color:#E5E7EB; background:rgba(255,255,255,16);"
+            " border:1px solid rgba(255,255,255,26); border-radius:8px;"
+            " padding:8px 14px; font-size:12px; font-weight:600; }"
+            "QPushButton:hover { background:rgba(255,255,255,32); }"
+            "QPushButton#saveButton { color:#0B1220; background:#38BDF8;"
+            " border-color:#38BDF8; }"
+            "QPushButton#saveButton:hover { background:#7DD3FC; }"
+        )
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 22, 24, 20)
+        layout.setSpacing(12)
+
+        heading = QLabel("JARVIS")
+        heading.setStyleSheet(
+            "color:#F9FAFB; font-size:20px; font-weight:800;"
+            " letter-spacing:1.2px;"
+        )
+        layout.addWidget(heading)
+
+        prompt = QLabel(
+            "Welcome to JARVIS. Please enter your Groq API Key:"
+        )
+        prompt.setWordWrap(True)
+        prompt.setStyleSheet("font-size:14px; font-weight:600;")
+        layout.addWidget(prompt)
+
+        self.key_input = QLineEdit()
+        self.key_input.setEchoMode(QLineEdit.Password)
+        self.key_input.setPlaceholderText("gsk_...")
+        self.key_input.setClearButtonEnabled(True)
+        layout.addWidget(self.key_input)
+
+        self.error_label = QLabel("")
+        self.error_label.setWordWrap(True)
+        self.error_label.setStyleSheet("color:#FCA5A5; font-size:11px;")
+        layout.addWidget(self.error_label)
+
+        self.console_button = QPushButton("Get a free key")
+        self.console_button.setToolTip(self.CONSOLE_URL)
+        self.console_button.clicked.connect(self._open_console)
+
+        self.offline_button = QPushButton("Continue offline")
+        self.offline_button.clicked.connect(self.reject)
+
+        self.save_button = QPushButton("Save & Start")
+        self.save_button.setObjectName("saveButton")
+        self.save_button.setDefault(True)
+        self.save_button.clicked.connect(self._save)
+
+        buttons = QHBoxLayout()
+        buttons.setSpacing(8)
+        buttons.addWidget(self.console_button)
+        buttons.addStretch(1)
+        buttons.addWidget(self.offline_button)
+        buttons.addWidget(self.save_button)
+        layout.addLayout(buttons)
+
+        self.key_input.returnPressed.connect(self._save)
+
+    def _open_console(self):
+        """Open the Groq key page in the user's default browser."""
+        QDesktopServices.openUrl(QUrl(self.CONSOLE_URL))
+
+    def api_key(self):
+        """Return the trimmed key currently in the field."""
+        return self.key_input.text().strip()
+
+    def _save(self):
+        """Validate and persist the key, keeping the dialog open on failure."""
+        key = self.api_key()
+        if not config.is_api_key_configured(key):
+            self.error_label.setText(
+                "Please enter a valid Groq API key, or continue offline."
+            )
+            self.key_input.setFocus()
+            return
+        try:
+            self.saved_path = config.save_api_key(key)
+        except (OSError, ValueError) as exc:
+            self.error_label.setText(f"Could not save the key: {exc}")
+            return
+        self.accept()
+
+
+def run_setup_wizard():
+    """Show the modal setup dialog when no API key is configured.
+
+    Returns ``True`` if a usable key is available afterwards. A dismissed
+    dialog switches the process to offline/local mode and returns ``False``.
+    """
+    if config.is_api_key_configured():
+        return True
+    dialog = ApiKeyDialog()
+    accepted = dialog.exec_() == QDialog.Accepted
+    if accepted and config.is_api_key_configured():
+        return True
+    enable_offline_mode()
+    return False
+
+
 class JarvisTray(QSystemTrayIcon):
     """Tray icon so Jarvis can live in the background."""
 
@@ -496,6 +636,10 @@ class JarvisTray(QSystemTrayIcon):
         self.chat_action.setCheckable(True)
         self.chat_action.setChecked(widget._chat)
         self.chat_action.triggered.connect(widget.toggle_chat)
+        self.autostart_action = menu.addAction("Start on Boot")
+        self.autostart_action.setCheckable(True)
+        self.autostart_action.setChecked(startup.is_autostart_enabled())
+        self.autostart_action.triggered.connect(widget.toggle_autostart)
         self.toggle_action = menu.addAction("Hide window")
         self.toggle_action.triggered.connect(widget.toggle_visible)
         menu.addSeparator()
@@ -520,6 +664,9 @@ class JarvisTray(QSystemTrayIcon):
 
     def sync_chat(self, on):
         self.chat_action.setChecked(on)
+
+    def sync_autostart(self, on):
+        self.autostart_action.setChecked(on)
 
 
 # Global wake hotkeys: press either from any application to talk to Jarvis.
@@ -741,6 +888,10 @@ class JarvisWidget(QWidget):
         self.chat_action.setCheckable(True)
         self.chat_action.setChecked(self._chat)
         self.chat_action.triggered.connect(self.toggle_chat)
+        self.autostart_action = self._menu.addAction("Start on Boot")
+        self.autostart_action.setCheckable(True)
+        self.autostart_action.setChecked(startup.is_autostart_enabled())
+        self.autostart_action.triggered.connect(self.toggle_autostart)
         self.toggle_action = self._menu.addAction("Hide to tray")
         self.toggle_action.triggered.connect(self.toggle_visible)
         self._menu.addSeparator()
@@ -819,10 +970,49 @@ class JarvisWidget(QWidget):
             self._resume_wake()
 
     # -- stop ------------------------------------------------------------- #
-    def _stop(self):
-        """Abandon a listen that is waiting, and cut off any reply."""
+    def _halt_for_hide(self):
+        """Cancel listening/speaking and force the card back to Idle.
+
+        Hiding to the tray must not leave a worker holding the microphone or a
+        reply playing invisibly. The worker's later state signal is detached so
+        its final MUTED/IDLE update cannot overwrite the forced Idle state after
+        the window is already hidden.
+        """
+        worker = self.worker
+        if worker is not None:
+            try:
+                worker.state_changed.disconnect(self.set_state)
+            except (TypeError, RuntimeError):
+                # Already disconnected, or the C++ object is gone: either way
+                # there is nothing left to detach.
+                pass
+            # The worker's final state signal is detached above, so hand the
+            # microphone back to the wake listener explicitly once it ends.
+            # (No-op while muted: _resume_wake checks the mute flag.)
+            finished = getattr(worker, "finished", None)
+            if finished is not None:
+                try:
+                    finished.connect(self._resume_wake)
+                except (TypeError, RuntimeError):
+                    pass
+            stop = getattr(worker, "stop", None)
+            if callable(stop):
+                stop()
+        # Always clear both events, even with no worker: a timed-out listen may
+        # still be inside voice.listen() and must not keep the mic open.
         voice.stop_listening()
         voice.stop_speaking()
+        self.set_state(IDLE)
+
+    def _stop(self):
+        """Abandon a listen that is waiting, and cut off any reply."""
+        worker = self.worker
+        stop = getattr(worker, "stop", None)
+        if callable(stop):
+            stop()
+        else:
+            voice.stop_listening()
+            voice.stop_speaking()
 
     # -- worker signals --------------------------------------------------- #
     def _on_heard(self, text):
@@ -940,6 +1130,38 @@ class JarvisWidget(QWidget):
         else:
             self._flash("Continuous chat off")
 
+    def toggle_autostart(self, _checked=False):
+        """Install or remove the per-user login entry for JARVIS."""
+        enable = not startup.is_autostart_enabled()
+        try:
+            startup.set_autostart(enable)
+        except (OSError, ImportError) as exc:
+            self._sync_autostart(startup.is_autostart_enabled())
+            message = f"Auto-start error: {exc}"
+            self._flash(message)
+            if self.tray is not None:
+                self.tray.showMessage(
+                    "JARVIS", message, QSystemTrayIcon.Warning, 3000,
+                )
+            return
+
+        self._sync_autostart(enable)
+        message = "Auto-start enabled" if enable else "Auto-start disabled"
+        self._flash(message)
+        if self.tray is not None:
+            self.tray.showMessage(
+                "JARVIS", message, QSystemTrayIcon.Information, 2500,
+            )
+
+    def _sync_autostart(self, enabled):
+        """Reflect the real auto-start state in both menus."""
+        action = getattr(self, "autostart_action", None)
+        if action is not None:
+            action.setChecked(enabled)
+        tray = getattr(self, "tray", None)
+        if tray is not None:
+            tray.sync_autostart(enabled)
+
     def _sync_wake(self, on):
         """Reflect the wake-word state in both menus."""
         action = getattr(self, "wake_action", None)
@@ -981,6 +1203,7 @@ class JarvisWidget(QWidget):
     def toggle_visible(self):
         """Show or hide the floating widget (staying alive in the tray)."""
         if self.isVisible():
+            self._halt_for_hide()
             self.hide()
         else:
             self.show()
@@ -1109,6 +1332,7 @@ class JarvisWidget(QWidget):
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Escape:
+            self._halt_for_hide()            # same clean Idle state as the ✕
             self.hide()                      # hide to tray, don't quit
         elif event.key() == Qt.Key_M:
             self.toggle_mute()
@@ -1141,6 +1365,10 @@ class JarvisWidget(QWidget):
             event.accept()
             return
         event.ignore()
+        # The ✕ hides to the tray, so end any active turn first: no invisible
+        # listening, no reply playing from a hidden window, and the orb is blue
+        # (Idle) the next time the card is opened.
+        self._halt_for_hide()
         self.hide()
         if self.tray is not None:
             self.tray.show()               # make sure the icon stays visible
@@ -1156,7 +1384,10 @@ def main():
     app.setWindowIcon(make_icon(64))
     # Keep running after the floating window is hidden/closed -> tray lives on.
     app.setQuitOnLastWindowClosed(False)
+    configured = run_setup_wizard()
     widget = JarvisWidget()
+    if not configured:
+        widget._flash("Offline mode — add a Groq API key to enable AI")
 
     # Let a second launch / `main.py --wake` wake this instance instead of
     # spawning a duplicate tray icon. The socket thread only emits a signal, so

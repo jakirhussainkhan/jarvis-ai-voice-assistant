@@ -12,3 +12,10 @@ TOKEN.txt
 # generated audio artifacts
 *.wav
 *.mp3
+
+# packaging output (PyInstaller / Debian / macOS)
+build/
+dist/
+*.spec
+*.deb
+*.dmg
