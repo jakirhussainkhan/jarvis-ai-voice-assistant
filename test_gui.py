@@ -15,8 +15,8 @@ import pytest
 
 pytest.importorskip("PyQt5")
 
-from PyQt5.QtCore import QPoint, Qt        # noqa: E402
-from PyQt5.QtGui import QCloseEvent, QPixmap        # noqa: E402
+from PyQt5.QtCore import QPoint, Qt, QEvent    # noqa: E402
+from PyQt5.QtGui import QCloseEvent, QMouseEvent, QPixmap   # noqa: E402
 from PyQt5.QtWidgets import QApplication, QSizeGrip   # noqa: E402
 
 import gui                                 # noqa: E402
@@ -170,6 +170,37 @@ def test_close_event_halts_the_session_before_hiding():
 
     assert calls == ["halt", "hide"]
     assert event.isAccepted() is False, "close must be ignored (hide to tray)"
+
+
+def test_close_to_tray_is_silent():
+    """Closing to the tray must not show a notification popup."""
+    class FakeTray:
+        def __init__(self):
+            self.shown = 0
+            self.messages = []
+
+        def show(self):
+            self.shown += 1
+
+        def showMessage(self, *args):
+            self.messages.append(args)
+
+    class Stub:
+        _quitting = False
+        tray = FakeTray()
+
+        def _halt_for_hide(self):
+            pass
+
+        def hide(self):
+            pass
+
+    event = QCloseEvent()
+    gui.JarvisWidget.closeEvent(Stub(), event)
+
+    assert event.isAccepted() is False
+    assert Stub.tray.shown == 1, "the tray icon must stay visible"
+    assert Stub.tray.messages == [], "close must not show a popup"
 
 
 def test_real_quit_is_allowed_to_close(app):
@@ -789,8 +820,11 @@ def test_window_has_minimise_and_close_controls(app):
     widget = gui.JarvisWidget()
 
     assert widget.minimize_button.objectName() == "minimizeButton"
+    assert widget.maximize_button.objectName() == "maximizeButton"
     assert widget.close_button.objectName() == "closeButton"
+    assert widget.maximize_button.text() == "□"
     assert widget.minimize_button.isEnabled()
+    assert widget.maximize_button.isEnabled()
     assert widget.close_button.isEnabled()
     assert widget.autostart_action.text() == "Start on Boot"
     assert widget.autostart_action.isCheckable()
@@ -799,6 +833,58 @@ def test_window_has_minimise_and_close_controls(app):
         assert widget.tray.autostart_action.isCheckable()
 
     widget._minimize()      # must be safe on the offscreen platform
+
+
+def test_maximize_button_toggles_window_state(app):
+    widget = gui.JarvisWidget()
+    widget.show()
+
+    widget._toggle_maximize()
+    assert widget.isMaximized()
+    assert widget.maximize_button.text() == "❐"
+    assert widget.maximize_button.toolTip() == "Restore"
+
+    widget._toggle_maximize()
+    assert not widget.isMaximized()
+    assert widget.maximize_button.text() == "□"
+    assert widget.maximize_button.toolTip() == "Maximise"
+
+    widget._quitting = True
+    widget.close()
+
+
+def test_header_area_still_drags_the_frameless_window(app):
+    """The maximize control must not affect the custom header drag."""
+    widget = gui.JarvisWidget()
+    widget.move(200, 200)
+    widget.show()
+    start = widget.pos()
+
+    local = QPoint(60, 20)             # header area, left of the window buttons
+    first = widget.mapToGlobal(local)
+    press = QMouseEvent(
+        QEvent.MouseButtonPress, local, local, first,
+        Qt.LeftButton, Qt.LeftButton, Qt.NoModifier,
+    )
+    widget.mousePressEvent(press)
+
+    target = first + QPoint(30, 20)
+    move = QMouseEvent(
+        QEvent.MouseMove, local, local, target,
+        Qt.NoButton, Qt.LeftButton, Qt.NoModifier,
+    )
+    widget.mouseMoveEvent(move)
+
+    assert widget.pos() == start + QPoint(30, 20)
+
+    release = QMouseEvent(
+        QEvent.MouseButtonRelease, local, local, target,
+        Qt.LeftButton, Qt.NoButton, Qt.NoModifier,
+    )
+    widget.mouseReleaseEvent(release)
+
+    widget._quitting = True
+    widget.close()
 
 
 def test_toggle_autostart_updates_both_menus_and_notifies(monkeypatch):

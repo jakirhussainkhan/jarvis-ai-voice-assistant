@@ -779,10 +779,14 @@ class JarvisWidget(QWidget):
         self.minimize_button = self._window_button("–", "minimizeButton")
         self.minimize_button.setToolTip("Minimise")
         self.minimize_button.clicked.connect(self._minimize)
+        self.maximize_button = self._window_button("□", "maximizeButton")
+        self.maximize_button.setToolTip("Maximise")
+        self.maximize_button.clicked.connect(self._toggle_maximize)
         self.close_button = self._window_button("✕", "closeButton")
         self.close_button.setToolTip("Hide to tray")
         self.close_button.clicked.connect(self._close_to_tray)
         header.addWidget(self.minimize_button)
+        header.addWidget(self.maximize_button)
         header.addWidget(self.close_button)
 
         self.orb = Orb(230)
@@ -915,6 +919,17 @@ class JarvisWidget(QWidget):
     def _minimize(self):
         """Minimise the card; the tray keeps Jarvis running."""
         self.showMinimized()
+
+    def _toggle_maximize(self):
+        """Maximise the frameless card or restore its previous size."""
+        if self.isMaximized():
+            self.showNormal()
+            self.maximize_button.setText("□")
+            self.maximize_button.setToolTip("Maximise")
+        else:
+            self.showMaximized()
+            self.maximize_button.setText("❐")
+            self.maximize_button.setToolTip("Restore")
 
     def _close_to_tray(self):
         """X button: hide the card to the tray (the app keeps running).
@@ -1379,10 +1394,6 @@ class JarvisWidget(QWidget):
         self.hide()
         if self.tray is not None:
             self.tray.show()               # make sure the icon stays visible
-            self.tray.showMessage(
-                "JARVIS", "Still running in the tray. Click the icon to talk.",
-                QSystemTrayIcon.Information, 3000,
-            )
 
 
 def main():
