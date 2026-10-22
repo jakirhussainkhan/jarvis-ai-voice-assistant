@@ -86,20 +86,30 @@ fi
 # opens the microphone, which would make the downloaded app look broken.
 echo "==> Adding macOS permission descriptions"
 PLIST="$APP/Contents/Info.plist"
-set_plist() {
-    /usr/libexec/PlistBuddy -c "Set :$1 $2" "$PLIST" 2>/dev/null \
-        || /usr/libexec/PlistBuddy -c "Add :$1 string $2" "$PLIST"
-}
-set_plist NSMicrophoneUsageDescription \
-    "JARVIS needs the microphone to hear your voice commands."
-set_plist NSAppleEventsUsageDescription \
-    "JARVIS uses AppleScript to control apps, media, volume and notifications."
-set_plist NSDesktopFolderUsageDescription \
-    "JARVIS opens files and folders you ask it to work with."
-set_plist NSDocumentsFolderUsageDescription \
-    "JARVIS opens files and folders you ask it to work with."
-set_plist NSDownloadsFolderUsageDescription \
-    "JARVIS opens files and folders you ask it to work with."
+"$PYTHON" - "$PLIST" <<'PY'
+import plistlib
+import sys
+
+path = sys.argv[1]
+with open(path, "rb") as handle:
+    info = plistlib.load(handle)
+
+info.update({
+    "NSMicrophoneUsageDescription":
+        "JARVIS needs the microphone to hear your voice commands.",
+    "NSAppleEventsUsageDescription":
+        "JARVIS uses AppleScript to control apps, media, volume and notifications.",
+    "NSDesktopFolderUsageDescription":
+        "JARVIS opens files and folders you ask it to work with.",
+    "NSDocumentsFolderUsageDescription":
+        "JARVIS opens files and folders you ask it to work with.",
+    "NSDownloadsFolderUsageDescription":
+        "JARVIS opens files and folders you ask it to work with.",
+})
+
+with open(path, "wb") as handle:
+    plistlib.dump(info, handle)
+PY
 
 # Ad-hoc signature: no certificate required, and it keeps the bundle internally
 # consistent on both Intel and Apple Silicon runners. It must run after the
