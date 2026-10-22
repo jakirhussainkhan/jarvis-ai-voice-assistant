@@ -102,6 +102,12 @@ _RISKY = [
                re.I),
     re.compile(r"\b(ssh|scp|sftp|rsync|telnet|nc|ncat|socat)\b", re.I),
     re.compile(r"\b(iptables|nft|ufw|firewall-cmd)\b", re.I),
+    # Windows destructive verbs: confirmed rather than run on a misheard word.
+    re.compile(r"\b(del|erase|remove-item)\b", re.I),
+    re.compile(r"\b(rd|rmdir)\s+/s\b", re.I),
+    re.compile(r"\b(stop-computer|restart-computer|logoff)\b", re.I),
+    re.compile(r"\b(diskpart|bcdedit|format|clear-disk|initialize-disk|"
+               r"reg\s+delete)\b", re.I),
     re.compile(r"\b(docker|podman|virsh|systemd-nspawn|kubectl)\b", re.I),
     re.compile(r"\bfind\b[^|;&]*-delete\b", re.I),
     re.compile(r"\bgit\s+(reset\s+--hard|clean|push|checkout\s+--|branch\s+-D|"
@@ -167,19 +173,32 @@ def explain_refusal(command):
     return None
 
 
+def _shell_argv(command):
+    """The native shell for this OS, as ``argv``.
+
+    Windows has no bash (the ``bash`` on PATH is usually WSL, which may not have
+    a distribution installed at all), so use the command processor that ships
+    with Windows. Every other platform keeps the documented bash behaviour.
+    """
+    if os.name == "nt":
+        return [os.environ.get("COMSPEC", "cmd.exe"), "/d", "/s", "/c", command]
+    return ["bash", "-c", command]
+
+
 def _execute(command, cwd=None):
-    """Run ``command`` with bash, bounded by timeout and output cap."""
+    """Run ``command`` in the platform shell, bounded by timeout and output cap."""
     workdir = os.path.expanduser(cwd) if cwd else None
     if workdir and not os.path.isdir(workdir):
         return f"There is no directory called {cwd}."
     try:
         proc = subprocess.run(
-            ["bash", "-c", command],
+            _shell_argv(command),
             cwd=workdir,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            errors="replace",
             timeout=SHELL_TIMEOUT,
         )
     except subprocess.TimeoutExpired:

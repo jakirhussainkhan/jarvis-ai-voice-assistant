@@ -1,5 +1,7 @@
 """Tests for the SQLite-backed memory.Memory."""
 
+import os
+
 from memory import Memory, default_db_path
 
 
@@ -50,8 +52,12 @@ def test_default_path_honours_the_environment(monkeypatch, tmp_path):
 
 def test_default_path_is_under_the_home_directory(monkeypatch):
     monkeypatch.delenv("JARVIS_MEMORY_DB", raising=False)
-    monkeypatch.setenv("HOME", "/home/tester")
-    assert default_db_path() == "/home/tester/.jarvis/memory.db"
+    home = "/home/tester"
+    monkeypatch.setenv("HOME", home)
+    if os.name == "nt":
+        # expanduser() prefers USERPROFILE over HOME on Windows.
+        monkeypatch.setenv("USERPROFILE", home)
+    assert default_db_path() == os.path.join(home, ".jarvis", "memory.db")
 
 
 # --------------------------------------------------------------------------- #

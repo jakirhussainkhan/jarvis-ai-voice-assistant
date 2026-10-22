@@ -12,6 +12,20 @@ guide inside your WSL distribution, then see the note at the end about audio.
 - An internet connection for the first install.
 - An API key from [Groq](https://console.groq.com/keys) (starts with `gsk_`).
 
+## Prebuilt package (no Python needed)
+
+If you do not want to install Python and the source checkout, download
+`jarvis_2.2.3_amd64.deb` from the
+[latest release](https://github.com/jakirhussainkhan/jarvis-ai-voice-assistant/releases/latest)
+and install it:
+
+```bash
+sudo apt install ./jarvis_2.2.3_amd64.deb
+```
+
+Then launch **JARVIS** from the application menu (or run `jarvis`). The sections
+below describe the source installation instead.
+
 Install the basic tools if they are missing:
 
 ```bash

@@ -1400,6 +1400,14 @@ class JarvisWidget(QWidget):
 
 
 def main():
+    # Crisp text/painting on scaled displays (125 %, 150 %, ...). Must be set
+    # before QApplication is constructed; newer Qt versions do this themselves,
+    # and getattr keeps the app working on a build that lacks the attribute.
+    for attribute in ("AA_EnableHighDpiScaling", "AA_UseHighDpiPixmaps"):
+        value = getattr(Qt, attribute, None)
+        if value is not None:
+            QApplication.setAttribute(value, True)
+
     app = QApplication(sys.argv)
     app.setApplicationName("JARVIS")
     app.setWindowIcon(make_icon(64))

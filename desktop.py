@@ -846,9 +846,15 @@ def capture_screenshot(path):
 
     Used by :func:`screenshot` and by :mod:`vision` to feed the screen to the
     vision model. The platform adapter prefers the *silent* tools and never
-    raises.
+    raises. The parent directory is created first: Windows profiles whose
+    *Pictures* folder was moved to OneDrive may not have ``~/Pictures`` at all.
     """
-    return System.screenshot(Path(path))
+    path = Path(path)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return None
+    return System.screenshot(path)
 
 
 def screenshot():
@@ -946,7 +952,7 @@ def open_path(target):
     if re.match(r"^(https?://|www\.)", target, re.I):
         url = target if target.lower().startswith("http") else "https://" + target
         return f"Opening {url}." if _open_url(url) else "I couldn't open the browser."
-    path = os.path.expanduser(target)
+    path = os.path.normpath(os.path.expanduser(target))
     if os.path.exists(path):
         return System.open_path(path)
     # A bare domain opens in the browser; anything else goes to the desktop.
@@ -986,11 +992,13 @@ def resolve_folder(name):
     for candidate in (key, key.replace(" ", "")):
         raw = _FOLDER_NAMES.get(candidate)
         if raw:
-            path = os.path.expanduser(raw)
+            # normpath keeps Windows paths consistent (expanduser leaves the
+            # "/" from "~/Downloads" in place, producing mixed separators).
+            path = os.path.normpath(os.path.expanduser(raw))
             if os.path.isdir(path):
                 return path
     # A bare name that is an existing directory directly under the home folder.
-    path = os.path.expanduser(os.path.join("~", name.strip()))
+    path = os.path.normpath(os.path.expanduser(os.path.join("~", name.strip())))
     return path if os.path.isdir(path) else None
 
 

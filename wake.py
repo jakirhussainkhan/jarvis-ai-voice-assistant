@@ -37,10 +37,8 @@ import voice
 FRAME_SAMPLES = 1280
 FRAME_BYTES = FRAME_SAMPLES * 2
 
-# Default model shipped with openWakeWord that matches our name.
+#: Default model shipped with openWakeWord that matches our name.
 DEFAULT_MODEL = "hey jarvis"
-
-_INSTALL = "./venv/bin/pip install openwakeword onnxruntime"
 
 
 def _truthy(name, default):
@@ -94,8 +92,11 @@ def _dbg(*parts):
 
 
 def install_hint():
-    """The exact command that installs the wake-word engine."""
-    return _INSTALL
+    """The exact command that installs the wake-word engine for this OS."""
+    if os.name == "nt":
+        return (r".\venv\Scripts\python.exe -m pip install openwakeword "
+                r"onnxruntime")
+    return "./venv/bin/pip install openwakeword onnxruntime"
 
 
 def available():
@@ -307,7 +308,7 @@ class Listener(threading.Thread):
                     self.error = f"{type(exc).__name__}: {exc}"
                     self.status = "unavailable"
                     print(f"[wake] wake word unavailable ({self.error}). "
-                          f"Install it with: {_INSTALL}", flush=True)
+                          f"Install it with: {install_hint()}", flush=True)
                     return
             self.status = "ready"
             _dbg(f"listening for {self._detector.model!r} "

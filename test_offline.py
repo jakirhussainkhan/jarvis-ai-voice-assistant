@@ -7,7 +7,7 @@ opening folders must all be answered locally (never by the agent), and they must
 not hijack ordinary commands.
 """
 
-from pathlib import Path
+import os
 
 import pytest
 
@@ -186,6 +186,9 @@ def test_open_a_home_path(monkeypatch):
 def test_resolve_folder_real(tmp_path, monkeypatch):
     (tmp_path / "Downloads").mkdir()
     monkeypatch.setenv("HOME", str(tmp_path))
+    if os.name == "nt":
+        # expanduser() prefers USERPROFILE over HOME on Windows.
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
     assert desktop.resolve_folder("downloads") == str(tmp_path / "Downloads")
     assert desktop.resolve_folder("my downloads folder") == str(tmp_path / "Downloads")
     assert desktop.resolve_folder("no such folder") is None

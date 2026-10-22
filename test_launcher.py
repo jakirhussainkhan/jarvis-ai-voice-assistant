@@ -6,6 +6,7 @@ is stubbed out. When `desktop-file-validate` is available the generated entry is
 validated with it -- the same check the desktop environment performs.
 """
 
+import os
 import shutil
 import struct
 import subprocess
@@ -46,6 +47,8 @@ def test_run_sh_starts_the_gui():
     assert "exec " in text, "the GUI should replace the shell, not nest inside it"
 
 
+@pytest.mark.skipif(os.name == "nt",
+                    reason="run.sh is the POSIX launcher; Windows uses start.bat")
 def test_run_sh_explains_a_missing_virtualenv(tmp_path):
     shutil.copy(ROOT / "run.sh", tmp_path / "run.sh")
 
@@ -90,6 +93,8 @@ def test_install_writes_a_menu_entry(tmp_path):
     assert "Terminal=false" in text, "a GUI entry must not ask for a terminal"
 
 
+@pytest.mark.skipif(os.name == "nt",
+                    reason=".desktop entries are a Linux format; Windows uses Run")
 def test_the_entry_points_at_this_checkout(tmp_path):
     text = install_desktop.install(home=tmp_path)[0].read_text()
 

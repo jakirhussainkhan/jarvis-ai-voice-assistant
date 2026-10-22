@@ -225,6 +225,24 @@ SETUP_WELCOME = (
     "Get a free one at https://console.groq.com/keys"
 )
 
+USAGE = """Jarvis - offline-first desktop voice assistant
+
+Usage: python main.py [option]
+
+  --gui                  open the floating widget + system tray
+  --text, -t             type commands instead of speaking
+  --offline              local router only (no network, no LLM)
+  --local                use the local Ollama backend for this run
+  --screen "question"    ask about the current screen once
+  --check                print the readiness report
+  --wake                 wake an already-running Jarvis
+  --quit                 stop a running Jarvis (including from the tray)
+  --version, -v          print the version
+  --autostart-enable     start Jarvis at login
+  --autostart-disable    stop starting Jarvis at login
+  -h, --help             show this help
+"""
+
 
 def enable_offline_mode():
     """Restrict the session to local router commands (no LLM calls)."""
@@ -294,6 +312,9 @@ def main():
     global _TEXT, _OFFLINE
 
     args = sys.argv[1:]
+    if "--help" in args or "-h" in args:
+        print(USAGE, end="")
+        return 0
     if "--autostart-enable" in args or "--autostart-disable" in args:
         enable = "--autostart-enable" in args
         try:

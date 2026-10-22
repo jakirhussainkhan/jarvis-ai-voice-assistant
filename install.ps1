@@ -37,7 +37,14 @@ Write-Host "==> Installing the Windows-only extras"
 
 Write-Host ""
 Write-Host "Done. Next steps:"
-Write-Host '  "GROQ_API_KEY=your-key-here" | Out-File -Encoding ascii .env   # key from https://console.groq.com/keys'
-Write-Host "  .\venv\Scripts\python.exe doctor.py     # readiness report"
-Write-Host "  .\venv\Scripts\python.exe main.py       # terminal voice loop"
-Write-Host ""
+Write-Host '  .\start.bat                          # launch the floating widget (no console)'
+Write-Host '  .\start.bat --console                # ...or with a log window'
+Write-Host '  .\start.bat is safe to run twice: the second launch wakes the running app.'
+Write-Host '  .\stop.bat                           # stop it again (works from the tray)'
+Write-Host ''
+Write-Host '  Add the API key in the first-run dialog, or put it in .env:'
+Write-Host '  "GROQ_API_KEY=your-key-here" | Out-File -Encoding ascii .env   # https://console.groq.com/keys'
+Write-Host ''
+Write-Host '  .\venv\Scripts\python.exe main.py --check    # readiness report'
+Write-Host '  .\venv\Scripts\python.exe main.py            # terminal voice loop'
+Write-Host ''

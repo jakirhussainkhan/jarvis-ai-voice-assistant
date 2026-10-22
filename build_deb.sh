@@ -41,7 +41,9 @@ echo "==> Building the frozen GUI binary"
     --hidden-import sounddevice \
     --hidden-import pynput.keyboard._xorg \
     --hidden-import pynput.mouse._xorg \
+    --hidden-import pywinctl \
     --collect-all sounddevice \
+    --collect-submodules pywinctl \
     --collect-data tzdata \
     --exclude-module faster_whisper \
     --exclude-module fastembed \
@@ -107,8 +109,8 @@ Priority: optional
 Architecture: ${ARCH}
 Installed-Size: ${INSTALLED_SIZE}
 Maintainer: Jakir Hussain Khan <jakirhussainkhan@users.noreply.github.com>
-Depends: libportaudio2, libasound2 | libasound2t64, ffmpeg, libxcb-xinerama0, libxkbcommon-x11-0, libegl1, libgl1, libdbus-1-3
-Recommends: pulseaudio-utils, playerctl, brightnessctl, wmctrl, xdotool, yt-dlp
+Depends: libportaudio2, libasound2 | libasound2t64, ffmpeg, libxcb-xinerama0, libxcb-icccm4, libxcb-image0, libxcb-keysyms1, libxcb-render-util0, libxcb-shape0, libxkbcommon-x11-0, libegl1, libgl1, libdbus-1-3
+Recommends: pulseaudio-utils, playerctl, brightnessctl, wmctrl, xdotool, yt-dlp, scrot, xclip
 Description: JARVIS voice-controlled desktop assistant
  JARVIS is a voice-controlled desktop assistant for Linux, Windows and macOS.
  It handles local commands offline (apps, media, windows, volume, brightness,

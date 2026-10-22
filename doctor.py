@@ -131,7 +131,7 @@ def _wake_status():
             f"JARVIS_WAKE=0 disables it, 'quit' stops it)")
 
 
-def _sounddevice_status():
+def _sounddevice_status(system=None):
     """One line describing microphone capture through PortAudio."""
     if not _has_module("sounddevice"):
         return ("Microphone: MISSING sounddevice -- voice mode needs it, run "
@@ -143,9 +143,16 @@ def _sounddevice_status():
                 f"({int(device['max_input_channels'])} ch)")
     except Exception:
         # A real failure worth fixing: voice mode cannot work without a device.
+        if _is_windows(system):
+            hint = ("allow microphone access in Windows Settings > Privacy & "
+                    "security > Microphone")
+        elif (system or platform.system()).strip().lower() == "darwin":
+            hint = ("allow microphone access in System Settings > Privacy & "
+                    "Security > Microphone")
+        else:
+            hint = "check that PulseAudio/PipeWire is running and the mic is not muted"
         return ("Microphone: NONE -- PortAudio found no input device. Plug in a "
-                "microphone and allow access in Windows Settings > Privacy & "
-                "security > Microphone, then run this check again.")
+                f"microphone and {hint}, then run this check again.")
 
 
 def _text_mode_hint(system=None):
@@ -213,7 +220,7 @@ def report(system=None):
     else:
         name = system or platform.system()
         out.append(f"Platform: {name} (Python adapters, no X11 CLI tools)")
-        out.append(_sounddevice_status())
+        out.append(_sounddevice_status(system))
 
     if API_KEY:
         out.append("GROQ_API_KEY: set")

@@ -24,7 +24,7 @@ if not exist "%PY%" (
     echo          %PY%
     echo.
     echo Set it up once with:
-    echo     py -3.12 -m venv venv
+    echo     python -m venv venv
     echo     venv\Scripts\python.exe -m pip install -r requirements.txt
     echo.
     pause

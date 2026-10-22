@@ -216,18 +216,48 @@ def signal_wake(path=None, timeout=1.0):
     return _send(_WAKE_MESSAGE, path, timeout)
 
 
+def _is_jarvis_pid(pid):
+    """True only when ``pid`` is a Python process running this checkout's main.py.
+
+    When a Jarvis crashes, its PID file stays behind, and both Windows and Linux
+    reuse PIDs. Terminating that number blindly could kill an unrelated program.
+    This check makes the Windows fallback (there is no ``AF_UNIX`` there) safe:
+    the process must be Python *and* its command line or working directory must
+    point at this project.
+    """
+    try:
+        import psutil
+
+        proc = psutil.Process(pid)
+        if "python" not in (proc.name() or "").lower():
+            return False
+        command = " ".join(proc.cmdline() or [])
+        if "main.py" not in command.lower():
+            return False
+        root = os.path.normcase(str(Path(__file__).resolve().parent)).lower()
+        if root in os.path.normcase(command).lower():
+            return True
+        try:
+            return os.path.normcase(proc.cwd() or "").lower() == root
+        except (psutil.Error, OSError):
+            return False
+    except Exception:
+        return False
+
+
 def signal_quit(path=None, timeout=1.0):
     """Ask the running instance to exit. True when the request was delivered.
 
     A Unix socket is used where the platform has one. Windows builds without
-    ``AF_UNIX`` fall back to terminating the PID recorded in the lock file, so
-    ``main.py --quit`` replaces hunting for the process in Task Manager.
+    ``AF_UNIX`` fall back to terminating the PID recorded in the lock file, but
+    only after :func:`_is_jarvis_pid` confirms it is this project's Jarvis (a
+    stale PID must never kill an unrelated process).
     """
     if _send(_QUIT_MESSAGE, path, timeout):
         return True
     if os.name == "nt":                          # pragma: no cover - Windows
         pid = running_pid()
-        if pid and pid != os.getpid():
+        if pid and pid != os.getpid() and _is_jarvis_pid(pid):
             try:
                 os.kill(pid, signal.SIGTERM)
                 return True

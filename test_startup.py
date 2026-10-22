@@ -2,6 +2,7 @@
 
 import plistlib
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -155,7 +156,11 @@ def test_windows_enable_writes_the_run_key(windows):
 
     assert location == rf"{startup._RUN_KEY}\{startup._VALUE_NAME}"
     command = windows.key.values["JARVIS"]
-    assert sys.executable in command
+    # The GUI entry must use pythonw.exe when it exists (no console at login).
+    expected = Path(sys.executable).with_name("pythonw.exe")
+    if not expected.exists():
+        expected = Path(sys.executable)
+    assert str(expected) in command
     assert "main.py" in command
     assert "--gui" in command
     assert startup.is_autostart_enabled() is True

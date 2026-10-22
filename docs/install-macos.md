@@ -13,6 +13,22 @@ This guide targets macOS 12 (Monterey) or newer on Apple Silicon and Intel Macs.
 - An internet connection for the first install.
 - An API key from [Groq](https://console.groq.com/keys) (starts with `gsk_`).
 
+## Prebuilt app (no Python needed)
+
+Download `JARVIS.dmg` from the
+[latest release](https://github.com/jakirhussainkhan/jarvis-ai-voice-assistant/releases/latest),
+open it, and drag **JARVIS** into **Applications**. The first time, right-click
+the app and choose **Open** (the build is ad-hoc signed, so Gatekeeper asks for a
+one-time confirmation).
+
+If macOS reports that the app is damaged, run this once and open it again:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/JARVIS.app
+```
+
+The sections below describe the source installation instead.
+
 If Python is missing, install it with Homebrew:
 
 ```bash

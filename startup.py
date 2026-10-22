@@ -16,6 +16,7 @@ Everything is per-user: no ``sudo``, no machine-wide registry keys, and no
 system directories. All file writes and registry access are reversible.
 """
 
+import os
 import plistlib
 import subprocess
 import sys
@@ -50,6 +51,14 @@ def macos_plist_path(home=None):
 
 
 def _root():
+    """Directory to run from: the checkout, or the installed executable.
+
+    In a PyInstaller onefile build ``__file__`` points inside the temporary
+    extraction directory, which no longer exists after the app exits. The
+    autostart entry must instead use the real installation directory.
+    """
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parent
 
 
@@ -57,16 +66,34 @@ def _launch_arguments(use_run_sh=True):
     """Return the command that starts the GUI for this installation.
 
     A frozen build points at its own executable. A source checkout uses
-    ``run.sh`` on Linux (the documented launcher) and the current interpreter
-    plus ``main.py --gui`` everywhere else, where a Bash script would not work.
+    ``run.sh`` on Linux (the documented launcher) when it is executable, and
+    the current interpreter plus ``main.py --gui`` everywhere else. On Windows
+    that interpreter is ``pythonw.exe`` when available so logging in does not
+    open a console window.
     """
     if getattr(sys, "frozen", False):
+        executable = Path(sys.executable).resolve()
+        if (_platform() == "darwin" and len(executable.parents) >= 3
+                and executable.parents[2].suffix == ".app"):
+            # Launch the .app through LaunchServices so macOS gives it the
+            # normal activation, dock icon and privacy prompts. Running the
+            # inner Mach-O binary directly from a LaunchAgent is unreliable.
+            return ["/usr/bin/open", str(executable.parents[2])]
         return [sys.executable]
     root = _root()
     run_sh = root / "run.sh"
-    if use_run_sh and not _platform().startswith("win") and run_sh.exists():
+    if (use_run_sh and not _platform().startswith("win")
+            and run_sh.exists() and os.access(run_sh, os.X_OK)):
         return [str(run_sh)]
-    return [sys.executable, str(root / "main.py"), "--gui"]
+
+    executable = sys.executable
+    if _platform().startswith("win"):
+        # python.exe would show a console window at login; pythonw.exe is the
+        # same interpreter without one (it normally sits next to it in venv).
+        pythonw = Path(executable).with_name("pythonw.exe")
+        if pythonw.exists():
+            executable = str(pythonw)
+    return [executable, str(root / "main.py"), "--gui"]
 
 
 # --- Linux ------------------------------------------------------------------ #

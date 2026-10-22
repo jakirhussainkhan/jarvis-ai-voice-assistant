@@ -89,7 +89,7 @@ PROJECT_ENV = Path(__file__).resolve().parent / ".env"
 load_dotenv(USER_ENV)
 load_dotenv(PROJECT_ENV)
 
-__version__ = "2.2.1"
+__version__ = "2.2.3"
 
 # Groq (https://console.groq.com) exposes an OpenAI-compatible Chat Completions
 # API. The key is read from GROQ_API_KEY in .env; Groq keys start with "gsk_".
@@ -246,9 +246,11 @@ def apply_api_key(key):
 def save_api_key(key, path=None):
     """Persist ``key`` to a private ``.env`` file and apply it in-process.
 
-    The file is written atomically with mode ``0600`` inside a ``0700``
-    directory, so other local users cannot read it. Existing settings in the
-    file are preserved; only ``GROQ_API_KEY`` is replaced.
+    The file is written atomically. On POSIX it is created with mode ``0600``
+    inside a ``0700`` directory, so other local users cannot read it. Windows
+    has no POSIX mode bits; the file inherits the ACL of the user profile
+    (``~/.jarvis``), which is already restricted to that user. Existing settings
+    in the file are preserved; only ``GROQ_API_KEY`` is replaced.
 
     Returns the path written. Raises ``ValueError`` for an empty or placeholder
     key, and ``OSError`` if the file cannot be written.

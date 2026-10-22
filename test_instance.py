@@ -5,8 +5,11 @@ the suite never touches ``~/.jarvis`` or a real running Jarvis.
 """
 
 import os
+import shutil
 import sys
+import tempfile
 import time
+from pathlib import Path
 
 import pytest
 
@@ -16,9 +19,21 @@ import main
 
 @pytest.fixture(autouse=True)
 def _state_dir(tmp_path, monkeypatch):
-    """Point the lock/socket at a throwaway directory for every test."""
-    monkeypatch.setenv("JARVIS_STATE_DIR", str(tmp_path))
-    yield tmp_path
+    """Point the lock/socket at a throwaway directory for every test.
+
+    macOS caps an AF_UNIX path at 104 bytes, and pytest's nested ``tmp_path``
+    can be longer than that. When it would be, use a short directory under
+    ``/tmp`` so the test exercises the real socket instead of skipping it.
+    """
+    directory = tmp_path
+    if sys.platform == "darwin" and len(str(tmp_path / "jarvis.sock")) > 100:
+        directory = Path(tempfile.mkdtemp(prefix="jv-", dir="/tmp"))
+    monkeypatch.setenv("JARVIS_STATE_DIR", str(directory))
+    try:
+        yield directory
+    finally:
+        if directory != tmp_path:
+            shutil.rmtree(directory, ignore_errors=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -76,6 +91,14 @@ def test_wake_server_delivers_the_message(_state_dir):
 
 def test_signal_wake_without_a_listener_is_false(_state_dir):
     assert instance.signal_wake(timeout=0.2) is False
+
+
+def test_a_stale_pid_never_signals_an_unrelated_process(_state_dir):
+    """A recycled PID must not be killed by the Windows fallback path."""
+    instance.lock_path().write_text(str(os.getpid()), encoding="ascii")
+    assert instance._is_jarvis_pid(os.getpid()) is False
+    assert instance.signal_quit(timeout=0.1) is False
+    assert instance._is_jarvis_pid(999_999_999) is False
 
 
 def test_wake_server_stop_is_idempotent(_state_dir):

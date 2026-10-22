@@ -6,8 +6,20 @@ The platform-specific commands now live in ``platform_adapters``; the actions in
 adapter uses) instead of the old ``desktop._run`` helpers.
 """
 
+import sys
+
+import pytest
+
 import desktop
 from platform_adapters import common
+
+# Every expectation here is the Linux/X11 command contract (xdotool, wmctrl,
+# xdg-open, playerctl, ...). The Windows and macOS adapters use native APIs, so
+# running this file there would exercise completely different code paths.
+pytestmark = pytest.mark.skipif(
+    not sys.platform.startswith("linux"),
+    reason="screen/window command contract is Linux-specific",
+)
 
 
 def _record(monkeypatch, result=(0, "")):

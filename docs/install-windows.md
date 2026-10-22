@@ -56,38 +56,57 @@ When it finishes, create the `.env` file with your Groq API key:
 "GROQ_API_KEY=your-key-here" | Out-File -Encoding ascii .env
 ```
 
+You can skip this step: the GUI shows a small setup dialog on first launch where
+you can paste the key (it is saved to `%USERPROFILE%\.jarvis\.env`).
+
 Optional settings such as `JARVIS_TTS_VOICE`, `JARVIS_WAKE=0`, or
 `USE_LOCAL_LLM=True` can be added to the same `.env` file. See
 [`.env.example`](../.env.example) for the full list.
 
 ## 3. Launch JARVIS
 
-Start the floating desktop widget and system tray:
+Double-click **`start.bat`** in the repository folder. It starts the floating
+desktop widget and system tray with `pythonw.exe`, so no console window appears.
+Starting it twice is harmless: the second launch wakes the running instance.
+
+If the window does not appear, run `start.bat --console` instead and read the
+output in the window that opens.
+
+The equivalent command is:
 
 ```powershell
 .\venv\Scripts\python.exe main.py --gui
 ```
 
-`run.sh` is a Bash script and does not run in native PowerShell. On Windows, use
-`main.py --gui` as shown above. Other launch modes:
+Other launch modes:
 
 ```powershell
 .\venv\Scripts\python.exe main.py            # terminal voice loop
 .\venv\Scripts\python.exe main.py --text     # type commands instead of speaking
 .\venv\Scripts\python.exe main.py --offline  # local router only, no network
+.\venv\Scripts\python.exe main.py --help     # every option
 ```
 
-To start JARVIS automatically when you sign in, create a shortcut to the command
-above in `shell:startup` (press `Win+R`, type `shell:startup`, then place the
-shortcut in the folder that opens).
+To start JARVIS automatically when you sign in, run:
+
+```powershell
+.\venv\Scripts\python.exe main.py --autostart-enable
+```
+
+(or create a shortcut to `start.bat` in `shell:startup`). The command writes only
+a per-user entry under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`;
+`--autostart-disable` removes it.
 
 The widget's ✕ hides JARVIS to the tray, which is intentional — it keeps
 listening for the hotkey. To stop it for good, right-click the tray icon and
-choose **Quit**, or run this from a terminal (no Task Manager needed):
+choose **Quit**, double-click **`stop.bat`**, or run:
 
 ```powershell
 .\venv\Scripts\python.exe main.py --quit
 ```
+
+`stop.bat` also force-stops the app if a frozen window does not answer (it only
+targets this project's Python process).
 
 ## 4. Verify the installation
 
@@ -101,11 +120,22 @@ Fix anything the readiness report marks as missing.
 
 - **`python` is not recognised** — reinstall Python and enable **Add python.exe
   to PATH**, or use the `py` launcher instead of `python`.
+- **`start.bat` flashes and closes** — run `start.bat --console` to see the error
+  (normally a missing `venv` or dependency); re-run `install.ps1` if needed.
 - **`running scripts is disabled on this system`** — use
   `powershell -ExecutionPolicy Bypass -File .\install.ps1`, which only relaxes
   the policy for that one process.
 - **No microphone input** — open **Settings → Privacy & security → Microphone**
   and allow desktop apps to use the microphone.
+- **The mic works elsewhere but Jarvis hears nothing** — Jarvis uses WASAPI
+  exclusive mode (the reliable path on many Realtek/AMD laptops). Close apps
+  that are recording or holding the microphone, or set
+  `JARVIS_MIC_EXCLUSIVE=0` in `.env` to use shared mode. A specific input can be
+  selected with `JARVIS_MIC_DEVICE` (a device name or `sounddevice` index);
+  `main.py --check` lists the default input.
+- **The "Hey Jarvis" wake word is off** — it is optional. Install it with
+  `.\venv\Scripts\python.exe -m pip install openwakeword onnxruntime`; nothing else changes
+  if you skip it.
 - **No sound** — check the Windows volume mixer and make sure the default
   playback device is correct.
 - **Antivirus blocks a helper** — the optional automation packages

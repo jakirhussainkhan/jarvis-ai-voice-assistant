@@ -12,7 +12,6 @@ utterance is intercepted by :func:`resolve` at the top of ``main.handle``:
 Only one request can be pending at a time.
 """
 
-import os
 import re
 import time
 

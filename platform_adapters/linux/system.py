@@ -6,7 +6,6 @@ and never runs arbitrary shell from speech.
 
 import os
 import re
-from datetime import datetime
 from pathlib import Path
 
 from platform_adapters import common
@@ -145,11 +144,11 @@ class LinuxSystemController(SystemController):
             delta = int(seconds)
         except (TypeError, ValueError):
             return "How many seconds should I seek?"
+        if delta == 0:
+            return "How many seconds should I seek?"
         if not common.has("playerctl"):
             return ("playerctl is not installed. To install it, run: "
                     "sudo apt install playerctl")
-        if delta == 0:
-            return "How many seconds should I seek?"
         # playerctl takes the direction as a suffix ("10+" forward, "10-" back).
         offset = f"{abs(delta)}{'+' if delta > 0 else '-'}"
         rc, _ = common.run(["playerctl", "position", offset])

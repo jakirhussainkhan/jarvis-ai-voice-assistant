@@ -41,8 +41,11 @@ def test_save_api_key_writes_a_private_file_and_preserves_settings(
     assert "GROQ_API_KEY=gsk_old" not in text
     assert text.count("GROQ_API_KEY=") == 1
     assert "USE_LOCAL_LLM=False" in text, "unrelated settings must survive"
-    assert (env.stat().st_mode & 0o777) == 0o600
-    assert (env.parent.stat().st_mode & 0o777) == 0o700
+    if os.name != "nt":
+        # Windows has no POSIX permission bits; the file inherits the
+        # user-profile ACL, so only assert the mode where it is meaningful.
+        assert (env.stat().st_mode & 0o777) == 0o600
+        assert (env.parent.stat().st_mode & 0o777) == 0o700
 
 
 def test_save_api_key_creates_the_user_directory(tmp_path, monkeypatch):
@@ -53,7 +56,9 @@ def test_save_api_key_creates_the_user_directory(tmp_path, monkeypatch):
 
     assert env.exists()
     assert "GROQ_API_KEY=gsk_created" in env.read_text(encoding="utf-8")
-    assert (env.stat().st_mode & 0o777) == 0o600
+    if os.name != "nt":
+        # See the note above: mode bits are a POSIX concept.
+        assert (env.stat().st_mode & 0o777) == 0o600
 
 
 @pytest.mark.parametrize("bad", ["", "your_key_here", "   "])

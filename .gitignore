@@ -3,23 +3,17 @@ venv/
 __pycache__/
 .pytest_cache/
 
-# secrets / local-only files (never commit)
-acccces token
+# Local secrets and token files (never commit)
 TOKEN.txt
-*access token*
-*token file*
+.token*
 
-# generated audio artifacts
+# Generated audio artifacts
 *.wav
 *.mp3
 
-# packaging output (PyInstaller / Debian / macOS)
+# Packaging output (PyInstaller / Debian / macOS)
 build/
 dist/
 *.spec
 *.deb
 *.dmg
-
-# local secrets
-TOKEN.txt
-.token*

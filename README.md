@@ -2,7 +2,31 @@
 
 # Jarvis — Cross-Platform Voice Assistant
 
-**Version 2.0.1**
+**Version 2.2.3**
+
+## Download and run (no Python needed)
+
+Prebuilt apps are attached to the
+[latest GitHub release](https://github.com/jakirhussainkhan/jarvis-ai-voice-assistant/releases/latest):
+
+| Platform | Download | First launch |
+| --- | --- | --- |
+| Windows 10/11 | `JARVIS.exe` | Double-click it. If SmartScreen appears, choose **More info → Run anyway**. |
+| Linux (Debian/Ubuntu) | `jarvis_2.2.3_amd64.deb` | Double-click it, or run `sudo apt install ./jarvis_2.2.3_amd64.deb`. |
+| macOS 12+ (Intel or Apple Silicon) | `JARVIS.dmg` | Open it, drag **JARVIS** to **Applications**, then right-click the app and choose **Open** the first time. |
+
+The macOS build is Intel; Apple Silicon runs it through Rosetta 2, which macOS
+offers to install automatically the first time.
+
+The app opens a small window and asks for a free
+[Groq API key](https://console.groq.com/keys) on first run. The key is stored
+only in your own home folder (`~/.jarvis/.env`). Microphone permission is
+requested automatically; see the platform guides for screen/accessibility
+permissions.
+
+> The macOS build is ad-hoc signed (without a paid Apple Developer ID), so
+> Gatekeeper asks for a one-time confirmation. The Windows EXE is unsigned, so
+> SmartScreen may do the same. These prompts are expected and safe to accept.
 
 A voice-controlled desktop assistant for **Linux, Windows and macOS** that can
 *see* your screen, use the internet, and operate the terminal. You speak a
@@ -334,6 +358,12 @@ GUI uses it. Nothing else changes if you skip it:
 ./venv/bin/pip install openwakeword onnxruntime   # ~1-2% CPU, fully offline
 ```
 
+On Windows the same install is:
+
+```powershell
+.\venv\Scripts\python.exe -m pip install openwakeword onnxruntime
+```
+
 The first run downloads the pretrained model (a one-time network fetch); after
 that it never touches the network. `doctor.py` prints this exact line for you when
 the wake word is missing, and Jarvis itself never installs anything.
@@ -351,7 +381,9 @@ Pick your platform and follow its guide. Each installer handles the Python venv,
 | **macOS** | [macOS Instructions](docs/install-macos.md) | `curl -fsSL https://raw.githubusercontent.com/jakirhussainkhan/jarvis-ai-voice-assistant/main/install.sh \| bash` |
 | **Desktop GUI** | Download from the [latest release](https://github.com/jakirhussainkhan/jarvis-ai-voice-assistant/releases) | — |
 
-Run the one-liner from inside the cloned repository folder. Then launch JARVIS with `./run.sh` (Linux/macOS) or `.\venv\Scripts\python.exe main.py --gui` (Windows), and check readiness with `./venv/bin/python doctor.py` or `python main.py --check`.
+Run the one-liner from inside the cloned repository folder. Then launch JARVIS with `./run.sh` (Linux/macOS) or by double-clicking **`start.bat`** (Windows; `start.bat --console` keeps a log window open). Check readiness with `./venv/bin/python doctor.py` or `.\venv\Scripts\python.exe main.py --check`.
+
+On Windows, **`stop.bat`** stops Jarvis cleanly, even when the widget is hidden in the tray. To start it at login, run `.\venv\Scripts\python.exe main.py --autostart-enable` (undo with `--autostart-disable`).
 
 Platform-specific notes (WSL2 setup, native-Windows scheduled-task service, desktop prerequisites, manual install) are covered in the three guides above.
 
@@ -412,6 +444,7 @@ token cap and tool-round limit are constants in `config.py`.
 ./venv/bin/python main.py --local            # this session uses local Ollama
 ./venv/bin/python main.py --check            # readiness report (same as doctor.py)
 ./venv/bin/python main.py --version          # print the version
+./venv/bin/python main.py --help             # every option, with a short description
 ./venv/bin/python main.py --screen "what is on my screen?"   # one screen answer
 ./venv/bin/python main.py --gui              # floating widget + system tray
 ./venv/bin/python main.py --wake             # wake the running Jarvis (or start it)
@@ -425,6 +458,22 @@ token cap and tool-round limit are constants in `config.py`.
 In the CLI loop, `[STAT]` lines show token counts and track local vs. agent vs.
 cache hits. Say **"exit"**, **"quit"**, **"bye"** or **"stop"** (on their own) to
 end a session.
+
+### Windows
+
+```powershell
+.\start.bat                                 # the GUI, no console window
+.\start.bat --console                       # the GUI with a visible log window
+.\stop.bat                                  # stop it, even from the tray
+.\venv\Scripts\python.exe main.py           # terminal voice loop
+.\venv\Scripts\python.exe main.py --text    # type commands instead of speaking
+.\venv\Scripts\python.exe main.py --check   # readiness report
+.\venv\Scripts\python.exe main.py --quit    # same as stop.bat
+```
+
+`start.bat` uses `pythonw.exe`, so there is no console window; starting it twice
+is harmless (the second launch wakes the running instance). `stop.bat` asks the
+app to quit, then force-stops only this project's process if it is stuck.
 
 **GUI:** left-click the orb (or the tray icon) to talk — or just say **"Hey
 Jarvis"** once the wake word is installed, or press **Ctrl+Shift+J** (or
@@ -450,13 +499,16 @@ replies, and you just keep talking until you go quiet (60 s,
 **Hey Jarvis** and **Continuous chat** menu items (in both the widget and the
 tray menu) switch the wake word and the chat mode off and on while Jarvis runs.
 
-**Desktop launcher.** `./run.sh` starts the GUI with the right virtualenv, and
-`./venv/bin/python install_desktop.py` adds Jarvis to your application menu with
-the glowing-orb icon (`--autostart` also starts it at login; `--uninstall`
-removes exactly what it wrote). To keep it running after you close the terminal:
+**Desktop launcher.** `./run.sh` starts the GUI with the right virtualenv on
+Linux/macOS, and `./venv/bin/python install_desktop.py` adds Jarvis to your
+application menu with the glowing-orb icon (`--autostart` also starts it at
+login; `--uninstall` removes exactly what it wrote). On Windows use `start.bat`
+and `stop.bat`, or add Jarvis to the login items with
+`main.py --autostart-enable` (which launches it through `pythonw.exe`, so no
+console window appears). To keep it running after you close the terminal:
 
 ```bash
-nohup ./run.sh >/tmp/jarvis.log 2>&1 &     # start in the background
+nohup ./run.sh >/tmp/jarvis.log 2>&1 &     # start in the background (Linux/macOS)
 pkill -f "main.py --gui"                   # stop it again
 ```
 

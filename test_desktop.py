@@ -5,10 +5,22 @@ Nothing here touches a real app, player, mixer or the network.
 
 from pathlib import Path
 
+import sys
+
 import pytest
 
 import desktop
 from platform_adapters import common, System
+
+# The command-level expectations below are X11/Linux ones (pactl, playerctl,
+# wmctrl, xdotool). Windows and macOS have their own adapters and are covered by
+# the adapter/doctor/voice tests, so this Linux-specific contract is only run on
+# Linux. Running it elsewhere would exercise the native adapter instead of the
+# mocked commands this file asserts on.
+pytestmark = pytest.mark.skipif(
+    not sys.platform.startswith("linux"),
+    reason="desktop command contract is Linux-specific",
+)
 
 @pytest.fixture(autouse=True)
 def _reset_voice_mute():
@@ -818,6 +830,8 @@ def test_search_and_open_youtube(monkeypatch):
 
 def test_open_youtube_brings_the_existing_tab_to_the_front(monkeypatch):
     """"Open YouTube" while YouTube is open must not spawn a second tab."""
+    monkeypatch.setattr(common, "is_wayland", lambda: False)
+    monkeypatch.setattr(common, "has", lambda t: t in ("xdotool", "wmctrl"))
     monkeypatch.setattr(desktop, "_youtube_window", lambda: "555")
     opened = []
     monkeypatch.setattr(desktop, "_open_url", lambda url: opened.append(url) or True)
