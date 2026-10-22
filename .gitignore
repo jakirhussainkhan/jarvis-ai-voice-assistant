@@ -19,3 +19,7 @@ dist/
 *.spec
 *.deb
 *.dmg
+
+# local secrets
+TOKEN.txt
+.token*
