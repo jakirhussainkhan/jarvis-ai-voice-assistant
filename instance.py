@@ -4,13 +4,16 @@ Jarvis is a background tray application, so starting it twice would give you two
 tray icons, two global hotkeys and two processes competing for the microphone.
 A lock file at ``~/.jarvis/jarvis.lock`` guarantees that only one Jarvis runs; a
 tiny Unix socket at ``~/.jarvis/jarvis.sock`` lets a second launch (or
-``main.py --wake``) ask the running instance to wake up and then exit.
+``main.py --wake`` / ``--quit``) ask the running instance to wake up or exit.
 
-Nothing here raises on a normal path: on a platform without ``fcntl`` or Unix
-sockets the guard simply degrades to "do not enforce" / "cannot signal".
+Nothing here raises on a normal path: on a platform without a lock primitive the
+guard simply degrades to "do not enforce", and without Unix sockets or a live
+PID the signal falls back to "cannot signal".
 """
 
+import ctypes
 import os
+import signal
 import socket
 import threading
 from pathlib import Path
@@ -21,10 +24,42 @@ except ImportError:                              # pragma: no cover - Windows
     fcntl = None
 
 _WAKE_MESSAGE = b"wake\n"
+_QUIT_MESSAGE = b"quit\n"
+
+#: Windows single-instance mutex. "Local\\" scopes it to the logon session, and
+#: the kernel releases it the moment the owning process exits -- which is what a
+#: byte-range lock on the lock file was needed for (and which the old
+#: "does jarvis.lock exist?" check did not provide at all).
+_MUTEX_NAME = "Local\\jarvis-ai-voice-assistant-single-instance"
+_ERROR_ALREADY_EXISTS = 183
+
+if os.name == "nt":                              # pragma: no cover - Windows
+    from ctypes import wintypes
+
+    _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _kernel32.CreateMutexW.argtypes = (wintypes.LPVOID, wintypes.BOOL,
+                                       wintypes.LPCWSTR)
+    _kernel32.CreateMutexW.restype = wintypes.HANDLE
+    _kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    _kernel32.CloseHandle.restype = wintypes.BOOL
+else:                                            # pragma: no cover - POSIX
+    _kernel32 = None
 
 
 class AlreadyRunning(Exception):
     """Raised by :func:`acquire` when another Jarvis already holds the lock."""
+
+
+class _WindowsLock:
+    """Owns a named Windows mutex for as long as the process lives."""
+
+    def __init__(self, handle):
+        self._handle = handle
+
+    def close(self):
+        handle, self._handle = self._handle, None
+        if handle:
+            _kernel32.CloseHandle(handle)
 
 
 def state_dir():
@@ -45,28 +80,65 @@ def socket_path():
     return str(state_dir() / "jarvis.sock")
 
 
-def acquire():
-    """Take the single-instance lock; raise :class:`AlreadyRunning` when held.
+def port_path():
+    """Path of the loopback-port file used where ``AF_UNIX`` is unavailable.
 
-    Returns an opaque handle that must be handed back to :func:`release`. The
-    handle keeps the OS lock open for the lifetime of the process, so a crash
-    automatically frees it (the file itself may stay behind).
+    Windows builds of Python ship without ``AF_UNIX``, so wake/quit signalling
+    there goes over ``127.0.0.1`` and the port is published in this file.
+    """
+    return str(state_dir() / "jarvis.port")
+
+
+def _has_unix_socket():
+    """True when this platform can bind a Unix socket (not Windows here)."""
+    return hasattr(socket, "AF_UNIX")
+
+
+def _take_lock():
+    """Take the exclusive lock, or raise :class:`AlreadyRunning`.
+
+    POSIX uses ``flock`` on the lock file. Windows uses a named mutex because a
+    byte-range lock on the file also blocks other processes from *reading* it
+    (which broke ``main.py --quit`` and the PID lookup). Both are released by
+    the OS when the process dies, so a crash or a Task Manager kill can never
+    leave a stale lock that refuses every later launch.
     """
     path = lock_path()
-    if fcntl is None:                            # pragma: no cover - Windows
-        if path.exists():
-            raise AlreadyRunning("jarvis.lock already exists")
-        handle = os.open(path, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o644)
-    else:
+
+    if fcntl is not None:
         handle = os.open(path, os.O_CREAT | os.O_RDWR, 0o644)
         try:
             fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
             os.close(handle)
             raise AlreadyRunning("jarvis.lock is held by another process")
+        return handle
+
+    if _kernel32 is not None:                    # pragma: no cover - Windows
+        handle = _kernel32.CreateMutexW(None, True, _MUTEX_NAME)
+        if not handle:
+            raise AlreadyRunning("the Jarvis instance mutex is unavailable")
+        if ctypes.get_last_error() == _ERROR_ALREADY_EXISTS:
+            _kernel32.CloseHandle(handle)
+            raise AlreadyRunning("another Jarvis already owns the instance mutex")
+        return _WindowsLock(handle)
+
+    # No locking primitive available: fall back to a plain existence check.
+    if path.exists():                            # pragma: no cover - exotic OS
+        raise AlreadyRunning("jarvis.lock already exists")
+    return None
+
+
+def acquire():
+    """Take the single-instance lock; raise :class:`AlreadyRunning` when held.
+
+    Returns an opaque handle that must be handed back to :func:`release`. The
+    handle keeps the OS lock open for the lifetime of the process, so a crash
+    automatically frees it (the file itself may stay behind and is harmless).
+    """
+    handle = _take_lock()
     try:
-        os.ftruncate(handle, 0)
-        os.write(handle, str(os.getpid()).encode("ascii"))
+        lock_path().write_text(str(os.getpid()), encoding="ascii")
     except OSError:
         pass
     return handle
@@ -76,30 +148,92 @@ def release(handle):
     """Release a handle from :func:`acquire`; safe to call more than once."""
     if handle is None:
         return
-    try:
-        if fcntl is not None:
+    close = getattr(handle, "close", None)        # Windows mutex wrapper
+    if callable(close):
+        close()
+        return
+    if fcntl is not None:
+        try:
             fcntl.flock(handle, fcntl.LOCK_UN)
-    except OSError:
-        pass
+        except OSError:
+            pass
     try:
         os.close(handle)
     except OSError:
         pass
 
 
-def signal_wake(path=None, timeout=1.0):
-    """Ask the running instance to wake up. True when the message was sent."""
-    if not hasattr(socket, "AF_UNIX"):           # pragma: no cover - Windows
-        return False
-    target = path or socket_path()
+def running_pid():
+    """Return the PID recorded in the lock file, or ``None`` when unreadable."""
     try:
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+        text = lock_path().read_text(encoding="ascii", errors="ignore").strip()
+    except OSError:
+        return None
+    try:
+        pid = int(text)
+    except ValueError:
+        return None
+    return pid if pid > 0 else None
+
+
+def _listener_address(path=None):
+    """Return ``(family, address)`` for the running instance, or ``None``.
+
+    A Unix socket is preferred. Where the platform has none, the published
+    loopback port is used instead.
+    """
+    if _has_unix_socket():
+        target = path or socket_path()
+        if os.path.exists(target):
+            return socket.AF_UNIX, target
+        return None
+    try:
+        raw = Path(port_path()).read_text(encoding="ascii").strip()
+        port = int(raw)
+    except (OSError, ValueError):
+        return None
+    return socket.AF_INET, ("127.0.0.1", port)
+
+
+def _send(message, path=None, timeout=1.0):
+    """Deliver one control message to the running instance's socket."""
+    target = _listener_address(path)
+    if target is None:
+        return False
+    family, address = target
+    try:
+        with socket.socket(family, socket.SOCK_STREAM) as sock:
             sock.settimeout(timeout)
-            sock.connect(target)
-            sock.sendall(_WAKE_MESSAGE)
+            sock.connect(address)
+            sock.sendall(message)
         return True
     except OSError:
         return False
+
+
+def signal_wake(path=None, timeout=1.0):
+    """Ask the running instance to wake up. True when the message was sent."""
+    return _send(_WAKE_MESSAGE, path, timeout)
+
+
+def signal_quit(path=None, timeout=1.0):
+    """Ask the running instance to exit. True when the request was delivered.
+
+    A Unix socket is used where the platform has one. Windows builds without
+    ``AF_UNIX`` fall back to terminating the PID recorded in the lock file, so
+    ``main.py --quit`` replaces hunting for the process in Task Manager.
+    """
+    if _send(_QUIT_MESSAGE, path, timeout):
+        return True
+    if os.name == "nt":                          # pragma: no cover - Windows
+        pid = running_pid()
+        if pid and pid != os.getpid():
+            try:
+                os.kill(pid, signal.SIGTERM)
+                return True
+            except OSError:
+                return False
+    return False
 
 
 class WakeServer:
@@ -107,27 +241,41 @@ class WakeServer:
 
     The listener runs on a daemon thread. The callback must be thread-safe; the
     GUI passes a Qt signal's ``emit``, which Qt delivers on the GUI thread.
+    ``on_quit`` (optional) is called for a "quit" message, which is how
+    ``main.py --quit`` closes a hidden-to-tray Jarvis.
     """
 
-    def __init__(self, callback, path=None):
+    def __init__(self, callback, path=None, on_quit=None):
         self._callback = callback
+        self._on_quit = on_quit
         self._path = path or socket_path()
         self._sock = None
         self._thread = None
         self._stop = threading.Event()
 
     def start(self):
-        """Bind and start listening. False when the socket is unavailable."""
-        if not hasattr(socket, "AF_UNIX"):       # pragma: no cover - Windows
-            return False
+        """Bind and start listening. False when no listener can be created."""
         try:
-            if os.path.exists(self._path):
-                os.unlink(self._path)
-            self._sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            self._sock.bind(self._path)
+            if _has_unix_socket():
+                if os.path.exists(self._path):
+                    os.unlink(self._path)
+                self._sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                self._sock.bind(self._path)
+            else:                                # pragma: no cover - Windows
+                # No AF_UNIX: listen on a random loopback port and publish it.
+                self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                self._sock.bind(("127.0.0.1", 0))
+                Path(port_path()).write_text(
+                    str(self._sock.getsockname()[1]), encoding="ascii")
             self._sock.listen(4)
             self._sock.settimeout(0.5)
         except OSError:
+            if self._sock is not None:
+                try:
+                    self._sock.close()
+                except OSError:
+                    pass
             self._sock = None
             return False
         self._thread = threading.Thread(target=self._run, daemon=True,
@@ -154,6 +302,11 @@ class WakeServer:
                     self._callback()
                 except Exception:
                     pass
+            elif data == "quit" and self._on_quit is not None:
+                try:
+                    self._on_quit()
+                except Exception:
+                    pass
 
     def stop(self):
         """Stop the thread and remove the socket file (idempotent)."""
@@ -167,7 +320,8 @@ class WakeServer:
         if self._thread is not None:
             self._thread.join(timeout=1.0)
             self._thread = None
-        try:
-            os.unlink(self._path)
-        except OSError:
-            pass
+        for path in (self._path, port_path()):
+            try:
+                os.unlink(path)
+            except OSError:
+                pass

@@ -13,7 +13,7 @@ def _ollama_is_offline(monkeypatch):
 
 def test_report_lists_tools_and_text_mode(monkeypatch):
     monkeypatch.setattr(doctor.shutil, "which", lambda tool: None)
-    text = doctor.report()
+    text = doctor.report(system="Linux")
     assert "Jarvis readiness check" in text
     assert "JARVIS_TEXT" in text                 # how to test without a mic
     assert "arecord" in text                     # required tool shown
@@ -25,6 +25,26 @@ def test_report_lists_tools_and_text_mode(monkeypatch):
     assert "--offline" in text and "--gui" in text
 
 
+def test_report_uses_portaudio_on_windows(monkeypatch):
+    """Windows must not be told that arecord (an ALSA tool) is required."""
+    text = doctor.report(system="Windows")
+
+    assert "Platform: Windows" in text
+    assert "Microphone:" in text                 # PortAudio status, never arecord
+    assert "arecord" not in text
+    assert "sudo apt install" not in text
+    assert "pycaw" in text                       # volume needs it on Windows
+    assert "--quit" in text                      # how to stop the tray app
+
+
+def test_windows_report_flags_missing_sounddevice(monkeypatch):
+    real = doctor._has_module
+    monkeypatch.setattr(
+        doctor, "_has_module",
+        lambda name: False if name == "sounddevice" else real(name))
+    assert "MISSING sounddevice" in doctor.report(system="Windows")
+
+
 def test_report_flags_a_missing_api_key(monkeypatch):
     monkeypatch.setattr(doctor, "API_KEY", None)
     assert "MISSING" in doctor.report()
@@ -33,7 +53,7 @@ def test_report_flags_a_missing_api_key(monkeypatch):
 def test_report_flags_wayland(monkeypatch):
     monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
     monkeypatch.setattr(doctor.shutil, "which", lambda tool: "/usr/bin/" + tool)
-    assert "Wayland" in doctor.report()
+    assert "Wayland" in doctor.report(system="Linux")
 
 
 # --------------------------------------------------------------------------- #

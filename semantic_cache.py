@@ -28,6 +28,24 @@ _CLOSED_VALUES = frozenset({"0", "false", "no", "off"})
 MODEL_NAME = "all-MiniLM-L6-v2"
 _MODEL_ID = f"sentence-transformers/{MODEL_NAME}"
 
+
+def preload():
+    """Import the embedding stack *before* PyQt5 is imported.
+
+    On Windows, importing ``onnxruntime`` (pulled in by fastembed) for the first
+    time *after* Qt has been loaded crashes the process with an access violation
+    (fastembed 0.9 / onnxruntime 1.31 on WinPython 3.12). Importing it here, on
+    the main thread and ahead of Qt, makes it safe to build the embedder from the
+    GUI worker thread later. Returns True when fastembed is importable.
+    """
+    if os.getenv("JARVIS_SEMANTIC_CACHE", "1").strip().lower() in _CLOSED_VALUES:
+        return False
+    try:
+        import fastembed  # noqa: F401  (imported for its side effects)
+    except Exception:
+        return False
+    return True
+
 # Questions whose answer changes with the clock, the machine, the web or an
 # action. These are deliberately conservative: a cache miss only costs a normal
 # API call, while a stale hit can be plainly wrong.

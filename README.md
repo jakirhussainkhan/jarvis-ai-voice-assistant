@@ -415,6 +415,7 @@ token cap and tool-round limit are constants in `config.py`.
 ./venv/bin/python main.py --screen "what is on my screen?"   # one screen answer
 ./venv/bin/python main.py --gui              # floating widget + system tray
 ./venv/bin/python main.py --wake             # wake the running Jarvis (or start it)
+./venv/bin/python main.py --quit             # stop the running Jarvis (e.g. hidden in the tray)
 ./venv/bin/python install_desktop.py         # add Jarvis to the app menu
 ./venv/bin/python doctor.py                  # readiness report
 ./venv/bin/python test_mic.py                # microphone diagnostic
@@ -576,9 +577,9 @@ confirmation first, then tries the router, and only sends a miss to the agent.
 | `agent.py` | Groq orchestration with an optional Ollama backend: response cache, token accounting, tool schemas from function signatures, English-only system instruction, bounded tool loop, long-term fact injection, 44 tools. |
 | `tools.py` | The tool functions (see the list below). |
 | `memory.py` | SQLite conversation history plus the persistent `user_facts` table for long-term personal memory. |
-| `main.py` | Entry point and `handle()` dispatch (`--text`, `--offline`, `--local`, `--screen`, `--gui`, `--wake`, `--check`, `--version`). Enforces a single instance via `instance.py`. |
+| `main.py` | Entry point and `handle()` dispatch (`--text`, `--offline`, `--local`, `--screen`, `--gui`, `--wake`, `--quit`, `--check`, `--version`). Enforces a single instance via `instance.py`. |
 | `gui.py` | PyQt5 ChatGPT-Voice-style card + system tray; the listen/think/speak cycle runs on a `QThread` — and with continuous chat on, that thread loops turn after turn until you go quiet, say an exit word, press Stop or mute. The breathing `Orb` and 13-bar `Waveform` are driven by live mic levels / the TTS loudness envelope; the worker arms a `voice.BargeInMonitor` while speaking, so talking over a reply cuts it short and returns to listening. Frameless, **resizable** rounded card (corner `QSizeGrip` + edge dragging) whose ✕/close **hides to the tray** instead of quitting. Owns the wake listener's lifecycle (start/pause/resume/stop) and registers the optional global **Ctrl+Shift+J** / **Ctrl+Alt+J** wake hotkey (`pynput`). |
-| `instance.py` | Single-instance lock (`~/.jarvis/jarvis.lock`) and wake socket (`~/.jarvis/jarvis.sock`). A second launch (or `main.py --wake`) signals the running GUI to wake and then exits, so there is only ever one Jarvis. Degrades gracefully without `fcntl`/Unix sockets. |
+| `instance.py` | Single-instance lock (`~/.jarvis/jarvis.lock`) and wake socket (`~/.jarvis/jarvis.sock`). A second launch (or `main.py --wake`) signals the running GUI to wake and then exits, so there is only ever one Jarvis; `main.py --quit` closes it. POSIX uses `flock` + a Unix socket, Windows a named mutex + a loopback port, and both are released by the OS if the process is killed. |
 | `icon_art.py` | The vector artwork for the app icon (charcoal tile, azure orb, stylised "J"), shared by the GUI, the tray and `gen_icon.py`. |
 | `gen_icon.py` | Renders `assets/jarvis-{32,48,64,128,256}.png` from `icon_art.py`, headless and PyQt-only. |
 | `wake.py` | Optional offline **"Hey Jarvis"** wake word (openWakeWord ONNX). `Detector` re-frames audio into 80 ms frames and applies the threshold; `Listener` streams the mic on a daemon thread, hands the device over before any listen cycle, and stays silent while the mic is muted. Importable without openWakeWord. |

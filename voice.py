@@ -100,11 +100,25 @@ _CHUNK_BYTES = _CHUNK_FRAMES * _SAMPLE_WIDTH         # 3200
 # Speech starts on a chunk above _ENERGY_THRESHOLD (300). The level that counts
 # as "still speaking" is auto-calibrated on every listen: we measure the room's
 # background noise first and set the stop floor to 1.5x its median, clamped to
-# [_SILENCE_THRESHOLD, _MAX_SILENCE_THRESHOLD] (150..300). Hysteresis then keeps
+# [_SILENCE_THRESHOLD, _MAX_SILENCE_THRESHOLD] (100..300). Hysteresis then keeps
 # recording through brief dips between words; the phrase only ends after
 # _SILENCE_SECONDS (2 s) below that floor.
-_SILENCE_THRESHOLD = 150        # minimum floor (also the fallback)
+_SILENCE_THRESHOLD = 100        # minimum floor (also the fallback)
 _MAX_SILENCE_THRESHOLD = 300    # maximum floor
+# Quiet or distant speech (the Windows Realtek mic delivers only ~170 RMS for a
+# normal voice at arm's length) never reaches the 300 RMS gate, yet real speech
+# still has sharp transients that steady background hum does not. So a chunk may
+# also start a phrase when it clears a softer RMS gate *and* its peak is far
+# above the noise floor. Tune with JARVIS_SOFT_GATE / JARVIS_PEAK_GATE.
+_SOFT_ENERGY_THRESHOLD = _env_int("JARVIS_SOFT_GATE", 100, 0)
+_PEAK_THRESHOLD = _env_int("JARVIS_PEAK_GATE", 500, 0)
+
+# A real phrase carries at least this many 0.1 s chunks above the silence floor.
+# The Realtek ADC power-up pop (and a mouse click) trips the gate for one or two
+# chunks; without this guard that blip ended the turn with an empty recording
+# ~2 s later, long before the user even started talking. A blip is now dropped
+# and listening simply continues.
+_MIN_SPEECH_CHUNKS = 3
 _SILENCE_FACTOR = 1.5
 _SILENCE_SECONDS = _env_float("JARVIS_SILENCE_END", 2.0, 0.5)
 # ^ how long a pause may last before the phrase is treated as finished (was 1.2 s).
@@ -363,8 +377,39 @@ def _median(samples):
     return ordered[len(ordered) // 2]
 
 
+def _starts_phrase(rms, chunk):
+    """True when a waiting chunk looks like speech rather than room noise.
+
+    Two ways in: the classic loud RMS gate, or the quieter transient gate that
+    catches soft/distant speech (RMS above ``_SOFT_ENERGY_THRESHOLD`` *and* a
+    peak above ``_PEAK_THRESHOLD``). Steady hum, fans and hiss raise RMS without
+    sharp peaks, so they cannot open the phrase on their own.
+    """
+    if rms > _ENERGY_THRESHOLD:
+        return True
+    return rms > _SOFT_ENERGY_THRESHOLD and _peak(chunk) > _PEAK_THRESHOLD
+
+
+def _boost_quiet(data, peak_floor=6000, target_peak=20000, max_gain=8.0):
+    """Apply digital gain to a quiet capture so STT hears normal-level speech.
+
+    A capture that never exceeds ``peak_floor`` is speech that reached the mic
+    softly; Google STT degrades badly on it. Scale it up towards
+    ``target_peak`` (bounded by ``max_gain``) without clipping. Audio that is
+    already loud is returned untouched.
+    """
+    peak = _peak(data, _SAMPLE_WIDTH)
+    if peak <= 0 or peak >= peak_floor:
+        return data
+    gain = min(max_gain, target_peak / peak)
+    samples = _samples(data, _SAMPLE_WIDTH)
+    boosted = array.array("h", (max(-32768, min(32767, int(x * gain)))
+                                for x in samples))
+    return boosted.tobytes()
+
+
 def _calibrate(samples):
-    """Stop floor from background RMS: 1.5x the median, clamped to 150..300.
+    """Stop floor from background RMS: 1.5x the median, clamped to 100..300.
 
     The median ignores the odd outlier, and the clamps keep the floor sane even
     in a very quiet (or very noisy) room.
@@ -622,14 +667,14 @@ def _capture_from_stream(stream, fd=None, ptt=False, stop_event=None,
             # phrase, and keep it out of the background estimate.
             if first_chunk:
                 first_chunk = False
-                if rms > _ENERGY_THRESHOLD:
+                if _starts_phrase(rms, chunk):
                     spike_rms = rms
                     if _DEBUG:
                         _dbg(f"chunk rms={rms:.0f} gate={_ENERGY_THRESHOLD} "
                              f"state=warmup spike=discarded")
                     continue
 
-            if rms > _ENERGY_THRESHOLD:
+            if _starts_phrase(rms, chunk):
                 # A decaying tail of the open spike (bounded by the warm-up
                 # window) is discarded; anything else is speech and starts now,
                 # so a phrase that begins immediately is never cut off.
@@ -641,6 +686,10 @@ def _capture_from_stream(stream, fd=None, ptt=False, stop_event=None,
                              f"state=warmup spike=decay left={warm_left}")
                     continue
                 spike_rms = None
+                if _DEBUG and rms <= _ENERGY_THRESHOLD:
+                    _dbg(f"chunk rms={rms:.0f} peak={_peak(chunk)} "
+                         f"soft_gate={_SOFT_ENERGY_THRESHOLD}/"
+                         f"{_PEAK_THRESHOLD} state=soft-trigger")
                 begin_recording()
                 continue
 
@@ -666,6 +715,21 @@ def _capture_from_stream(stream, fd=None, ptt=False, stop_event=None,
                  f"silence={silent_run}/{silence_chunks_to_stop}")
 
         if silent_run >= silence_chunks_to_stop:
+            voiced = sum(1 for c in chunks if _rms(c, _SAMPLE_WIDTH) > stop_threshold)
+            if (not ptt and voiced < _MIN_SPEECH_CHUNKS
+                    and time.monotonic() < wait_deadline):
+                # ADC pop / click, not speech: drop it and keep listening instead
+                # of returning an empty capture before the user has spoken.
+                if _DEBUG:
+                    _dbg(f"blip ignored: only {voiced} voiced chunk(s) "
+                         f"(< {_MIN_SPEECH_CHUNKS}); still listening")
+                started = False
+                chunks = []
+                silent_run = 0
+                pre_roll.clear()
+                spike_rms = None
+                warm_left = 0
+                continue
             reason = "silence"
             break
         if len(chunks) >= max_phrase_chunks:
@@ -805,6 +869,7 @@ def listen(wait=None, *, label="", barge=False):
     device = _mic_device()
     ptt = _ptt_active()
     _dbg(f"{label or 'listen'} device={device} gate={_ENERGY_THRESHOLD} "
+         f"soft_gate={_SOFT_ENERGY_THRESHOLD} peak={_PEAK_THRESHOLD} "
          f"chunk={_CHUNK_SECONDS}s wait={wait or _LISTEN_TIMEOUT}s "
          f"phrase_max={_PHRASE_TIME_LIMIT}s ptt={ptt}")
 
@@ -844,6 +909,13 @@ def listen(wait=None, *, label="", barge=False):
         if peak >= 32767:
             _dbg("WARNING: peak at full scale (32768) -> input is CLIPPING; "
                  "lower the mic gain in the system mixer")
+
+    # Quiet/distant speech is hard for STT; give it normal level first.
+    data = _boost_quiet(data)
+    if _DEBUG:
+        boosted = _peak(data, _SAMPLE_WIDTH)
+        if boosted != peak:
+            _dbg(f"boosted quiet capture: peak {peak} -> {boosted}")
 
     audio = sr.AudioData(data, _SAMPLE_RATE, _SAMPLE_WIDTH)
     try:

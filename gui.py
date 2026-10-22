@@ -22,6 +22,13 @@ import math
 import sys
 from collections import deque
 
+# PyQt5 must not be the first to load onnxruntime's DLLs on Windows: importing
+# fastembed afterwards (the semantic cache does it lazily from the worker
+# thread) crashes the process with an access violation. Warm it up here first.
+from semantic_cache import preload as _preload_embeddings
+
+_preload_embeddings()
+
 from PyQt5.QtCore import (QEasingCurve, QPointF, QPropertyAnimation, QRect,
                           QRectF, Qt, QThread, QTimer, QUrl, pyqtProperty,
                           pyqtSignal)
@@ -700,6 +707,8 @@ class JarvisWidget(QWidget):
     wake_heard = pyqtSignal()
     # Emitted by the pynput global-hotkey thread (never touch Qt from it either).
     hotkey_pressed = pyqtSignal()
+    # Emitted by the wake-socket thread when `main.py --quit` asks us to exit.
+    quit_requested = pyqtSignal()
 
     def __init__(self):
         super().__init__()
@@ -744,6 +753,7 @@ class JarvisWidget(QWidget):
         self._hotkey = None
         self.wake_server = None
         self.hotkey_pressed.connect(self._on_hotkey)
+        self.quit_requested.connect(self.quit)
 
         self._build_ui()
         self._build_menu()
@@ -1391,9 +1401,11 @@ def main():
 
     # Let a second launch / `main.py --wake` wake this instance instead of
     # spawning a duplicate tray icon. The socket thread only emits a signal, so
-    # Qt runs the real work on the GUI thread.
+    # Qt runs the real work on the GUI thread. `main.py --quit` (or a platform
+    # without AF_UNIX, which terminates by PID) closes the app from the terminal.
     import instance
-    server = instance.WakeServer(widget.hotkey_pressed.emit)
+    server = instance.WakeServer(widget.hotkey_pressed.emit,
+                                 on_quit=widget.quit_requested.emit)
     server.start()
     widget.wake_server = server
 

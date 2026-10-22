@@ -81,6 +81,14 @@ To start JARVIS automatically when you sign in, create a shortcut to the command
 above in `shell:startup` (press `Win+R`, type `shell:startup`, then place the
 shortcut in the folder that opens).
 
+The widget's ✕ hides JARVIS to the tray, which is intentional — it keeps
+listening for the hotkey. To stop it for good, right-click the tray icon and
+choose **Quit**, or run this from a terminal (no Task Manager needed):
+
+```powershell
+.\venv\Scripts\python.exe main.py --quit
+```
+
 ## 4. Verify the installation
 
 ```powershell

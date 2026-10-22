@@ -1,10 +1,33 @@
 """Configuration and environment loading for Jarvis."""
 
 import os
+import sys
 import tempfile
 from pathlib import Path
 
 from dotenv import load_dotenv
+
+
+def _use_utf8_console():
+    """Force UTF-8 on stdout/stderr so emoji status lines never crash.
+
+    On Windows Python defaults to the ANSI code page (cp1252 here) and
+    ``print("🎤 Listening...")`` raised ``UnicodeEncodeError`` -- which killed
+    voice mode before the microphone was even opened, while typed text (no
+    emoji until the first reply) appeared to work. ``errors="replace"`` keeps an
+    exotic character from ever ending a session.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (OSError, ValueError):
+            pass
+
+
+_use_utf8_console()
 
 # Keys that look like a key but are only placeholders from .env.example or a
 # tutorial. Treating them as missing is what makes the first-run wizard appear.

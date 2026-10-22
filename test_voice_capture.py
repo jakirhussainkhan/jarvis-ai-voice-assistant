@@ -6,6 +6,7 @@ subprocess is stubbed. The live microphone cannot be driven from a test.
 """
 
 import os
+import socket
 import threading
 import time
 import wave
@@ -41,34 +42,74 @@ def _tone(seconds, amplitude):
 
 
 class _Pipe:
-    """A real OS pipe exposed as a binary file object, with a writer thread."""
+    """A real OS pipe exposed as a binary file object, with a writer thread.
+
+    On Windows ``select()`` only accepts sockets, so the pair is a
+    ``socketpair`` there (exactly like ``platform_adapters._sd``). A CRT pipe
+    would make every read look empty, so these tests would fail on Windows for a
+    reason that has nothing to do with the gating logic under test.
+    """
 
     def __init__(self):
-        r, self.w = os.pipe()
-        self.reader = os.fdopen(r, "rb", buffering=0)
+        self._reader_sock = None
+        self._writer_sock = None
+        self.w = None
+        if os.name == "nt":
+            self._reader_sock, self._writer_sock = socket.socketpair()
+            self.reader = self._reader_sock.makefile("rb", buffering=0)
+        else:
+            r, self.w = os.pipe()
+            self.reader = os.fdopen(r, "rb", buffering=0)
+
+    def _write(self, data):
+        if self._writer_sock is not None:
+            self._writer_sock.sendall(data)
+        else:
+            os.write(self.w, data)
+
+    def _close_writer(self):
+        if self._writer_sock is not None:
+            sock, self._writer_sock = self._writer_sock, None
+            try:
+                sock.shutdown(socket.SHUT_WR)
+            except OSError:
+                pass
+            try:
+                sock.close()
+            except OSError:
+                pass
+        if self.w is not None:
+            fd, self.w = self.w, None
+            try:
+                os.close(fd)
+            except OSError:
+                pass
 
     def feed(self, data):
         def run():
             try:
-                os.write(self.w, data)
+                self._write(data)
             except OSError:
                 pass
             finally:
                 # Signal a real EOF once the writer is done, so the reader finishes
                 # promptly instead of waiting out a timeout.
-                try:
-                    os.close(self.w)
-                except OSError:
-                    pass
+                self._close_writer()
 
         threading.Thread(target=run, daemon=True).start()
 
     def close(self):
-        for closer in (self.reader.close, lambda: os.close(self.w)):
+        try:
+            self.reader.close()
+        except OSError:
+            pass
+        self._close_writer()
+        if self._reader_sock is not None:
             try:
-                closer()
+                self._reader_sock.close()
             except OSError:
                 pass
+            self._reader_sock = None
 
 
 def _capture(pipe, monkeypatch, *, wait=2.0, phrase=5.0, silence=0.5):

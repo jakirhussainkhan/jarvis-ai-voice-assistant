@@ -50,12 +50,48 @@ def _indent(text):
     return "\n".join("  " + line for line in text.splitlines())
 
 
-def list_devices():
-    """Print every capture device / PCM name arecord can see.
+def _uses_sounddevice():
+    """True on Windows/macOS, where capture goes through PortAudio."""
+    return os.name == "nt" or sys.platform == "darwin"
 
-    Replaces the old ``sr.Microphone.list_microphone_names()`` (PyAudio) with
-    native ALSA enumeration, matching the arecord capture path.
+
+def _sd_devices():
+    """Print every PortAudio capture device; returns their indices as strings."""
+    try:
+        import sounddevice as sd
+    except Exception as exc:
+        print(f"\n🎙️  sounddevice unavailable: {type(exc).__name__}: {exc}")
+        print("   Install it with: .\\venv\\Scripts\\pip.exe install sounddevice")
+        return []
+    print("\n🎙️  PortAudio capture devices:")
+    names = []
+    try:
+        devices = sd.query_devices()
+    except Exception as exc:
+        print(f"   <none> -- {type(exc).__name__}: {exc}")
+        return []
+    for index, device in enumerate(devices):
+        if device["max_input_channels"] <= 0:
+            continue
+        names.append(str(index))
+        print(f"  [{index}] {device['name']} "
+              f"({device['max_input_channels']} ch, "
+              f"{int(device['default_samplerate'])} Hz)")
+    if not names:
+        print("   <none> -- no input device found (check Settings > Privacy "
+              "& security > Microphone)")
+    return names
+
+
+def list_devices():
+    """Print every capture device arecord / PortAudio can see.
+
+    Linux keeps the ALSA enumeration (``arecord -l/-L``). Windows and macOS
+    enumerate PortAudio instead, because there is no ``arecord`` there.
     """
+    if _uses_sounddevice():
+        return _sd_devices()
+
     print("\n🎙️  arecord -l (hardware capture devices):")
     out = _run(["arecord", "-l"])
     body = (out.stdout or out.stderr or "<none>").strip()
@@ -78,11 +114,15 @@ def preferred_device():
 
 
 def record_wav(device, seconds):
-    """Capture `seconds` of audio to test_mic.wav using arecord.
+    """Capture `seconds` of audio to test_mic.wav.
 
-    Uses the same command builder as voice.listen() so the diagnostic and the
-    real capture path cannot drift apart.
+    Linux uses arecord. Windows/macOS stream through the same
+    ``voice._spawn_arecord`` adapter that ``listen()`` uses, so the diagnostic
+    and the real capture path cannot drift apart.
     """
+    if _uses_sounddevice():
+        return _record_wav_stream(device, seconds)
+
     cmd = voice.arecord_command(device, seconds=seconds, output=WAV_PATH, fmt="wav")
     print(f"\n🔴 Recording {seconds}s from {device} ...")
     print(f"   $ {' '.join(cmd)}")
@@ -108,6 +148,45 @@ def record_wav(device, seconds):
     return data
 
 
+def _record_wav_stream(device, seconds):
+    """Record through the PortAudio adapter used by ``voice.listen()``."""
+    import time
+
+    label = device or "system default"
+    if str(label).strip().lower() in ("default", "sysdefault"):
+        label = "system default"
+    print(f"\n🔴 Recording {seconds:g}s from {label} (sounddevice) ...")
+    proc = voice._spawn_arecord(device)
+    chunks = []
+    try:
+        stream = proc.stdout
+        fd = stream.fileno()
+        deadline = time.monotonic() + float(seconds)
+        while time.monotonic() < deadline:
+            chunk = voice._read_chunk(stream, fd, deadline)
+            if not chunk:
+                break
+            chunks.append(chunk)
+    finally:
+        voice._stop_arecord(proc)
+
+    data = b"".join(chunks)
+    if not data:
+        raise RuntimeError(
+            "the capture path produced no audio -- the microphone is muted, "
+            "blocked by Windows privacy settings, or another app has it")
+
+    with wave.open(str(WAV_PATH), "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(SAMPLE_WIDTH)
+        wf.setframerate(SAMPLE_RATE)
+        wf.writeframes(data)
+
+    print(f"   saved -> {WAV_PATH}  ({WAV_PATH.stat().st_size} bytes)")
+    _report_level(data)
+    return data
+
+
 def _report_level(raw):
     """Quick RMS so a silent capture is obvious without listening."""
     audio = sr.AudioData(raw, SAMPLE_RATE, SAMPLE_WIDTH)
@@ -123,8 +202,14 @@ def _report_level(raw):
 
 
 def play_wav(path):
-    """Play the recording back through ALSA (aplay) instead of PyAudio."""
+    """Play the recording back through the platform's audio output."""
     print(f"\n🔊 Playing back {path.name} ...")
+    if _uses_sounddevice():
+        from platform_adapters import Audio
+        if Audio.play(str(path)):
+            print("   playback done")
+            return
+        raise RuntimeError("no working audio output device")
     proc = _run(["aplay", "-q", str(path)])
     if proc.returncode != 0:
         raise RuntimeError(
@@ -180,6 +265,21 @@ def check_energy_threshold():
         else:
             print("   ✅ reasonable starting value.")
 
+    if _uses_sounddevice():
+        print(
+            "\n   Capture path (same as voice.listen()):\n"
+            "     sounddevice RawInputStream -> 16 kHz mono S16_LE chunks\n"
+            "\n   Notes:\n"
+            "   - listen() reads 0.1 s chunks, RMS-gates at _ENERGY_THRESHOLD,\n"
+            "     starts on speech, stops after ~1 s of silence (max phrase 8 s).\n"
+            "   - The device defaults to the system default input.\n"
+            "     Override it with JARVIS_MIC_DEVICE=<index or name from the\n"
+            "     list above> if the wrong microphone is picked.\n"
+            "   - Silence here usually means Windows is blocking access:\n"
+            "     Settings > Privacy & security > Microphone."
+        )
+        return
+
     print(
         "\n   Capture path (same as voice.listen()):\n"
         "     arecord -D <device> -f S16_LE -r 16000 -c 1\n"
@@ -203,8 +303,8 @@ def check_energy_threshold():
 def main():
     parser = argparse.ArgumentParser(description="Jarvis microphone diagnostic")
     parser.add_argument("--device", default=None,
-                        help="ALSA PCM name to record from "
-                             "(default: the device voice.py picks)")
+                        help="capture device to record from (default: the one "
+                             "voice.py picks)")
     parser.add_argument("--seconds", type=float, default=3.0,
                         help="seconds to record (default: 3)")
     parser.add_argument("--list", action="store_true",
@@ -214,7 +314,8 @@ def main():
     args = parser.parse_args()
 
     print("=" * 60)
-    print(" Jarvis microphone test (arecord)")
+    print(" Jarvis microphone test (sounddevice)"
+          if _uses_sounddevice() else " Jarvis microphone test (arecord)")
     print("=" * 60)
 
     list_devices()

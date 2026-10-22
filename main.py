@@ -309,6 +309,15 @@ def main():
         # remains Groq, and no Ollama connection is attempted otherwise.
         config.USE_LOCAL_LLM = True
         agent.USE_LOCAL_LLM = True
+    if "--quit" in args:
+        # Stop a Jarvis that is hidden in the tray (or otherwise running in the
+        # background) without hunting for its process in Task Manager.
+        import instance
+        if instance.signal_quit():
+            print("Jarvis is shutting down.", flush=True)
+        else:
+            print("Jarvis is not running.", flush=True)
+        return
     if "--check" in args:
         from doctor import report
         print(report())

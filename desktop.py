@@ -14,6 +14,7 @@ built here and in the adapters. Destructive/power actions are invoked through
 """
 
 import os
+import platform
 import re
 import time
 import unicodedata
@@ -127,6 +128,50 @@ def _app_dirs():
     return out
 
 
+def _windows_app_dirs():
+    """Start Menu folders that hold installed-application shortcuts."""
+    roots = []
+    for base in (os.environ.get("APPDATA"), os.environ.get("PROGRAMDATA")):
+        if base:
+            roots.append(Path(base) / "Microsoft" / "Windows" / "Start Menu"
+                         / "Programs")
+    seen, out = set(), []
+    for root in roots:
+        key = os.path.normcase(str(root))
+        if root.is_dir() and key not in seen:
+            seen.add(key)
+            out.append(root)
+    return out
+
+
+# Shortcuts that are not launchable apps and only add noise to voice matching.
+_NOT_AN_APP = re.compile(
+    r"\b(uninstall|uninst|readme|release notes|help|manual|documentation|docs?"
+    r"|website|homepage|license|changelog)\b", re.I)
+
+
+def _windows_app_index():
+    """Installed apps from the Start Menu's ``.lnk``/``.url`` shortcuts.
+
+    Windows has no ``.desktop`` files, so the Linux scan produced an empty index
+    there and every "open chrome" request fell through to "I couldn't find that
+    app". The shortcut name is the app name, and launching goes through
+    ``os.startfile`` on the shortcut itself, so the target need not be parsed.
+    """
+    apps, seen = [], set()
+    for root in _windows_app_dirs():
+        for path in sorted(root.rglob("*")):
+            if path.suffix.lower() not in (".lnk", ".url") or not path.is_file():
+                continue
+            name = path.stem.strip()
+            key = name.lower()
+            if not name or key in seen or _NOT_AN_APP.search(name):
+                continue
+            seen.add(key)
+            apps.append(App(re.sub(r"\s+", "-", key), name, "", [], path))
+    return apps
+
+
 def _parse_desktop(path):
     """Parse the ``[Desktop Entry]`` section of a .desktop file, or None."""
     try:
@@ -177,9 +222,17 @@ _INDEX = None
 
 
 def app_index(refresh=False):
-    """Cached list of installed :class:`App` entries from .desktop files."""
+    """Cached list of installed :class:`App` entries.
+
+    Linux reads ``.desktop`` files; Windows reads Start Menu shortcuts. macOS
+    has neither, so the scan there returns an empty list and the agent falls back
+    to launching by name.
+    """
     global _INDEX
     if _INDEX is not None and not refresh:
+        return _INDEX
+    if platform.system() == "Windows":
+        _INDEX = _windows_app_index()
         return _INDEX
     apps = []
     for directory in _app_dirs():
