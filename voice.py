@@ -27,6 +27,7 @@ import speech_recognition as sr
 
 from config import BARGE_HOLD, BARGE_THRESHOLD, STT_LANG, TTS_VOICE
 from platform_adapters import Audio
+from platform_adapters.common import hidden_process_kwargs
 
 def _env_int(name, default, minimum):
     """Read an int from the environment, clamped and never raising."""
@@ -179,6 +180,9 @@ def set_mic_muted(flag):
     if _mic_muted:
         stop_listening()          # cut off any in-flight capture immediately
         pause_barge_in()          # keep barge-in from opening the mic again
+        # Muting affects capture only. Do NOT call stop_speaking() or touch the
+        # TTS output here: a reply that is already playing (for example "Mic
+        # muted.") must finish, and manual speech must keep working.
     else:
         resume_barge_in()
     return _mic_muted
@@ -976,6 +980,7 @@ def _tts_envelope(path, hop=_ENVELOPE_HOP):
             ["ffmpeg", "-v", "quiet", "-i", str(path),
              "-ac", "1", "-ar", str(_ENVELOPE_RATE), "-f", "s16le", "-"],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            **hidden_process_kwargs(),
         )
         raw, _ = proc.communicate(timeout=20)
     except Exception:
@@ -1053,6 +1058,7 @@ def _start_tts_decoder():
              "-ac", str(_TTS_CHANNELS), "-ar", str(_TTS_RATE), "pipe:1"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL, bufsize=0,
+            **hidden_process_kwargs(),
         )
     except (OSError, ValueError):
         return None

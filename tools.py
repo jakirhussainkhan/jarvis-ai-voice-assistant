@@ -27,6 +27,7 @@ import psutil
 
 import confirm
 import desktop
+from platform_adapters.common import hidden_process_kwargs
 import memory as memory_store
 import net
 import shell
@@ -458,6 +459,7 @@ def fn_execute_python(script: str) -> str:
             errors="replace",
             timeout=_EXEC_TIMEOUT_SECONDS,
             env=dict(os.environ, PYTHONIOENCODING="utf-8"),
+            **hidden_process_kwargs(),
         )
     except subprocess.TimeoutExpired:
         return f"Python script timed out after {_EXEC_TIMEOUT_SECONDS} seconds."

@@ -2,7 +2,7 @@
 
 # Jarvis — Cross-Platform Voice Assistant
 
-**Version 2.2.3**
+**Version 2.2.4**
 
 ## Download and run (no Python needed)
 
@@ -12,7 +12,7 @@ Prebuilt apps are attached to the
 | Platform | Download | First launch |
 | --- | --- | --- |
 | Windows 10/11 | `JARVIS.exe` | Double-click it. If SmartScreen appears, choose **More info → Run anyway**. |
-| Linux (Debian/Ubuntu) | `jarvis_2.2.3_amd64.deb` | Double-click it, or run `sudo apt install ./jarvis_2.2.3_amd64.deb`. |
+| Linux (Debian/Ubuntu) | `jarvis_2.2.4_amd64.deb` | Double-click it, or run `sudo apt install ./jarvis_2.2.4_amd64.deb`. |
 | macOS 12+ (Intel or Apple Silicon) | `JARVIS.dmg` | Open it, drag **JARVIS** to **Applications**, then right-click the app and choose **Open** the first time. |
 
 The macOS build is Intel; Apple Silicon runs it through Rosetta 2, which macOS

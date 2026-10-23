@@ -15,12 +15,12 @@ guide inside your WSL distribution, then see the note at the end about audio.
 ## Prebuilt package (no Python needed)
 
 If you do not want to install Python and the source checkout, download
-`jarvis_2.2.3_amd64.deb` from the
+`jarvis_2.2.4_amd64.deb` from the
 [latest release](https://github.com/jakirhussainkhan/jarvis-ai-voice-assistant/releases/latest)
 and install it:
 
 ```bash
-sudo apt install ./jarvis_2.2.3_amd64.deb
+sudo apt install ./jarvis_2.2.4_amd64.deb
 ```
 
 Then launch **JARVIS** from the application menu (or run `jarvis`). The sections

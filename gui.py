@@ -75,8 +75,8 @@ _BUTTON_STYLE = """
 QPushButton {
     color:#E5E7EB; background:rgba(255,255,255,16);
     border:1px solid rgba(255,255,255,26);
-    border-radius:16px; padding:7px 16px;
-    font-size:12px; font-weight:600;
+    border-radius:14px; padding:6px 12px;
+    font-size:11px; font-weight:600;
 }
 QPushButton:hover { background:rgba(255,255,255,32); }
 QPushButton:pressed { background:rgba(255,255,255,48); }
@@ -85,15 +85,16 @@ QPushButton:disabled {
     border-color:rgba(255,255,255,14);
 }
 QPushButton:checked {
-    color:#FEE2E2; background:rgba(229,72,77,220);
-    border-color:rgba(255,160,160,140);
+    color:#FFFFFF; background:#B91C1C;
+    border-color:#EF4444;
 }
+QPushButton:checked:hover { background:#DC2626; }
 """
 
 _WINDOW_BUTTON_STYLE = """
 QPushButton {
     color:#9CA3AF; background:transparent; border:none;
-    border-radius:12px; font-size:15px; font-weight:700; padding:0px;
+    border-radius:10px; font-size:13px; font-weight:700; padding:0px;
 }
 QPushButton:hover { background:rgba(255,255,255,28); color:#F9FAFB; }
 QPushButton#closeButton:hover { background:#E5484D; color:#FFFFFF; }
@@ -306,8 +307,8 @@ class Waveform(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedHeight(58)
-        self.setMinimumWidth(240)
+        self.setFixedHeight(36)
+        self.setMinimumWidth(180)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self._bars = deque([0.0] * self.BARS, maxlen=self.BARS)
         self._level = 0.0
@@ -400,6 +401,10 @@ class JarvisWorker(QThread):
         voice._stop_speaking.clear()          # a stale Stop must not end this chat
         try:
             while True:
+                # ``listen()`` also refuses while muted, but checking here keeps
+                # the UI from flashing "Listening..." before a muted worker exits.
+                if voice.is_mic_muted():
+                    return
                 self.state_changed.emit(LISTENING)
                 # Talking back and forth should feel natural: the wait between
                 # turns is the chat timeout, so Jarvis stays with you instead of
@@ -731,8 +736,8 @@ class JarvisWidget(QWidget):
         # Frameless windows have no system resize border, so the card resizes
         # through the QSizeGrip in the corner and the custom edge dragging in the
         # mouse handlers below.
-        self.resize(380, 560)
-        self.setMinimumSize(320, 440)
+        self.resize(280, 400)
+        self.setMinimumSize(250, 350)
         self.setMouseTracking(True)
 
         self.memory = Memory()
@@ -773,8 +778,8 @@ class JarvisWidget(QWidget):
         header.setSpacing(4)
         brand = QLabel("JARVIS")
         brand.setStyleSheet(
-            "color:#F9FAFB; background:transparent; font-size:17px;"
-            "font-weight:800; letter-spacing:1.2px;"
+            "color:#F9FAFB; background:transparent; font-size:15px;"
+            "font-weight:800; letter-spacing:1.0px;"
         )
         header.addWidget(brand)
         header.addStretch(1)
@@ -792,27 +797,27 @@ class JarvisWidget(QWidget):
         header.addWidget(self.maximize_button)
         header.addWidget(self.close_button)
 
-        self.orb = Orb(230)
+        self.orb = Orb(136)
         self.orb.clicked.connect(self.trigger)
         self.orb.menu_requested.connect(self._show_menu)
         # Backwards-compatible alias: older code called the orb the "reactor".
         self.reactor = self.orb
 
         self.waveform = Waveform()
-        self.waveform.setFixedWidth(300)
+        self.waveform.setFixedWidth(200)
 
         self.status = QLabel(IDLE)
         self.status.setAlignment(Qt.AlignCenter)
         self.status.setStyleSheet(
             "color:#F3F4F6; background:transparent;"
-            "font-size:15px; font-weight:600; letter-spacing:0.2px;"
+            "font-size:13px; font-weight:600; letter-spacing:0.2px;"
         )
 
         self.transcript = QLabel("")
         self.transcript.setAlignment(Qt.AlignCenter)
-        self.transcript.setMinimumWidth(240)
+        self.transcript.setMinimumWidth(180)
         self.transcript.setStyleSheet(
-            "color:#9CA3AF; background:transparent; font-size:11px;"
+            "color:#9CA3AF; background:transparent; font-size:10px;"
         )
 
         self.mic_button = QPushButton("🎤 Mic On")
@@ -835,13 +840,12 @@ class JarvisWidget(QWidget):
         buttons.addStretch(1)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(22, 16, 22, 18)
-        layout.setSpacing(8)
+        layout.setContentsMargins(16, 12, 16, 12)
+        layout.setSpacing(4)
         layout.addLayout(header)
         layout.addStretch(1)
         layout.addWidget(self.orb, alignment=Qt.AlignCenter)
         layout.addWidget(self.waveform, alignment=Qt.AlignCenter)
-        layout.addSpacing(4)
         layout.addWidget(self.status, alignment=Qt.AlignCenter)
         layout.addWidget(self.transcript, alignment=Qt.AlignCenter)
         layout.addStretch(1)
@@ -862,7 +866,7 @@ class JarvisWidget(QWidget):
     def _window_button(self, text, name):
         button = QPushButton(text)
         button.setObjectName(name)
-        button.setFixedSize(28, 28)
+        button.setFixedSize(24, 24)
         button.setCursor(Qt.PointingHandCursor)
         button.setFocusPolicy(Qt.NoFocus)
         button.setStyleSheet(_WINDOW_BUTTON_STYLE)
@@ -972,6 +976,10 @@ class JarvisWidget(QWidget):
         """Reflect the real voice mute state without changing it (worker signal)."""
         self.mic_button.setChecked(muted)
         self.mic_button.setText("🔇 Muted" if muted else "🎤 Mic On")
+        self.mic_button.setToolTip(
+            "Microphone muted — click to turn it on" if muted
+            else "Microphone on — click to mute"
+        )
         action = getattr(self, "mute_action", None)
         if action is not None:
             action.setChecked(muted)
@@ -1201,16 +1209,16 @@ class JarvisWidget(QWidget):
 
         With continuous mode on, the session keeps going: Jarvis opens the mic
         again after every reply and only stops when you go quiet, say an exit
-        word, press Stop or mute the mic.
+        word, press Stop or mute the mic. A manual trigger (orb, tray Talk or
+        hotkey) is an explicit request to talk, so it lifts a previous mute
+        instead of leaving the app stuck in the muted state.
         """
+        if voice.is_mic_muted():
+            self.set_mic_muted(False)
         # Give the microphone up first: the wake listener and listen() must never
         # hold it at the same time.
         if self._wake is not None:
             self._wake.pause()
-        if voice.is_mic_muted():
-            self._flash("Mic is muted — click “Mic On” to talk")
-            self._resume_wake()
-            return
         if self.worker is not None and self.worker.isRunning():
             # A cycle is already running: leave the mic with it.
             return

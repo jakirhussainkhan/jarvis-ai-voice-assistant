@@ -40,7 +40,8 @@ class WindowsSystemController(SystemController):
         exe = getattr(app, "exec_bin", "") or ""
         if exe:
             try:
-                subprocess.Popen([exe], close_fds=True)
+                subprocess.Popen([exe], close_fds=True,
+                                 **common.hidden_process_kwargs())
                 return True
             except OSError:
                 pass

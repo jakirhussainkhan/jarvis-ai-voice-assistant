@@ -2,9 +2,15 @@
 
 Jarvis is a background tray application, so starting it twice would give you two
 tray icons, two global hotkeys and two processes competing for the microphone.
-A lock file at ``~/.jarvis/jarvis.lock`` guarantees that only one Jarvis runs; a
-tiny Unix socket at ``~/.jarvis/jarvis.sock`` lets a second launch (or
-``main.py --wake`` / ``--quit``) ask the running instance to wake up or exit.
+A mode-specific lock file (``~/.jarvis/jarvis_dev.lock`` or
+``~/.jarvis/jarvis_exe.lock``) guarantees that only one Jarvis of that mode runs;
+a tiny Unix socket next to it lets a second launch (or ``main.py --wake`` /
+``--quit``) ask the running instance to wake up or exit.
+
+The packaged ``.exe`` and a source checkout are deliberately separate instances:
+the frozen build uses ``jarvis_exe.*`` and loopback port 12345, while a source
+run uses ``jarvis_dev.*`` and port 12346. That makes it possible to test both at
+the same time without one launch waking or quitting the other.
 
 Nothing here raises on a normal path: on a platform without a lock primitive the
 guard simply degrades to "do not enforce", and without Unix sockets or a live
@@ -15,6 +21,7 @@ import ctypes
 import os
 import signal
 import socket
+import sys
 import threading
 from pathlib import Path
 
@@ -26,12 +33,18 @@ except ImportError:                              # pragma: no cover - Windows
 _WAKE_MESSAGE = b"wake\n"
 _QUIT_MESSAGE = b"quit\n"
 
-#: Windows single-instance mutex. "Local\\" scopes it to the logon session, and
-#: the kernel releases it the moment the owning process exits -- which is what a
-#: byte-range lock on the lock file was needed for (and which the old
-#: "does jarvis.lock exist?" check did not provide at all).
-_MUTEX_NAME = "Local\\jarvis-ai-voice-assistant-single-instance"
+#: Windows single-instance mutex prefix. "Local\\" scopes it to the logon
+#: session, and the kernel releases it the moment the owning process exits --
+#: which is what a byte-range lock on the lock file was needed for (and which
+#: the old existence-only check did not provide at all). The mode is
+#: appended so the frozen and source builds can coexist.
+_MUTEX_PREFIX = "Local\\jarvis-ai-voice-assistant"
 _ERROR_ALREADY_EXISTS = 183
+
+#: Loopback ports used only where ``AF_UNIX`` is unavailable. They are also the
+#: visible answer to "which port does Jarvis use?" for the two instance modes.
+_EXE_WAKE_PORT = 12345
+_DEV_WAKE_PORT = 12346
 
 if os.name == "nt":                              # pragma: no cover - Windows
     from ctypes import wintypes
@@ -70,27 +83,48 @@ def state_dir():
     return base
 
 
+def is_frozen():
+    """True when this process is the packaged executable (PyInstaller)."""
+    return bool(getattr(sys, "frozen", False))
+
+
+def instance_mode():
+    """``"exe"`` for a packaged build, ``"dev"`` for a source checkout."""
+    return "exe" if is_frozen() else "dev"
+
+
 def lock_path():
-    """Path of the single-instance lock file."""
-    return state_dir() / "jarvis.lock"
+    """Path of this mode's single-instance lock file."""
+    return state_dir() / f"jarvis_{instance_mode()}.lock"
 
 
 def socket_path():
-    """Path of the wake socket."""
-    return str(state_dir() / "jarvis.sock")
+    """Path of this mode's wake socket."""
+    return str(state_dir() / f"jarvis_{instance_mode()}.sock")
 
 
 def port_path():
     """Path of the loopback-port file used where ``AF_UNIX`` is unavailable.
 
-    Windows builds of Python ship without ``AF_UNIX``, so wake/quit signalling
-    there goes over ``127.0.0.1`` and the port is published in this file.
+    Windows builds of Python may not ship ``AF_UNIX``, so wake/quit signalling
+    there goes over ``127.0.0.1`` and the selected port is published in this
+    mode-specific file.
     """
-    return str(state_dir() / "jarvis.port")
+    return str(state_dir() / f"jarvis_{instance_mode()}.port")
+
+
+def wake_port():
+    """Loopback port for this mode when no Unix socket can be bound."""
+    return _EXE_WAKE_PORT if is_frozen() else _DEV_WAKE_PORT
+
+
+def _mutex_name():
+    """Name of the Windows mutex for this mode."""
+    return f"{_MUTEX_PREFIX}-{instance_mode()}-single-instance"
 
 
 def _has_unix_socket():
-    """True when this platform can bind a Unix socket (not Windows here)."""
+    """True when this Python build can bind a Unix socket."""
     return hasattr(socket, "AF_UNIX")
 
 
@@ -111,11 +145,11 @@ def _take_lock():
             fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
             os.close(handle)
-            raise AlreadyRunning("jarvis.lock is held by another process")
+            raise AlreadyRunning(f"{path.name} is held by another process")
         return handle
 
     if _kernel32 is not None:                    # pragma: no cover - Windows
-        handle = _kernel32.CreateMutexW(None, True, _MUTEX_NAME)
+        handle = _kernel32.CreateMutexW(None, True, _mutex_name())
         if not handle:
             raise AlreadyRunning("the Jarvis instance mutex is unavailable")
         if ctypes.get_last_error() == _ERROR_ALREADY_EXISTS:
@@ -125,7 +159,7 @@ def _take_lock():
 
     # No locking primitive available: fall back to a plain existence check.
     if path.exists():                            # pragma: no cover - exotic OS
-        raise AlreadyRunning("jarvis.lock already exists")
+        raise AlreadyRunning(f"{path.name} already exists")
     return None
 
 
@@ -192,6 +226,8 @@ def _listener_address(path=None):
         port = int(raw)
     except (OSError, ValueError):
         return None
+    # Only the published port is used for signalling: connecting to the mode's
+    # default port when no file exists could hit an unrelated local service.
     return socket.AF_INET, ("127.0.0.1", port)
 
 
@@ -279,6 +315,7 @@ class WakeServer:
         self._callback = callback
         self._on_quit = on_quit
         self._path = path or socket_path()
+        self._port_path = None
         self._sock = None
         self._thread = None
         self._stop = threading.Event()
@@ -292,11 +329,18 @@ class WakeServer:
                 self._sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
                 self._sock.bind(self._path)
             else:                                # pragma: no cover - Windows
-                # No AF_UNIX: listen on a random loopback port and publish it.
+                # No AF_UNIX: use the mode's fixed loopback port (12345 for the
+                # packaged build, 12346 for source) and publish the actual port.
+                # If it is already taken, fall back to a random free port so a
+                # stale listener can never prevent Jarvis from starting.
                 self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                self._sock.bind(("127.0.0.1", 0))
-                Path(port_path()).write_text(
+                try:
+                    self._sock.bind(("127.0.0.1", wake_port()))
+                except OSError:
+                    self._sock.bind(("127.0.0.1", 0))
+                self._port_path = port_path()
+                Path(self._port_path).write_text(
                     str(self._sock.getsockname()[1]), encoding="ascii")
             self._sock.listen(4)
             self._sock.settimeout(0.5)
@@ -350,7 +394,9 @@ class WakeServer:
         if self._thread is not None:
             self._thread.join(timeout=1.0)
             self._thread = None
-        for path in (self._path, port_path()):
+        for path in (self._path, self._port_path):
+            if not path:
+                continue
             try:
                 os.unlink(path)
             except OSError:

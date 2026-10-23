@@ -192,6 +192,14 @@ def test_window_has_a_resize_grip(app):
     assert widget.minimumHeight() < widget.maximumHeight()
 
 
+def test_window_opens_at_the_compact_default_size(app):
+    widget = gui.JarvisWidget()
+    assert widget.width() == 280
+    assert widget.height() == 400
+    assert widget.minimumWidth() == 250
+    assert widget.minimumHeight() == 350
+
+
 def test_resize_edge_detection(app):
     widget = gui.JarvisWidget()
     widget.resize(380, 560)
@@ -322,12 +330,28 @@ def test_mic_button_toggles_mute_everywhere(app):
     assert widget.status.text() == gui.IDLE
 
 
-def test_trigger_refuses_to_listen_while_muted(app):
+def test_manual_trigger_unmutes_and_starts_a_cycle(app, fake_wake):
+    """An explicit Talk click must never leave the app stuck in Muted."""
     widget = gui.JarvisWidget()
     widget.set_mic_muted(True)
+    assert voice.is_mic_muted() is True
+
     widget.trigger()
-    assert widget.worker is None, "a muted mic must not start a listen cycle"
-    assert "muted" in widget.transcript.text().lower()
+
+    assert voice.is_mic_muted() is False
+    assert isinstance(widget.worker, FakeWorker)
+    assert fake_wake.pauses >= 1
+
+
+def test_muting_the_mic_does_not_interrupt_speech(monkeypatch):
+    """Mic mute is capture-only; an in-flight reply must keep playing."""
+    stopped = []
+    monkeypatch.setattr(voice, "stop_speaking", lambda: stopped.append(True))
+
+    voice.set_mic_muted(True)
+
+    assert voice.is_mic_muted() is True
+    assert stopped == []
 
 
 def test_stop_button_is_live_whenever_jarvis_is_busy(app, monkeypatch):
@@ -1053,7 +1077,8 @@ def test_worker_syncs_mic_state_after_a_media_command(app, monkeypatch):
         return "Playing.", "local", 0
 
     monkeypatch.setattr(gui, "handle", fake_handle)
-    monkeypatch.setattr(gui, "speak", lambda reply: None)
+    spoken = []
+    monkeypatch.setattr(gui, "speak", spoken.append)
 
     worker = gui.JarvisWorker(Memory(), chat=True)
     mute_states, ui_states = [], []
@@ -1063,6 +1088,7 @@ def test_worker_syncs_mic_state_after_a_media_command(app, monkeypatch):
     worker.run()
 
     assert mute_states == [True]
+    assert spoken == ["Playing."], "muting the mic must not silence the reply"
     assert ui_states[-1] == gui.MUTED
 
 

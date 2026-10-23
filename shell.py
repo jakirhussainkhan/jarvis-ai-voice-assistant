@@ -21,6 +21,7 @@ import subprocess
 
 import confirm
 from config import SHELL_MAX_OUTPUT, SHELL_TIMEOUT
+from platform_adapters.common import hidden_process_kwargs
 
 # --------------------------------------------------------------------------- #
 # layer 1: refused outright
@@ -200,6 +201,7 @@ def _execute(command, cwd=None):
             text=True,
             errors="replace",
             timeout=SHELL_TIMEOUT,
+            **hidden_process_kwargs(),
         )
     except subprocess.TimeoutExpired:
         return f"The command ran longer than {SHELL_TIMEOUT}s and was stopped."

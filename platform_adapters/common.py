@@ -17,6 +17,30 @@ import psutil
 
 DEVNULL = subprocess.DEVNULL
 
+
+def hidden_process_kwargs():
+    """Return ``subprocess`` keyword arguments that hide a child's console.
+
+    A windowed PyInstaller build has no console of its own. On Windows, a child
+    process launched without ``CREATE_NO_WINDOW`` therefore gets a new console
+    window (the black box that flashes or stays open behind Jarvis). The
+    ``startupinfo`` is the second half of the fix: it also hides the console for
+    programs that inspect ``STARTUPINFO`` instead of the creation flags.
+
+    Other platforms simply return an empty mapping, so callers can always pass
+    ``**hidden_process_kwargs()`` without a platform branch.
+    """
+    if os.name != "nt":
+        return {}
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = subprocess.SW_HIDE
+    return {
+        "creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000),
+        "startupinfo": startupinfo,
+    }
+
+
 # System / session processes that must never be closed or killed: the display
 # server, the session manager, systemd/dbus and the desktop shell. psutil and
 # this list are cross-platform, so they live in the shared layer.
@@ -181,6 +205,7 @@ def run(args, timeout=6):
             stderr=subprocess.STDOUT,
             text=True,
             timeout=timeout,
+            **hidden_process_kwargs(),
         )
         return proc.returncode, (proc.stdout or "").strip()
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -196,6 +221,7 @@ def spawn(args):
             stdout=DEVNULL,
             stderr=DEVNULL,
             start_new_session=True,
+            **hidden_process_kwargs(),
         )
         return True
     except OSError:
