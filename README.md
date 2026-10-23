@@ -2,7 +2,7 @@
 
 # Jarvis — Cross-Platform Voice Assistant
 
-**Version 2.2.4**
+**Version 2.3.0**
 
 ## Download and run (no Python needed)
 
@@ -12,7 +12,7 @@ Prebuilt apps are attached to the
 | Platform | Download | First launch |
 | --- | --- | --- |
 | Windows 10/11 | `JARVIS.exe` | Double-click it. If SmartScreen appears, choose **More info → Run anyway**. |
-| Linux (Debian/Ubuntu) | `jarvis_2.2.4_amd64.deb` | Double-click it, or run `sudo apt install ./jarvis_2.2.4_amd64.deb`. |
+| Linux (Debian/Ubuntu) | `jarvis_2.3.0_amd64.deb` | Double-click it, or run `sudo apt install ./jarvis_2.3.0_amd64.deb`. |
 | macOS 12+ (Intel or Apple Silicon) | `JARVIS.dmg` | Open it, drag **JARVIS** to **Applications**, then right-click the app and choose **Open** the first time. |
 
 The macOS build is Intel; Apple Silicon runs it through Rosetta 2, which macOS
@@ -23,6 +23,12 @@ The app opens a small window and asks for a free
 only in your own home folder (`~/.jarvis/.env`). Microphone permission is
 requested automatically; see the platform guides for screen/accessibility
 permissions.
+
+The packaged Windows build bundles `ffmpeg.exe`, so audio playback works without
+a separate install. The EXE does **not** include the optional offline wake word:
+press **Ctrl+Shift+J** (or **Ctrl+Alt+J**), or click the floating orb, to talk.
+The first launch unpacks roughly 150 MB, so the window can take 10–20 seconds to
+appear — do not double-click it twice.
 
 > The macOS build is ad-hoc signed (without a paid Apple Developer ID), so
 > Gatekeeper asks for a one-time confirmation. The Windows EXE is unsigned, so
