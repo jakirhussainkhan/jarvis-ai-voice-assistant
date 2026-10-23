@@ -29,6 +29,20 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt pyinstaller
 
+      - name: Download static ffmpeg.exe
+        shell: pwsh
+        run: |
+          $ProgressPreference = "SilentlyContinue"
+          $url = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+          $zip = Join-Path $env:RUNNER_TEMP "ffmpeg-release-essentials.zip"
+          $out = Join-Path $env:RUNNER_TEMP "jarvis-ffmpeg"
+          Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
+          Expand-Archive -Path $zip -DestinationPath $out -Force
+          $exe = Get-ChildItem -Path $out -Recurse -Filter "ffmpeg.exe" |
+            Select-Object -First 1
+          if (-not $exe) { throw "ffmpeg.exe was not found in the archive." }
+          Copy-Item $exe.FullName "ffmpeg.exe" -Force
+
       - name: Build JARVIS.exe
         shell: pwsh
         run: ./build_exe.ps1

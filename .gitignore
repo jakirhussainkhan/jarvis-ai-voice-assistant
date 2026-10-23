@@ -17,3 +17,7 @@ dist/
 *.spec
 *.deb
 *.dmg
+
+# Downloaded static ffmpeg used by the Windows build
+ffmpeg.exe
+ffmpeg.zip

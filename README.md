@@ -229,7 +229,8 @@ copy-paste install command for you to run yourself, but it never executes one.
 
 - **Voice I/O** — speech-to-text via SpeechRecognition (Google STT, `en-US`) and
   text-to-speech via `edge-tts` (`en-GB-RyanNeural` — a British male voice) played
-  through `pygame`.
+  through `sounddevice` (PortAudio), with the MP3 decoded by ffmpeg. The Windows
+  build bundles `ffmpeg.exe`, so no extra install is needed there.
 - **Local fast-path router** — offline handling for power, media (incl. seeking by
   seconds and "what's playing"), volume, brightness, screenshot, lock, battery,
   system status, time, date, windows, clipboard, folders, YouTube (including
@@ -616,7 +617,7 @@ confirmation first, then tries the router, and only sends a miss to the agent.
 | File | Role |
 | --- | --- |
 | `config.py` | Loads `.env`; holds `__version__`, models, and the screen/shell/history limits. |
-| `voice.py` | `listen()` (arecord + SpeechRecognition, `en-US`) and `speak()` (edge-tts + pygame). Also the runtime mic mute (`set_mic_muted`), the live level sink the GUI animates from, the TTS loudness envelope, and `stop_speaking()` / `stop_listening()` (the 30 s wait for speech is `JARVIS_LISTEN_TIMEOUT`). |
+| `voice.py` | `listen()` (arecord + SpeechRecognition, `en-US`) and `speak()` (edge-tts + ffmpeg decode + sounddevice playback). Also the runtime mic mute (`set_mic_muted`), the live level sink the GUI animates from, the TTS loudness envelope, and `stop_speaking()` / `stop_listening()` (the 30 s wait for speech is `JARVIS_LISTEN_TIMEOUT`). |
 | `router.py` | `try_local()` — the offline fast path: power, media, volume, brightness, screenshot, lock, windows, clipboard, battery/status/time/date, screen reading, folders, YouTube, dictated commands and app open/close. Search verbs return `None` for the agent. Also holds the spoken `CAPABILITIES` list. |
 | `desktop.py` | The **OS-agnostic facade**: fuzzy app matching, YouTube/media decisions and the protected-process rules, delegating every platform-specific operation to `platform_adapters`. Media control falls back to the browser tab's own keys when a page's MPRIS cannot skip tracks. |
 | `platform_adapters/` | The Platform Adapter Pattern. `base.py` defines the `AudioController`/`WindowController`/`SystemController` interfaces; `common.py` holds the shared runner/process helpers; `linux/`, `windows/` and `macos/` implement them (`arecord`/`pactl`/`playerctl`/`wmctrl`/`xdotool`/`brightnessctl` on Linux, `sounddevice`/`pycaw`/`pywinctl` on Windows, `sounddevice`/`osascript`/`pywinctl` on macOS). `__init__.py` detects the OS and exports `Audio`, `Window` and `System`. |

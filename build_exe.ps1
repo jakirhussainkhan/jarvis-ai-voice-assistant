@@ -17,6 +17,33 @@ Write-Host "==> Installing PyInstaller and the Windows runtime extras"
 python -m pip install --upgrade pyinstaller
 python -m pip install pycaw comtypes pyautogui screen-brightness-control pillow plyer
 
+Write-Host "==> Preparing a static ffmpeg.exe"
+# Jarvis decodes every edge-tts MP3 with ffmpeg and also uses it for media and
+# screenshots. Bundling the static Windows build means an end user never has to
+# install ffmpeg (or add it to PATH) for the EXE to speak.
+$ffmpeg = Join-Path $PSScriptRoot "ffmpeg.exe"
+if (-not (Test-Path $ffmpeg)) {
+    $ProgressPreference = "SilentlyContinue"
+    $url = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+    $zip = Join-Path ([System.IO.Path]::GetTempPath()) "ffmpeg-release-essentials.zip"
+    $unpacked = Join-Path ([System.IO.Path]::GetTempPath()) "jarvis-ffmpeg"
+    Write-Host "    Downloading $url"
+    Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
+    if (Test-Path $unpacked) {
+        Remove-Item $unpacked -Recurse -Force
+    }
+    Expand-Archive -Path $zip -DestinationPath $unpacked -Force
+    $binary = Get-ChildItem -Path $unpacked -Recurse -Filter "ffmpeg.exe" |
+        Select-Object -First 1
+    if (-not $binary) {
+        throw "ffmpeg.exe was not found in the downloaded archive."
+    }
+    Copy-Item $binary.FullName $ffmpeg -Force
+}
+if (-not (Test-Path $ffmpeg)) {
+    throw "Build failed: ffmpeg.exe is missing."
+}
+
 Write-Host "==> Building JARVIS.exe"
 python -m PyInstaller `
     --noconfirm `
@@ -26,9 +53,10 @@ python -m PyInstaller `
     --name JARVIS `
     --icon "assets\jarvis.ico" `
     --add-data "assets;assets" `
+    --add-binary "ffmpeg.exe;." `
     --hidden-import PyQt5 `
     --hidden-import pynput `
-    --hidden-import sounddevice `
+    --hidden-import=sounddevice `
     --hidden-import pynput.keyboard._win32 `
     --hidden-import pynput.mouse._win32 `
     --hidden-import pywinctl `
@@ -39,6 +67,7 @@ python -m PyInstaller `
     --hidden-import PIL.ImageGrab `
     --hidden-import plyer.platforms.win.notification `
     --collect-all sounddevice `
+    --collect-data sounddevice `
     --collect-submodules comtypes `
     --collect-submodules pycaw `
     --collect-data tzdata `

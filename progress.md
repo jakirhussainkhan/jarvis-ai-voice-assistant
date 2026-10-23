@@ -1,6 +1,6 @@
 # Jarvis — Progress
 
-Last updated: 2026-10-20
+Last updated: 2026-10-23
 
 A voice-controlled cross-platform desktop assistant. You speak a command; Jarvis either
 handles it locally (regex, offline) or forwards it to a Groq-backed agent that
@@ -29,9 +29,29 @@ is installed.
 | Timers / reminders | Working |
 | Offline wake word ("Hey Jarvis") | **Built + unit-tested; NOT yet verified live** (needs `pip install openwakeword onnxruntime`) |
 | Desktop launcher (`run.sh` + app-menu entry) | Working (verified: `desktop-file-validate` clean, GUI starts) |
-| Tests | `pytest` suite — **593 passed, 1 skipped** |
+| Tests | `pytest` suite — **600 passed, 3 skipped** |
 | Spoken voice | `en-GB-RyanNeural` (British male); override with `JARVIS_TTS_VOICE` |
-| Published | GitHub, tags **`v1.0.1`**…**`v2.2.1`** (README + MIT LICENSE) |
+| Published | GitHub, tags **`v1.0.1`**…**`v2.3.0`** (README + MIT LICENSE) |
+
+## Bulletproof Windows EXE (2026-10-23, v2.3.0)
+
+A packaging release that removes the last native dependency users had to install.
+
+- **Pygame is gone:** deleted from `requirements.txt`, the build scripts and every
+  runtime module. The wake chime now plays through `sounddevice`, and Linux file
+  playback uses `ffplay`/`paplay`/`aplay` instead of the pygame mixer.
+- **TTS uses sounddevice only:** edge-tts MP3 chunks are decoded by ffmpeg and
+  written straight into one continuous `sounddevice.RawOutputStream` (24 kHz,
+  mono, int16). No mixer, no Sound objects, no channel queueing.
+- **Stop is immediate:** `stop_speaking()` aborts and closes the device stream and
+  kills the ffmpeg child, so a long reply cannot keep decoding in the background.
+- **Console fallback:** if PortAudio or ffmpeg is unavailable, or playback fails,
+  the reply is still printed and the session never crashes.
+- **ffmpeg is bundled:** `build_exe.ps1` downloads the static gyan.dev Windows
+  build and adds it with `--add-binary "ffmpeg.exe;."`. `voice.py` resolves the
+  bundled copy from `sys._MEIPASS` when frozen, so end users install nothing.
+- **Tests:** pygame-specific tests were removed; streaming, stop/kill and
+  bundled-ffmpeg path tests were added.
 
 ## Timezone Data Fix (2026-10-20, v2.2.1)
 

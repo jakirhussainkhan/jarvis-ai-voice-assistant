@@ -90,21 +90,22 @@ class LinuxAudioController(AudioController):
 
     # -- playback ----------------------------------------------------------- #
     def play(self, path):
-        try:
-            os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
-            import pygame
+        """Play an audio file with the first available desktop player.
 
-            if not pygame.mixer.get_init():
-                pygame.mixer.init()
-            pygame.mixer.music.load(str(path))
-            pygame.mixer.music.play()
-            while pygame.mixer.music.get_busy():
-                pygame.time.Clock().tick(30)
-            with contextlib.suppress(Exception):
-                pygame.mixer.music.unload()
-            return True
-        except Exception:
-            return False
+        Pygame is intentionally not used: it is no longer a dependency. ``ffplay``
+        ships with ffmpeg, which Jarvis already requires for media and TTS.
+        """
+        candidates = (
+            ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", str(path)],
+            ["paplay", str(path)],
+            ["aplay", "-q", str(path)],
+        )
+        for command in candidates:
+            if not common.has(command[0]):
+                continue
+            rc, _ = common.run(command, timeout=120)
+            return rc == 0
+        return False
 
     # -- volume (pactl) ----------------------------------------------------- #
     def get_volume(self):

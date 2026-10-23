@@ -21,11 +21,9 @@ jobs:
         python-version: ["3.10", "3.11"]
 
     env:
-      # The suite exercises the PyQt5 GUI and SDL-backed audio without a real
-      # display, speaker, or microphone on GitHub-hosted runners.
+      # The suite exercises the PyQt5 GUI and the sounddevice-backed audio layer
+      # without a real display, speaker, or microphone on GitHub-hosted runners.
       QT_QPA_PLATFORM: offscreen
-      SDL_VIDEODRIVER: dummy
-      SDL_AUDIODRIVER: dummy
 
     steps:
       - name: Check out repository

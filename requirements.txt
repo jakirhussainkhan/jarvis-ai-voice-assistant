@@ -1,7 +1,6 @@
 openai
 SpeechRecognition
 edge-tts
-pygame
 PyQt5
 psutil
 python-dotenv

@@ -1,10 +1,10 @@
 """Tests for the speech-side helpers: level sink, TTS envelope and interruption.
 
 The microphone and the real audio device cannot be driven from a test, so the
-sounddevice/pygame outputs and the ffmpeg decode are stubbed. What is covered
-here is the logic that used to be easy to get wrong: the level sink never
-raising, the envelope degrading to [] when ffmpeg is missing, bounded queue
-backpressure, and stop_speaking() actually cutting playback short.
+sounddevice output and the ffmpeg decode are stubbed. What is covered here is
+the logic that used to be easy to get wrong: the level sink never raising, the
+envelope degrading to [] when ffmpeg is missing, bounded queue backpressure, and
+stop_speaking() actually cutting playback short.
 """
 
 import array
@@ -98,66 +98,6 @@ def test_emit_level_normalises_rms():
 # TTS loudness envelope
 # --------------------------------------------------------------------------- #
 
-class _FakeMusic:
-    def __init__(self):
-        self.played = False
-        self.stopped = False
-        self.positions = [0]
-        self.busy_calls = 0
-        self.busy = True
-
-    def load(self, _path):
-        pass
-
-    def play(self):
-        self.played = True
-
-    def get_busy(self):
-        self.busy_calls += 1
-        return self.busy
-
-    def unload(self):
-        pass
-
-    def stop(self):
-        self.stopped = True
-        self.busy = False
-
-    def get_pos(self):
-        return self.positions[0]
-
-    def quit(self):
-        pass
-
-
-def _fake_pygame(music, on_tick=None):
-    def tick(_fps):
-        if on_tick is not None:
-            on_tick()
-        return 0
-
-    clock = types.SimpleNamespace(tick=tick)
-    mixer = types.SimpleNamespace(
-        init=lambda *a, **k: None,
-        quit=lambda *a, **k: None,
-        music=music,
-    )
-    return types.SimpleNamespace(
-        mixer=mixer, time=types.SimpleNamespace(Clock=lambda: clock)
-    )
-
-
-def _patch_tts(monkeypatch, music, envelope, on_tick=None):
-    monkeypatch.setattr(voice, "pygame", _fake_pygame(music, on_tick=on_tick))
-
-    def run(coro):
-        coro.close()                          # avoid "never awaited" churn
-        return None
-
-    monkeypatch.setattr(voice.asyncio, "run", run)
-    monkeypatch.setattr(voice, "_tts_envelope", lambda path, hop=0.02: envelope)
-
-
 def test_tts_envelope_reads_a_real_tone(tmp_path):
     if shutil.which("ffmpeg") is None:
         pytest.skip("ffmpeg not installed")
@@ -185,90 +125,8 @@ def test_tts_envelope_is_empty_when_ffmpeg_missing(monkeypatch):
     assert voice._tts_envelope("/does/not/exist.mp3") == []
 
 
-def test_playback_seconds_prefers_get_pos(monkeypatch):
-    music = _FakeMusic()
-    music.positions[0] = 1500                       # 1.5 s
-    monkeypatch.setattr(voice, "pygame", _fake_pygame(music))
-    assert voice._playback_seconds(0.0) == pytest.approx(1.5)
-
-
-def test_play_tts_completes_normally(monkeypatch):
-    music = _FakeMusic()
-    calls = {"n": 0}
-
-    def busy():
-        calls["n"] += 1
-        return calls["n"] <= 1                      # one pass, then done
-
-    music.get_busy = busy
-    _patch_tts(monkeypatch, music, envelope=[0.2, 0.9])
-
-    levels = []
-    voice.set_level_sink(levels.append)
-    voice._play_tts_file("hello there")
-
-    assert music.played is True
-    assert music.stopped is False
-    assert levels and levels[-1] == 0.0             # ends quiet
-
-
-def test_play_tts_is_cut_short_by_stop_speaking(monkeypatch):
-    music = _FakeMusic()
-    # The clock tick sets the stop flag once, so the next loop pass breaks.
-    _patch_tts(monkeypatch, music, envelope=[0.5, 0.8],
-               on_tick=voice.stop_speaking)
-
-    levels = []
-    voice.set_level_sink(levels.append)
-    voice._play_tts_file("a long reply")
-
-    assert music.played is True
-    assert music.stopped is True, "stop_speaking() must cut playback"
-    assert levels and levels[-1] == 0.0
-
-
-def test_stop_speaking_clears_on_the_next_reply(monkeypatch):
-    """A stale Stop must not silence the *next* reply."""
-    voice.stop_speaking()                            # user pressed Stop
-    music = _FakeMusic()
-    calls = {"n": 0}
-
-    def busy():
-        calls["n"] += 1
-        return calls["n"] <= 1
-
-    music.get_busy = busy
-    _patch_tts(monkeypatch, music, envelope=[0.3])
-
-    voice._play_tts_file("next reply")
-
-    assert music.stopped is False
-
-
-def test_stop_during_synthesis_cancels_playback(monkeypatch):
-    """Pressing Stop while the reply is still being synthesised must skip it."""
-    music = _FakeMusic()
-
-    def run(coro):
-        coro.close()
-        voice.stop_speaking()          # Stop arrives during synthesis
-        return None
-
-    monkeypatch.setattr(voice, "pygame", _fake_pygame(music))
-    monkeypatch.setattr(voice.asyncio, "run", run)
-    monkeypatch.setattr(voice, "_tts_envelope", lambda path, hop=0.02: [0.5])
-
-    levels = []
-    voice.set_level_sink(levels.append)
-    voice._play_tts_file("a reply nobody will hear")
-    voice.set_level_sink(None)
-
-    assert music.played is False, "a Stop during synthesis must cancel playback"
-    assert levels and levels[-1] == 0.0
-
-
 # --------------------------------------------------------------------------- #
-# streaming TTS (edge-tts -> ffmpeg -> queued pygame Sounds)
+# streaming TTS (edge-tts -> ffmpeg -> continuous sounddevice stream)
 # --------------------------------------------------------------------------- #
 
 class _ChunkSink:
@@ -327,52 +185,6 @@ def test_streaming_synthesis_stops_after_interrupt(monkeypatch):
     voice._synthesize_to_decoder("hello", sink, stop)
 
     assert sink.data == b"first"
-
-
-class _FakeSound:
-    def __init__(self, buffer=None):
-        self.buffer = buffer
-
-
-class _FakeChannel:
-    def __init__(self, on_queue=None):
-        self.queued = []
-        self.stopped = False
-        self.busy = False
-        self.plays = 0
-        self.queues = 0
-        self._busy_checks = 0
-        self._on_queue = on_queue
-
-    def _record(self, sound):
-        self.queued.append(sound)
-        if self._on_queue is not None:
-            self._on_queue(len(self.queued))
-
-    def play(self, sound):
-        self.plays += 1
-        self.busy = True
-        self._busy_checks = 0
-        self._record(sound)
-
-    def queue(self, sound):
-        self.queues += 1
-        self._record(sound)
-
-    def get_busy(self):
-        # One successful "still playing" check is enough to exercise the queue
-        # path, then report completion so the post-loop drain can finish.
-        if not self.busy:
-            return False
-        if self._busy_checks:
-            self.busy = False
-            return False
-        self._busy_checks += 1
-        return True
-
-    def stop(self):
-        self.stopped = True
-        self.busy = False
 
 
 class _FakeRawStream:
@@ -434,29 +246,23 @@ class _FakeProc:
         self.stdin = _FakeStdin()
         self.stdout = _FakeStdout(blocks)
         self.terminated = False
+        self.killed = False
+        self.returncode = None
+
+    def poll(self):
+        return self.returncode
 
     def terminate(self):
         self.terminated = True
 
+    def kill(self):
+        self.killed = True
+        self.returncode = -9
+
     def wait(self, timeout=None):
-        return 0
-
-
-def _fake_stream_pygame(channel):
-    calls = {"pre_init": [], "init": []}
-    mixer = types.SimpleNamespace(
-        get_init=lambda: (voice._TTS_RATE, -16, voice._TTS_CHANNELS),
-        pre_init=lambda **kwargs: calls["pre_init"].append(kwargs),
-        init=lambda *args, **kwargs: calls["init"].append(kwargs),
-        quit=lambda *a, **k: None,
-        Channel=lambda _index: channel,
-        Sound=lambda buffer=None: _FakeSound(buffer),
-    )
-    clock = types.SimpleNamespace(tick=lambda _fps: 0)
-    return types.SimpleNamespace(
-        mixer=mixer, time=types.SimpleNamespace(Clock=lambda: clock),
-        calls=calls,
-    )
+        if self.returncode is None:
+            self.returncode = 0
+        return self.returncode
 
 
 def _pcm_block(amplitude=2000, size=None):
@@ -490,7 +296,6 @@ def test_open_sounddevice_stream_uses_raw_output(monkeypatch):
         "samplerate": voice._TTS_RATE,
         "channels": voice._TTS_CHANNELS,
         "dtype": "int16",
-        "blocksize": 0,
     }
 
 
@@ -503,66 +308,6 @@ def test_open_sounddevice_stream_returns_none_on_failure(monkeypatch):
     monkeypatch.setitem(sys.modules, "sounddevice", fake_sd)
 
     assert voice._open_sounddevice_stream() is None
-
-
-def test_streaming_tts_queues_decoded_chunks(monkeypatch):
-    proc = _FakeProc([
-        _pcm_block(2000, voice._TTS_FALLBACK_BLOCK_BYTES),
-        _pcm_block(2000, voice._TTS_FALLBACK_BLOCK_BYTES),
-    ])
-    channel = _FakeChannel()
-    fake_pygame = _fake_stream_pygame(channel)
-    monkeypatch.setattr(voice, "_start_tts_decoder", lambda: proc)
-    monkeypatch.setattr(voice, "_open_sounddevice_stream", lambda: None)
-    monkeypatch.setattr(
-        voice, "_synthesize_to_decoder",
-        lambda text, stdin, stop: stdin.close(),
-    )
-    monkeypatch.setattr(voice, "pygame", fake_pygame)
-
-    levels = []
-    voice.set_level_sink(levels.append)
-    assert voice._play_tts_stream("hello") is True
-
-    assert len(channel.queued) == 2
-    assert channel.plays == 1          # first Sound starts the channel
-    assert channel.queues == 1         # later Sounds are queued, not played
-    assert all(sound.buffer for sound in channel.queued)
-    assert any(level > 0 for level in levels)
-    assert levels[-1] == 0.0
-    assert proc.terminated is True
-    assert channel.stopped is True
-    # The fallback asks pygame for a larger buffer before initialising.
-    assert fake_pygame.calls["pre_init"] == [{
-        "frequency": voice._TTS_RATE,
-        "size": -16,
-        "channels": voice._TTS_CHANNELS,
-        "buffer": voice._TTS_PYGAME_BUFFER,
-    }]
-    assert fake_pygame.calls["init"][-1]["buffer"] == voice._TTS_PYGAME_BUFFER
-
-
-def test_streaming_tts_stops_after_the_first_chunk(monkeypatch):
-    proc = _FakeProc([
-        _pcm_block(size=voice._TTS_FALLBACK_BLOCK_BYTES),
-        _pcm_block(size=voice._TTS_FALLBACK_BLOCK_BYTES),
-        _pcm_block(size=voice._TTS_FALLBACK_BLOCK_BYTES),
-    ])
-    channel = _FakeChannel(
-        on_queue=lambda count: voice.stop_speaking() if count == 1 else None
-    )
-    monkeypatch.setattr(voice, "_start_tts_decoder", lambda: proc)
-    monkeypatch.setattr(voice, "_open_sounddevice_stream", lambda: None)
-    monkeypatch.setattr(
-        voice, "_synthesize_to_decoder",
-        lambda text, stdin, stop: stdin.close(),
-    )
-    monkeypatch.setattr(voice, "pygame", _fake_stream_pygame(channel))
-
-    assert voice._play_tts_stream("hello") is True
-
-    assert len(channel.queued) == 1
-    assert channel.stopped is True
 
 
 def test_streaming_tts_uses_one_continuous_sounddevice_stream(monkeypatch):
@@ -619,15 +364,60 @@ def test_streaming_tts_stop_aborts_sounddevice_stream(monkeypatch):
 
 def test_stop_speaking_aborts_active_stream_and_clears_queue():
     raw_stream = _FakeRawStream()
+    proc = _FakeProc([])
     blocks = queue.Queue()
     blocks.put(b"first")
     blocks.put(b"second")
-    voice._set_active_tts_playback(raw_stream, blocks)
+    voice._set_active_tts_playback(raw_stream, blocks, proc)
 
     voice.stop_speaking()
 
     assert raw_stream.aborted is True
+    assert proc.killed is True, "Stop must kill the ffmpeg decoder too"
     assert blocks.empty() is True
+
+
+def test_streaming_tts_kills_decoder_when_sounddevice_is_unavailable(monkeypatch):
+    proc = _FakeProc([_pcm_block()])
+    monkeypatch.setattr(voice, "_start_tts_decoder", lambda: proc)
+    monkeypatch.setattr(voice, "_open_sounddevice_stream", lambda: None)
+
+    assert voice._play_tts_stream("hello") is False
+
+    assert proc.terminated is True
+    assert proc.stdin.closed is True
+    assert proc.stdout is not None
+
+
+def test_ffmpeg_binary_prefers_the_bundled_copy(monkeypatch, tmp_path):
+    bundled = tmp_path / "ffmpeg.exe"
+    bundled.write_bytes(b"")
+    monkeypatch.setattr(voice.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(voice.sys, "_MEIPASS", str(tmp_path), raising=False)
+
+    assert voice._ffmpeg_binary() == str(bundled)
+
+
+def test_ffmpeg_binary_falls_back_to_path_in_a_source_checkout(monkeypatch):
+    monkeypatch.delattr(voice.sys, "frozen", raising=False)
+
+    assert voice._ffmpeg_binary() == "ffmpeg"
+
+
+def test_start_tts_decoder_uses_the_resolved_ffmpeg(monkeypatch):
+    seen = {}
+    proc = object()
+
+    def fake_popen(args, **_kwargs):
+        seen["args"] = args
+        return proc
+
+    monkeypatch.setattr(voice, "_ffmpeg_binary",
+                        lambda: r"C:\bundle\ffmpeg.exe")
+    monkeypatch.setattr(voice.subprocess, "Popen", fake_popen)
+
+    assert voice._start_tts_decoder() is proc
+    assert seen["args"][0] == r"C:\bundle\ffmpeg.exe"
 
 
 def test_decoded_pcm_reader_blocks_when_queue_is_full():
@@ -662,37 +452,36 @@ def test_play_tts_uses_streaming_when_available(monkeypatch):
         voice, "_play_tts_stream",
         lambda text: calls.append(("stream", text)) or True,
     )
-    monkeypatch.setattr(
-        voice, "_play_tts_file",
-        lambda text: calls.append(("file", text)),
-    )
 
-    voice._play_tts("hello")
+    assert voice._play_tts("hello") is True
 
     assert calls == [("stream", "hello")]
 
 
-def test_play_tts_falls_back_when_ffmpeg_is_missing(monkeypatch):
-    calls = []
+def test_play_tts_returns_false_when_streaming_is_unavailable(monkeypatch):
+    """No ffmpeg or no sounddevice: speak() prints the reply instead."""
     monkeypatch.setattr(voice, "_TTS_STREAM_ENABLED", True)
     monkeypatch.setattr(voice, "_play_tts_stream", lambda text: False)
-    monkeypatch.setattr(voice, "_play_tts_file", lambda text: calls.append(text))
 
-    voice._play_tts("hello")
-
-    assert calls == ["hello"]
+    assert voice._play_tts("hello") is False
 
 
 def test_play_tts_does_not_replay_after_streaming_error(monkeypatch):
-    calls = []
     monkeypatch.setattr(voice, "_TTS_STREAM_ENABLED", True)
 
     def boom(_text):
         raise RuntimeError("audio device died")
 
     monkeypatch.setattr(voice, "_play_tts_stream", boom)
-    monkeypatch.setattr(voice, "_play_tts_file", lambda text: calls.append(text))
 
-    voice._play_tts("hello")
+    assert voice._play_tts("hello") is False
 
-    assert calls == []                  # never repeat words already heard
+
+def test_play_tts_is_disabled_by_the_environment_flag(monkeypatch):
+    monkeypatch.setattr(voice, "_TTS_STREAM_ENABLED", False)
+    monkeypatch.setattr(
+        voice, "_play_tts_stream",
+        lambda text: pytest.fail("streaming must stay off"),
+    )
+
+    assert voice._play_tts("hello") is False

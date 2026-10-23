@@ -98,7 +98,7 @@ def test_install_writes_a_menu_entry(tmp_path):
 def test_the_entry_points_at_this_checkout(tmp_path):
     text = install_desktop.install(home=tmp_path)[0].read_text()
 
-    assert f"Exec={install_desktop.LAUNCHER}" in text
+    assert f"Exec={install_desktop.quote_argument(install_desktop.LAUNCHER)}" in text
     assert f"Icon={install_desktop.ICON}" in text
     assert f"Path={ROOT}" in text
     assert install_desktop.LAUNCHER.exists()

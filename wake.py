@@ -388,18 +388,33 @@ _CHIME = None
 def chime():
     """Play a short two-tone chime. Best effort -- never raises.
 
-    The audio is generated here and held in memory, so there is no asset to ship
-    and no extra dependency (pygame is already used for speech playback).
+    The audio is generated here and held in memory, so there is no asset to ship.
+    Playback uses sounddevice (the same PortAudio backend as speech) on a daemon
+    thread so the wake listener is never blocked.
     """
     global _CHIME
     try:
-        import pygame
+        import sounddevice as sd
 
-        if not pygame.mixer.get_init():
-            pygame.mixer.init()
         if _CHIME is None:
-            _CHIME = pygame.mixer.Sound(file=BytesIO(_chime_wav()))
-        _CHIME.play()
+            wav = _chime_wav()
+            with wave.open(BytesIO(wav), "rb") as handle:
+                rate = handle.getframerate()
+                frames = handle.readframes(handle.getnframes())
+            _CHIME = (rate, frames)
+
+        rate, frames = _CHIME
+
+        def play():
+            try:
+                with sd.RawOutputStream(
+                    samplerate=rate, channels=1, dtype="int16"
+                ) as stream:
+                    stream.write(frames)
+            except Exception as exc:
+                _dbg(f"chime playback failed: {type(exc).__name__}: {exc}")
+
+        threading.Thread(target=play, daemon=True, name="jarvis-chime").start()
     except Exception as exc:
         _dbg(f"chime failed: {type(exc).__name__}: {exc}")
 
