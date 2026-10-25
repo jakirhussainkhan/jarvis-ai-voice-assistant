@@ -14,9 +14,10 @@ tzdata
 # Jarvis transcribes locally instead (see voice._local_transcribe).
 faster-whisper
 
-# Semantic response cache (all-MiniLM-L6-v2 via ONNX). Loaded lazily; if it is
-# missing or the model cannot be downloaded, Jarvis falls back to exact-match
-# caching and all other features keep working.
+# Semantic response cache and semantic-memory embeddings (all-MiniLM-L6-v2 via
+# ONNX). Loaded lazily; if it is missing or the model cannot be downloaded,
+# Jarvis falls back to exact-match caching / SQLite fact retrieval and all other
+# features keep working.
 fastembed
 
 # Cross-platform audio capture and window control for Windows/macOS.
@@ -25,9 +26,24 @@ fastembed
 sounddevice
 pywinctl
 
+# Silero VAD endpointing. Loaded lazily by voice.py; if it is missing or fails
+# to load, the calibrated RMS gate remains the fallback. ONNX keeps inference
+# on CPU without requiring a CUDA build.
+silero-vad
+onnxruntime
+
+# Persistent semantic memory (ChromaDB + the fastembed model listed above).
+# ChromaDB is initialized lazily at ~/.jarvis/chroma_db and SQLite remains the
+# fallback if it cannot be loaded.
+chromadb
+
 # Global wake hotkey (Ctrl+Shift+J) for the GUI. Imported lazily, so the app
 # still starts if it is missing -- the hotkey simply is not available.
 pynput
+
+# Official Model Context Protocol SDK. Imported lazily by mcp_client.py, so
+# Jarvis still runs without it; install this to use MCP_SERVERS in .env.
+mcp
 
 # Windows-only extras (volume, brightness, screen input) are installed by
 # install.ps1, not here, because they do not install on Linux/macOS:

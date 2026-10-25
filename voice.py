@@ -19,6 +19,7 @@ from collections import deque
 import edge_tts
 import speech_recognition as sr
 
+import logger
 from config import BARGE_HOLD, BARGE_THRESHOLD, STT_LANG, TTS_VOICE
 from platform_adapters import Audio
 from platform_adapters.common import hidden_process_kwargs
@@ -119,6 +120,140 @@ _SILENCE_SECONDS = _env_float("JARVIS_SILENCE_END", 2.0, 0.5)
 # ^ how long a pause may last before the phrase is treated as finished (was 1.2 s).
 #   Longer by default so a thinking pause mid-sentence does not cut you off. The
 #   chunk count is derived at capture time, so a changed value always applies.
+
+# --- Silero VAD endpointing ------------------------------------------------- #
+# Silero runs on 32 ms frames (512 samples at 16 kHz) and tracks speech
+# probability across them. It replaces the fixed RMS silence timer when the
+# optional package is installed; otherwise the tuned RMS logic above is used.
+_SILERO_OFF = frozenset({"0", "false", "no", "off"})
+_SILERO_THRESHOLD = _env_float("JARVIS_VAD_THRESHOLD", 0.5, 0.05)
+_SILERO_START_MS = _env_int("JARVIS_VAD_START_MS", 64, 32)
+_SILERO_END_MS = _env_int("JARVIS_VAD_END_MS", 400, 100)
+_VAD_FRAME_SAMPLES = 512
+_VAD_FRAME_BYTES = _VAD_FRAME_SAMPLES * _SAMPLE_WIDTH
+_VAD_FRAME_MS = 1000.0 * _VAD_FRAME_SAMPLES / _SAMPLE_RATE
+
+_silero_model = None
+_silero_failed = False
+_silero_lock = threading.Lock()
+
+
+def _silero_enabled():
+    """True unless Silero VAD was explicitly disabled in the environment."""
+    return os.getenv("JARVIS_SILERO_VAD", "").strip().lower() not in _SILERO_OFF
+
+
+def _load_silero_model():
+    """Load Silero VAD once; log and return None on any failure.
+
+    ``onnx=True`` keeps inference on CPU through onnxruntime. Older releases
+    without that keyword are loaded with their default backend.
+    """
+    global _silero_model, _silero_failed
+    with _silero_lock:
+        if _silero_failed:
+            return None
+        if _silero_model is not None:
+            return _silero_model
+        try:
+            from silero_vad import load_silero_vad
+
+            try:
+                _silero_model = load_silero_vad(onnx=True)
+            except TypeError:
+                _silero_model = load_silero_vad()
+        except Exception as exc:
+            _silero_failed = True
+            logger.log_command_error(
+                "Silero VAD failed to load; using the RMS fallback", exc
+            )
+            _dbg(f"Silero VAD unavailable: {type(exc).__name__}: {exc}")
+            return None
+        return _silero_model
+
+
+def _silero_probability(model, pcm):
+    """Run one 512-sample frame through Silero and return speech probability."""
+    import numpy as np
+    import torch
+
+    samples = np.frombuffer(pcm, dtype="<i2").astype("float32") / 32768.0
+    tensor = torch.from_numpy(samples.copy())
+    with torch.no_grad():
+        value = model(tensor, _SAMPLE_RATE)
+    if hasattr(value, "detach"):
+        value = value.detach().cpu().numpy()
+    return float(np.asarray(value).reshape(-1)[0])
+
+
+class _SileroVADStream:
+    """Frame-level Silero endpoint detector for one captured utterance.
+
+    ``probability`` is injectable so the state machine can be tested without
+    torch or the model. A phrase starts after ``start_ms`` of consecutive
+    speech frames and ends after ``end_ms`` of consecutive non-speech frames.
+    """
+
+    def __init__(self, probability, threshold=None, start_ms=None, end_ms=None):
+        self._probability = probability
+        self.threshold = (_SILERO_THRESHOLD if threshold is None
+                          else float(threshold))
+        self.start_ms = (_SILERO_START_MS if start_ms is None
+                         else float(start_ms))
+        self.end_ms = (_SILERO_END_MS if end_ms is None else float(end_ms))
+        self._pending = b""
+        self.speech_run_ms = 0.0
+        self.silence_ms = 0.0
+        self._started = False
+
+    def feed(self, pcm):
+        """Feed PCM bytes; True once enough consecutive speech was heard."""
+        self._pending += pcm
+        start_ready = False
+        while len(self._pending) >= _VAD_FRAME_BYTES:
+            frame = self._pending[:_VAD_FRAME_BYTES]
+            self._pending = self._pending[_VAD_FRAME_BYTES:]
+            if float(self._probability(frame)) >= self.threshold:
+                self.speech_run_ms += _VAD_FRAME_MS
+                self.silence_ms = 0.0
+                if self.speech_run_ms >= self.start_ms:
+                    start_ready = True
+            else:
+                self.speech_run_ms = 0.0
+                self.silence_ms += _VAD_FRAME_MS
+        return start_ready
+
+    def mark_started(self):
+        """Switch to endpoint tracking after the caller begins recording."""
+        self._started = True
+        self.silence_ms = 0.0
+
+    def should_end(self):
+        """True when the configured trailing-silence window has elapsed."""
+        return self._started and self.silence_ms >= self.end_ms
+
+
+def _silero_stream():
+    """Return a fresh Silero detector for one capture, or None for RMS mode."""
+    if not _silero_enabled():
+        return None
+    model = _load_silero_model()
+    if model is None:
+        return None
+    try:
+        if hasattr(model, "reset_states"):
+            model.reset_states()
+        return _SileroVADStream(
+            lambda pcm: _silero_probability(model, pcm),
+            threshold=_SILERO_THRESHOLD,
+            start_ms=_SILERO_START_MS,
+            end_ms=_SILERO_END_MS,
+        )
+    except Exception as exc:
+        logger.log_command_error(
+            "Silero VAD stream initialization failed; using the RMS fallback", exc
+        )
+        return None
 
 # Warm-up: the very first chunk after the stream opens is a spike (it reads
 # ~6000 and decays). We keep it out of the background estimate and skip its
@@ -576,6 +711,7 @@ class BargeInMonitor:
                             self._on_barge()
                     return
         except Exception as exc:
+            logger.log_command_error("Barge-in monitor failed", exc)
             _dbg(f"barge-in monitor stopped: {type(exc).__name__}: {exc}")
         finally:
             if proc is not None:
@@ -584,13 +720,17 @@ class BargeInMonitor:
 
 def _capture_from_stream(stream, fd=None, ptt=False, stop_event=None,
                          wait_timeout=None):
-    """Gate a raw S16_LE stream on RMS and return the captured utterance.
+    """Gate a raw S16_LE stream on VAD/RMS and return the captured utterance.
+
+    Silero VAD is used when available: speech starts after ~64 ms of confirmed
+    speech and the phrase ends after ~400 ms of trailing silence. If Silero or
+    its runtime cannot be loaded, the calibrated RMS gate below takes over.
 
     Reads ``_CHUNK_SECONDS`` chunks. The arecord stream-open spike is discarded
     and the "still speaking" floor is auto-calibrated from the background noise
-    (1.5x its median, clamped to 150..300). Speech starts on RMS >
-    ``_ENERGY_THRESHOLD``; recording then continues through brief dips (any chunk
-    above the calibrated floor resets the silence run) until
+    (1.5x its median, clamped to 150..300). With the RMS fallback, speech starts
+    on :func:`_starts_phrase`; recording then continues through brief dips (any
+    chunk above the calibrated floor resets the silence run) until
     ~``_SILENCE_SECONDS`` below that floor, the phrase hits ``_PHRASE_TIME_LIMIT``,
     or the stream ends. A ~0.3 s pre-roll is kept so a quiet onset is never
     clipped.
@@ -602,6 +742,16 @@ def _capture_from_stream(stream, fd=None, ptt=False, stop_event=None,
     """
     if fd is None:
         fd = stream.fileno()
+
+    # Silero endpointing is preferred; any initialization problem falls back to
+    # the calibrated RMS gate below without interrupting the listen call.
+    try:
+        vad = _silero_stream()
+    except Exception as exc:
+        logger.log_command_error(
+            "Silero VAD could not start; using the RMS fallback", exc
+        )
+        vad = None
 
     pre_roll = deque(maxlen=_PRE_ROLL_CHUNKS)
     chunks = []
@@ -687,6 +837,45 @@ def _capture_from_stream(stream, fd=None, ptt=False, stop_event=None,
                              f"state=warmup spike=discarded")
                     continue
 
+            # Silero VAD path: a probability-based onset, independent of the
+            # room's raw loudness. The pre-roll above still supplies the soft
+            # first syllable once the model confirms speech.
+            if vad is not None:
+                try:
+                    if (spike_rms is not None and warm_left > 0
+                            and rms < spike_rms * 0.6):
+                        # Let the stream-open spike decay before trusting VAD.
+                        spike_rms = rms
+                        warm_left -= 1
+                        if _DEBUG:
+                            _dbg(f"chunk rms={rms:.0f} state=vad-warmup "
+                                 f"left={warm_left}")
+                        continue
+                    speech_started = vad.feed(chunk)
+                except Exception as exc:
+                    logger.log_command_error(
+                        "Silero VAD failed during capture; using the RMS fallback",
+                        exc,
+                    )
+                    vad = None
+                else:
+                    if speech_started:
+                        spike_rms = None
+                        begin_recording()
+                        vad.mark_started()
+                        if _DEBUG:
+                            _dbg("state=recording detector=silero")
+                        continue
+                    spike_rms = None
+                    warm_left = max(0, warm_left - 1)
+                    # Keep a usable floor in case VAD fails mid-phrase.
+                    bg_samples.append(rms)
+                    stop_threshold = _calibrate(bg_samples)
+                    if _DEBUG:
+                        _dbg(f"chunk rms={rms:.0f} state=vad-waiting "
+                             f"floor={stop_threshold}")
+                    continue
+
             if _starts_phrase(rms, chunk):
                 # A decaying tail of the open spike (bounded by the warm-up
                 # window) is discarded; anything else is speech and starts now,
@@ -718,6 +907,29 @@ def _capture_from_stream(stream, fd=None, ptt=False, stop_event=None,
             continue
 
         chunks.append(chunk)
+        if vad is not None:
+            try:
+                vad.feed(chunk)
+            except Exception as exc:
+                logger.log_command_error(
+                    "Silero VAD failed during capture; using the RMS fallback", exc
+                )
+                vad = None
+            else:
+                if vad.should_end():
+                    reason = "vad_silence"
+                    break
+                if len(chunks) >= max_phrase_chunks:
+                    reason = "max_length"
+                    break
+                if time.monotonic() >= phrase_deadline:
+                    reason = "max_time"
+                    break
+                if _DEBUG:
+                    _dbg(f"chunk rms={rms:.0f} state=recording detector=silero "
+                         f"silence={vad.silence_ms:.0f}ms")
+                continue
+
         if rms > stop_threshold:
             silent_run = 0
         else:
@@ -893,7 +1105,11 @@ def listen(wait=None, *, label="", barge=False):
         print("🎤 Listening...", flush=True)
         proc = _spawn_arecord(device)
     except Exception as exc:
+        logger.log_command_error("Could not open the microphone", exc)
         _dbg(f"capture error: {type(exc).__name__}: {exc}")
+        if sys.platform.startswith(("win", "darwin")):
+            _dbg("microphone unavailable; try a different device index "
+                 "using JARVIS_MIC_DEVICE")
         return ""
 
     stop_event = threading.Event() if ptt else None
@@ -905,6 +1121,7 @@ def listen(wait=None, *, label="", barge=False):
             data = _capture_from_stream(proc.stdout, ptt=ptt, stop_event=stop_event,
                                         wait_timeout=wait)
         except Exception as exc:
+            logger.log_command_error("Microphone capture failed", exc)
             _dbg(f"capture error: {type(exc).__name__}: {exc}")
             return ""
     finally:
@@ -937,14 +1154,14 @@ def listen(wait=None, *, label="", barge=False):
         _dbg(f"UNKNOWN_VALUE: audio captured (rms={rms:.0f}) but no words recognised")
         return ""
     except sr.RequestError as exc:
-        # Network / API error. Surface it, then transcribe locally so the turn is
+        # Network / API error. Log it, then transcribe locally so the turn is
         # not lost when the connection is down.
-        print(f"[voice] REQUEST_ERROR from Google STT: {type(exc).__name__}: {exc}",
-              flush=True)
+        logger.log_api_error("Speech-to-text request failed", exc)
         text = _local_transcribe(audio)
         if not text:
             return ""
     except Exception as exc:
+        logger.log_command_error("Speech recognition failed", exc)
         _dbg(f"recognition error: {type(exc).__name__}: {exc}")
         text = _local_transcribe(audio)
         if not text:
@@ -1329,6 +1546,6 @@ def speak(text):
                 print("[voice] sounddevice TTS unavailable; "
                       "showing the reply only", flush=True)
         except Exception as exc:
-            print(f"[voice] TTS failed ({type(exc).__name__}: {exc}); "
-                  "showing the reply only", flush=True)
+            logger.log_command_error("Text-to-speech playback failed", exc)
+            print("[voice] TTS failed; showing the reply only", flush=True)
     print(f"🤖 {text}", flush=True)

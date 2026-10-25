@@ -15,6 +15,8 @@ Only one request can be pending at a time.
 import re
 import time
 
+import logger
+
 _TTL = 15.0  # seconds a pending request stays valid
 
 # A deliberately narrow "yes": misheard words should cancel, not trigger.
@@ -82,5 +84,6 @@ def resolve(text, now=None):
         try:
             return True, action()
         except Exception as exc:  # a failed action must not kill the loop
-            return True, f"Sorry, that failed: {exc}"
+            logger.log_command_error("Confirmed action failed", exc)
+            return True, "I couldn't execute that command, sir."
     return True, "Cancelled."

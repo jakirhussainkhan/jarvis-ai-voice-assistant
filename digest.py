@@ -11,6 +11,7 @@ import re
 
 from openai import OpenAI
 
+import logger
 from config import API_KEY, BASE_URL, FALLBACK_MODEL, MODEL_NAME
 
 # ~3000 tokens of English text. Results below this are returned unchanged.
@@ -81,7 +82,10 @@ def _llm_digest(text, prompt):
             max_tokens=120,
         )
         content = (resp.choices[0].message.content or "").strip()
-    except Exception:
+    except Exception as exc:
+        # The local extractive digest is the fallback, but the API failure is
+        # still worth recording for debugging.
+        logger.log_api_error("Digest API request failed", exc)
         return None
     return content[:DIGEST_MAX_CHARS].rstrip() or None
 

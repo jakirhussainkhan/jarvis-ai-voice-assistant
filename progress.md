@@ -1,6 +1,6 @@
 # Jarvis — Progress
 
-Last updated: 2026-10-23
+Last updated: 2026-10-26
 
 A voice-controlled cross-platform desktop assistant. You speak a command; Jarvis either
 handles it locally (regex, offline) or forwards it to a Groq-backed agent that
@@ -22,16 +22,67 @@ is installed.
 | Guarded terminal | Working (3-layer guard; power/session commands refused in code) |
 | Offline mode (`main.py --offline`) | Working |
 | Conversation memory | Working |
-| GUI widget + system tray (`gui.py`) | Working (offscreen-tested); **ChatGPT-Voice-style dark card, breathing orb, live 13-bar waveform, mic mute/unmute, Stop, barge-in, and the "Hey Jarvis" wake word** |
+| GUI widget + system tray (`gui.py`) | Working (offscreen-tested); **ChatGPT-Voice-style dark card, breathing orb, live 13-bar waveform, mic mute/unmute, Stop, barge-in, minimize/maximize/restore, silent close-to-tray, and the "Hey Jarvis" wake word** |
 | Microphone diagnostic | Working |
 | Desktop control (apps/YouTube/media/volume/brightness/screenshot/lock) | Working |
 | Confirmation-gated actions | Working (power, risky terminal, risky screen goals) |
 | Timers / reminders | Working |
 | Offline wake word ("Hey Jarvis") | **Built + unit-tested; NOT yet verified live** (needs `pip install openwakeword onnxruntime`) |
 | Desktop launcher (`run.sh` + app-menu entry) | Working (verified: `desktop-file-validate` clean, GUI starts) |
-| Tests | `pytest` suite — **600 passed, 3 skipped** |
+| Tests | `pytest` suite — **645 passed, 3 skipped** |
 | Spoken voice | `en-GB-RyanNeural` (British male); override with `JARVIS_TTS_VOICE` |
-| Published | GitHub, tags **`v1.0.1`**…**`v2.3.0`** (README + MIT LICENSE) |
+| Published | GitHub, tags **`v1.0.1`**…**`v3.0.0`** (README + MIT LICENSE) |
+
+## The v3.0.0 Intelligence & Extensibility Update (2026-10-26)
+
+Jarvis v3.0.0 turns the assistant into an extensible platform: external tools can
+be added without touching the codebase, voice capture reacts to the end of a
+sentence instead of a fixed timer, and long-term memory is retrieved by meaning
+rather than keyword matching.
+
+- **MCP Support:** Dynamic tool discovery and execution via the Model Context
+  Protocol (`mcp_client.py`). Jarvis can launch and use external MCP servers —
+  such as filesystem and browser/search servers — with every tool exposed as
+  `mcp__<server>__<tool>` and routed outside the native dispatch table. Server
+  failures are contained and logged, so a broken integration cannot crash the
+  voice loop.
+- **Silero VAD:** Replaced the fixed RMS silence timer with precise Silero VAD
+  endpointing. PCM is analysed in 32 ms frames, speech starts after 64 ms of
+  consecutive speech, and the phrase ends about 400 ms after the user stops
+  talking, making replies noticeably faster. The calibrated RMS gate remains a
+  transparent fallback when Silero or its runtime is unavailable.
+- **ChromaDB Semantic Memory:** Integrated ChromaDB with fastembed at
+  `~/.jarvis/chroma_db` (collection `jarvis_memories`). Facts and conversation
+  turns are embedded and indexed, and the agent retrieves the three memories
+  most relevant to the current prompt. Jarvis now understands the meaning of
+  past conversations, not just exact keywords. SQLite remains the source of
+  truth and the fallback if ChromaDB or the embedding model cannot load.
+- **Categorized Error Logging:** Separated API/network failures
+  (`api_errors.log`) from command, tool, audio, and memory failures
+  (`command_errors.log`). Both rotate at 5 MB, include full tracebacks for
+  debugging, and keep raw exceptions out of what the user hears or sees.
+- **Tests:** Expanded the suite to **645 passed, 3 skipped**, including MCP tool
+  discovery/routing, Silero endpointing and fallback paths, ChromaDB retrieval
+  and SQLite fallback, and categorized log coverage.
+
+## Frameless Window Controls (2026-10-21, after v2.2.2)
+
+A small GUI polish pass on top of v2.2.2, committed as
+`fix: add maximize button and remove close-to-tray notification popup`. The
+version string is unchanged (`2.2.2`); this is UI-only work.
+
+- **Maximize / restore:** The custom header now has a middle window button
+  between minimise and close. It calls `showMaximized()` / `showNormal()` and
+  swaps its glyph and tooltip (`□` / "Maximise" ↔ `❐` / "Restore"), so the
+  state is readable without hovering.
+- **Silent close-to-tray:** Hiding the card with the X button no longer raises a
+  "Still running in the tray" notification. The tray icon is still shown, and
+  the existing `_halt_for_hide()` path still stops listening and speech first.
+- **Header drag preserved:** The new button does not interfere with dragging the
+  frameless card by its header.
+- **Tests:** **611 passed, 1 skipped** (up from 608). New coverage checks the
+  maximize toggle and glyph change, that closing to the tray shows the icon but
+  posts no popup, and that the header still drags the window.
 
 ## Bulletproof Windows EXE (2026-10-23, v2.3.0)
 

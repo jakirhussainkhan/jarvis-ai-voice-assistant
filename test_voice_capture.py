@@ -25,6 +25,12 @@ def _isolate_capture_globals(monkeypatch):
     monkeypatch.setattr(voice, "_stop_listening", threading.Event())
 
 
+@pytest.fixture
+def log_dir(tmp_path, monkeypatch):
+    monkeypatch.setenv("JARVIS_LOG_DIR", str(tmp_path / "logs"))
+    return tmp_path / "logs"
+
+
 # --------------------------------------------------------------------------- #
 # helpers
 # --------------------------------------------------------------------------- #
@@ -700,3 +706,151 @@ def test_gate_on_recorded_speech_wav():
         assert voice._rms(data) > voice._ENERGY_THRESHOLD
     finally:
         pipe.close()
+
+
+# --------------------------------------------------------------------------- #
+# Silero VAD endpointing
+# --------------------------------------------------------------------------- #
+
+def _vad_frame():
+    """One exact Silero frame: 512 samples of S16_LE silence."""
+    import array
+
+    return array.array("h", [0] * voice._VAD_FRAME_SAMPLES).tobytes()
+
+
+def test_silero_stream_requires_consecutive_speech_to_start():
+    probabilities = iter([0.9, 0.9, 0.1])
+    stream = voice._SileroVADStream(
+        lambda _pcm: next(probabilities),
+        threshold=0.5,
+        start_ms=64,
+        end_ms=64,
+    )
+
+    assert stream.feed(_vad_frame()) is False   # one 32 ms frame
+    assert stream.feed(_vad_frame()) is True    # 64 ms -> confirmed speech
+
+
+def test_silero_stream_ends_after_the_silence_window():
+    probabilities = iter([0.1, 0.1])
+    stream = voice._SileroVADStream(
+        lambda _pcm: next(probabilities),
+        threshold=0.5,
+        start_ms=64,
+        end_ms=64,
+    )
+    stream.mark_started()
+
+    stream.feed(_vad_frame())
+    assert stream.silence_ms == 32
+    assert stream.should_end() is False
+    stream.feed(_vad_frame())
+    assert stream.silence_ms == 64
+    assert stream.should_end() is True
+
+
+def test_silero_stream_buffers_partial_frames():
+    calls = []
+
+    def probability(frame):
+        calls.append(len(frame))
+        return 0.9
+
+    stream = voice._SileroVADStream(probability, start_ms=32)
+    data = _vad_frame()
+
+    stream.feed(data[:300])
+    assert calls == []                 # not a complete 512-sample frame
+    stream.feed(data[300:])
+    assert calls == [voice._VAD_FRAME_BYTES]
+
+
+class _FakeVADStream:
+    """Deterministic VAD double: loud chunks are speech, quiet chunks silence."""
+
+    def __init__(self):
+        self.started = False
+        self.silence_ms = 0
+
+    def feed(self, chunk):
+        if not self.started:
+            if voice._rms(chunk) > 1000:
+                self.started = True
+                return True
+            return False
+        self.silence_ms = 0 if voice._rms(chunk) > 300 else self.silence_ms + 100
+        return False
+
+    def mark_started(self):
+        self.started = True
+        self.silence_ms = 0
+
+    def should_end(self):
+        return self.started and self.silence_ms >= 300
+
+
+def test_capture_uses_silero_to_end_the_phrase(monkeypatch):
+    fake = _FakeVADStream()
+    monkeypatch.setattr(voice, "_silero_stream", lambda: fake)
+    pipe = _Pipe()
+    try:
+        pipe.feed(_silence(0.3) + _tone(0.4, 3000) + _silence(1.5))
+        # RMS's fixed window is deliberately huge: only VAD can end this early.
+        data = _capture(pipe, monkeypatch, silence=5.0)
+    finally:
+        pipe.close()
+
+    assert fake.started is True
+    assert data, "VAD-triggered speech should be captured"
+    # 0.4 s speech + ~0.3 s VAD tail + 0.3 s pre-roll, not the full 1.5 s tail.
+    assert len(data) < int(1.4 * voice._SAMPLE_RATE) * voice._SAMPLE_WIDTH
+
+
+def test_silero_initialization_failure_falls_back_to_rms(monkeypatch, log_dir):
+    def boom():
+        raise RuntimeError("silero exploded")
+
+    monkeypatch.setattr(voice, "_silero_stream", boom)
+    pipe = _Pipe()
+    try:
+        pipe.feed(_silence(0.3) + _tone(0.4, 3000) + _silence(0.8))
+        data = _capture(pipe, monkeypatch, silence=0.5)
+    finally:
+        pipe.close()
+
+    assert data, "the RMS fallback must still capture the phrase"
+    log = (log_dir / "command_errors.log").read_text(encoding="utf-8")
+    assert "Silero VAD could not start" in log
+    assert "RuntimeError: silero exploded" in log
+
+
+def test_silero_midstream_failure_falls_back_to_rms(monkeypatch, log_dir):
+    class BrokenVAD:
+        def feed(self, _chunk):
+            raise RuntimeError("inference failed")
+
+        def mark_started(self):
+            pass
+
+        def should_end(self):
+            return False
+
+    monkeypatch.setattr(voice, "_silero_stream", lambda: BrokenVAD())
+    pipe = _Pipe()
+    try:
+        pipe.feed(_silence(0.3) + _tone(0.4, 3000) + _silence(0.8))
+        data = _capture(pipe, monkeypatch, silence=0.5)
+    finally:
+        pipe.close()
+
+    assert data, "the RMS fallback must finish the phrase"
+    log = (log_dir / "command_errors.log").read_text(encoding="utf-8")
+    assert "Silero VAD failed during capture" in log
+    assert "inference failed" in log
+
+
+def test_silero_can_be_disabled(monkeypatch):
+    monkeypatch.setenv("JARVIS_SILERO_VAD", "0")
+
+    assert voice._silero_stream() is None

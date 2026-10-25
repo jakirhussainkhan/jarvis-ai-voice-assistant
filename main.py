@@ -7,6 +7,7 @@ import sys
 import agent
 import config
 import confirm
+import logger
 import startup
 import voice
 from voice import listen, speak
@@ -70,11 +71,38 @@ _OFFLINE_ERRORS = (
     "unreachable", "name resolution", "temporary failure", "offline", "ssl",
 )
 
+# Never show a raw provider status code in a spoken/printed reply.
+_HTTP_CODE_RE = re.compile(r"(?i)\b(?:http(?:\s+error)?\s*)?[45]\d{2}\b")
+
+
+def _safe_error_text(exc, limit=200):
+    """Return a short, traceback-free description of ``exc``.
+
+    The full traceback is already in one of the categorized logs. This keeps the
+    user-facing sentence useful (for example "kaboom") without leaking HTTP
+    status codes or provider internals.
+    """
+    text = " ".join(str(exc or "").split())
+    text = _HTTP_CODE_RE.sub("service error", text)
+    return text[:limit]
+
 
 def _looks_offline(exc) -> bool:
     """True if ``exc`` looks like the network being unavailable."""
     text = f"{type(exc).__name__}: {exc}".lower()
     return any(key in text for key in _OFFLINE_ERRORS)
+
+
+def _log_agent_failure(exc):
+    """Send one agent failure to the right categorized log."""
+    if logger.was_logged(exc):
+        return
+    if (_looks_offline(exc)
+            or isinstance(exc, (ConnectionError, TimeoutError))
+            or getattr(exc, "status_code", None) is not None):
+        logger.log_api_error("Assistant request failed", exc)
+    else:
+        logger.log_command_error("Assistant request failed", exc)
 
 total_tokens = 0
 local_count = 0
@@ -140,7 +168,8 @@ def _speak_with_barge_in(reply):
     monitor = _barge_monitor(on_barge)
     try:
         started = monitor.start()
-    except Exception:
+    except Exception as exc:
+        logger.log_command_error("Barge-in monitor failed to start", exc)
         started = False
     if not started:
         # No barge-in (disabled, muted or push-to-talk): speak normally.
@@ -173,9 +202,11 @@ def handle(text, memory):
     try:
         reply, tokens = run_agent(text, memory)
     except Exception as exc:                     # never let a network error kill us
+        _log_agent_failure(exc)
         if _looks_offline(exc):
             return OFFLINE_REPLY, "local", 0
-        return f"Sorry, I couldn't reach the assistant: {exc}", "local", 0
+        return (f"Sorry, I couldn't reach the assistant: "
+                f"{_safe_error_text(exc)}", "local", 0)
     return reply, ("cache" if tokens == 0 else "agent"), tokens
 
 
@@ -240,6 +271,8 @@ Usage: python main.py [option]
   --version, -v          print the version
   --autostart-enable     start Jarvis at login
   --autostart-disable    stop starting Jarvis at login
+  --logs                 show the last lines of each error log
+  --list-mics            list sounddevice input devices
   -h, --help             show this help
 """
 
@@ -308,6 +341,40 @@ def ensure_api_key(input_fn=input, print_fn=print):
     return True
 
 
+def list_microphones():
+    """Print sounddevice input devices and exit with a status code."""
+    from platform_adapters import _sd
+
+    try:
+        devices = _sd.list_input_devices()
+    except Exception as exc:
+        logger.log_command_error("Could not list microphones", exc)
+        print(f"Could not list microphones: {_safe_error_text(exc)}",
+              file=sys.stderr)
+        print("Install the capture dependency with "
+              "'pip install sounddevice'.", file=sys.stderr)
+        return 1
+
+    print("sounddevice input devices:")
+    if not devices:
+        print("  <none found>")
+        print("No microphone is visible to PortAudio. Check the Windows "
+              "privacy setting for microphone access.", file=sys.stderr)
+        return 1
+
+    for device in devices:
+        marker = " (default)" if device.get("default") else ""
+        rate = device.get("default_samplerate")
+        rate_text = f", default rate {rate:g} Hz" if isinstance(rate, (int, float)) else ""
+        print(f"  [{device['index']}] {device['name']}{marker}")
+        print(f"      host API: {device.get('hostapi_name', 'unknown')}, "
+              f"input channels: {device.get('channels', '?')}{rate_text}")
+    print("\nChoose one with JARVIS_MIC_DEVICE=<index or name substring>, "
+          "for example JARVIS_MIC_DEVICE=1 or "
+          "JARVIS_MIC_DEVICE=\"USB Microphone\".")
+    return 0
+
+
 def main():
     global _TEXT, _OFFLINE
 
@@ -315,12 +382,21 @@ def main():
     if "--help" in args or "-h" in args:
         print(USAGE, end="")
         return 0
+    if "--logs" in args:
+        # Show the last 20 lines of each categorized log so a failure can be
+        # inspected without opening the files by hand.
+        print(logger.format_logs(20))
+        return 0
+    if "--list-mics" in args:
+        return list_microphones()
     if "--autostart-enable" in args or "--autostart-disable" in args:
         enable = "--autostart-enable" in args
         try:
             startup.set_autostart(enable)
         except OSError as exc:
-            print(f"Could not update auto-start: {exc}", file=sys.stderr)
+            logger.log_command_error("Could not update auto-start", exc)
+            print(f"Could not update auto-start: {_safe_error_text(exc)}",
+                  file=sys.stderr)
             return 1
         print("Auto-start enabled." if enable else "Auto-start disabled.")
         print(f"Current status: {startup.status_text()}")

@@ -9,11 +9,23 @@ model; tests that exercise the cache inject a fake embedder.
 """
 
 import os
+import tempfile
 
 import pytest
 
 os.environ.setdefault("JARVIS_MEMORY_DB", ":memory:")
 os.environ.setdefault("JARVIS_SEMANTIC_CACHE", "0")
+# Keep ChromaDB and Silero VAD dormant during the suite: tests that exercise
+# them inject fakes instead of writing a real vector DB or loading a model.
+os.environ.setdefault("JARVIS_SEMANTIC_MEMORY", "0")
+os.environ.setdefault("JARVIS_SILERO_VAD", "0")
+# Never spawn real MCP server subprocesses during a test run. Tests that need
+# MCP use MCPManager(servers=...) or monkeypatch agent.mcp_manager directly.
+os.environ["MCP_SERVERS"] = ""
+# Keep API/command error logs out of the developer's real ~/.jarvis/logs.
+os.environ.setdefault(
+    "JARVIS_LOG_DIR", os.path.join(tempfile.gettempdir(), "jarvis-test-logs")
+)
 
 
 @pytest.fixture(autouse=True)

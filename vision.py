@@ -25,6 +25,7 @@ from pathlib import Path
 from openai import OpenAI
 
 import desktop
+import logger
 from config import (API_KEY, API_TIMEOUT, BASE_URL, SCREEN_MAX_WIDTH,
                     SCREEN_STEPS, VISION_MODEL)
 from digest import digest_text
@@ -145,13 +146,16 @@ def ask_image(path, question, model=None, max_tokens=500, system=_SYSTEM):
             ],
             max_tokens=max_tokens,
         )
+        # Parse inside the guard too: HTTP 200 with an unusable body is still an
+        # API failure, not a crash the user should see.
+        return ((resp.choices[0].message.content or "").strip()
+                or "I couldn't read the screen.")
     except Exception as exc:                      # network / model errors
-        # Keep the raw exception in the terminal log for debugging, but never
-        # put a traceback or provider internals in the spoken reply.
-        print(f"[vision] request failed: {type(exc).__name__}: {exc}", flush=True)
+        # Full traceback goes to the API log; the spoken reply stays friendly
+        # and never exposes provider internals.
+        logger.log_api_error("Vision API request failed", exc)
         return ("I cannot access my vision right now, check the API key or "
                 "rate limits.")
-    return (resp.choices[0].message.content or "").strip() or "I couldn't read the screen."
 
 
 def look(question=None, max_width=SCREEN_MAX_WIDTH):

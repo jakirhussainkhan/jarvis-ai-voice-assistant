@@ -31,6 +31,7 @@ import psutil
 
 import confirm
 import desktop
+import logger
 import shell
 import vision
 
@@ -430,7 +431,7 @@ def _battery_text():
 # main entry point
 # --------------------------------------------------------------------------- #
 
-def try_local(text):
+def _try_local(text):
     """Handle a command locally; return a reply string, or ``None`` if unclear."""
     if not text or not text.strip():
         return None
@@ -632,3 +633,18 @@ def try_local(text):
         return desktop.open_app(t)
 
     return None
+
+
+def try_local(text):
+    """Handle a command locally without letting a parsing failure escape.
+
+    The regex routing is deliberately defensive: a malformed dictation, a
+    platform helper that raises, or a missing executable is logged with its
+    traceback to ``command_errors.log`` and answered with one clean sentence
+    instead of crashing the voice loop.
+    """
+    try:
+        return _try_local(text)
+    except Exception as exc:
+        logger.log_command_error("Local command routing failed", exc)
+        return "I couldn't execute that command, sir."

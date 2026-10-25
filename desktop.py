@@ -24,6 +24,7 @@ from pathlib import Path
 
 import psutil
 
+import logger
 from platform_adapters import Audio, Window, System
 from platform_adapters import common
 
@@ -1066,3 +1067,29 @@ def find_files(query, limit=15):
 def power(kind):
     """Run a confirmed power action: shutdown / restart / logout / suspend."""
     return System.power(kind)
+
+
+# --------------------------------------------------------------------------- #
+# command error boundary
+# --------------------------------------------------------------------------- #
+# Public, string-returning desktop actions are wrapped once at import. An
+# unexpected failure (a missing xdotool/wmctrl, a broken playerctl, a refused
+# DBus call) is written to command_errors.log and answered with a friendly
+# sentence. Internal helpers that return paths/booleans (capture_screenshot,
+# resolve_folder, screen_size, ...) are deliberately left untouched so callers
+# keep receiving the type they expect.
+_COMMAND_ACTIONS = (
+    "open_app", "close_app", "close_terminal", "list_running",
+    "run_in_terminal", "dictate_in_terminal", "open_youtube",
+    "search_youtube", "play_youtube", "close_youtube", "media_control",
+    "media_seek", "now_playing", "volume_control", "brightness_control",
+    "screenshot", "lock_screen", "move_mouse", "click_at", "type_text",
+    "press_keys", "scroll", "focus_window", "minimize_window",
+    "maximize_window", "list_windows", "open_path", "notify", "clipboard",
+    "find_files", "power",
+)
+for _action in _COMMAND_ACTIONS:
+    _func = globals().get(_action)
+    if callable(_func):
+        globals()[_action] = logger.command_guard(_func)
+del _action, _func

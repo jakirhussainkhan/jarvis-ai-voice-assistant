@@ -10,9 +10,10 @@ import inspect
 import json
 import re
 
-from openai import OpenAI
+from openai import APIError, OpenAI
 
 import config
+import logger
 from config import (
     API_FAILURE_THRESHOLD,
     API_KEY,
@@ -28,6 +29,7 @@ from config import (
     TOOL_PRUNING,
     USE_LOCAL_LLM,
 )
+from mcp_client import MCP_PREFIX, MCPManager
 from resilience import OPEN, CircuitBreaker, CircuitOpenError
 from semantic_cache import SemanticCache
 from tools import (
@@ -200,6 +202,10 @@ _TOOLS = [
 
 _DISPATCH = {fn.__name__: fn for fn in _TOOLS}
 
+# Owns the optional MCP server subprocesses. With MCP_SERVERS unset (the
+# default) every method is a cheap no-op, so Jarvis behaves exactly as before.
+mcp_manager = MCPManager()
+
 _TYPE_MAP = {str: "string", int: "integer", float: "number", bool: "boolean"}
 
 # No SDK-level retries: one spoken turn should fail fast, and a retry storm would
@@ -284,7 +290,8 @@ def _get_client():
                 timeout=API_TIMEOUT,
                 max_retries=0,
             )
-        except Exception:
+        except Exception as exc:
+            logger.log_api_error("Could not create the local AI client", exc)
             _local_client = None
     return _local_client
 
@@ -394,11 +401,28 @@ def classify_intent(text):
     return best
 
 
+def _with_mcp_tools(tools):
+    """Append tools discovered from configured MCP servers to ``tools``.
+
+    Returns the original list unchanged when no server is configured, which is
+    the normal case and keeps tool pruning behaviour identical. Any unexpected
+    failure is contained here as well: MCP must never prevent a reply.
+    """
+    try:
+        extra = mcp_manager.get_mcp_tools()
+    except Exception as exc:
+        logger.log_command_error("MCP tool discovery failed", exc)
+        extra = []
+    if not extra:
+        return tools
+    return list(tools) + list(extra)
+
+
 def tools_for(text):
     """Return the tool schemas to send for ``text`` (pruned unless disabled)."""
     if not TOOL_PRUNING:
-        return _TOOL_SCHEMAS
-    return _SCHEMAS_BY_INTENT[classify_intent(text)]
+        return _with_mcp_tools(_TOOL_SCHEMAS)
+    return _with_mcp_tools(_SCHEMAS_BY_INTENT[classify_intent(text)])
 
 
 def _tokens(response):
@@ -409,8 +433,49 @@ def _tokens(response):
     return int(getattr(usage, "total_tokens", 0) or 0)
 
 
+def _run_mcp_tool(call):
+    """Dispatch one ``mcp__<server>__<tool>`` call and return its text."""
+    name = call.function.name
+    target = None
+    try:
+        target = mcp_manager.resolve_tool_name(name)
+    except Exception:
+        target = None
+
+    if target is None:
+        # Discovery normally populated the index, but parsing the address keeps
+        # direct calls working after a restart or a tools-list refresh.
+        server, separator, tool = name[len(MCP_PREFIX):].partition("__")
+        if separator and server and tool:
+            target = (server, tool)
+
+    if target is None:
+        return f"Unknown tool '{name}'."
+
+    try:
+        arguments = json.loads(call.function.arguments or "{}")
+    except (TypeError, ValueError):
+        arguments = {}
+    if not isinstance(arguments, dict):
+        arguments = {}
+
+    try:
+        result = mcp_manager.execute_mcp_tool(target[0], target[1], arguments)
+    except Exception as exc:  # execute_mcp_tool is already defensive
+        logger.log_command_error(f"MCP tool {name} failed", exc)
+        return "I couldn't execute that command, sir."
+    return str(result)
+
+
 def _run_tool(call):
     """Execute one tool call and render its result as a tool message."""
+    if call.function.name.startswith(MCP_PREFIX):
+        return {
+            "role": "tool",
+            "tool_call_id": call.id,
+            "content": str(_run_mcp_tool(call)),
+        }
+
     fn = _DISPATCH.get(call.function.name)
     if fn is None:
         result = f"Unknown tool '{call.function.name}'."
@@ -422,7 +487,12 @@ def _run_tool(call):
         try:
             result = fn(**kwargs)
         except Exception as exc:  # a failing tool must not kill the turn
-            result = f"{call.function.name} failed: {exc}"
+            # Tool/command failures belong in their own log. The model gets a
+            # short, friendly sentence instead of a traceback.
+            logger.log_command_error(
+                f"Tool {call.function.name} failed", exc
+            )
+            result = "I couldn't execute that command, sir."
     return {"role": "tool", "tool_call_id": call.id, "content": str(result)}
 
 
@@ -493,6 +563,7 @@ def _completion(messages, tools=None):
         except Exception as exc:
             # Never leak a raw connection error to the voice loop, and do not
             # count an Ollama failure against the Groq circuit breaker.
+            logger.log_api_error("Local AI request failed", exc)
             raise LocalAIUnavailable(LOCAL_AI_FALLBACK) from exc
 
     try:
@@ -505,6 +576,9 @@ def _completion(messages, tools=None):
             else:
                 raise
     except Exception as exc:
+        # Full traceback goes to api_errors.log; the caller decides what the
+        # user hears. Rate-limit recovery above is not an error if it succeeds.
+        logger.log_api_error("Groq chat completion failed", exc)
         if _is_transient(exc):
             _breaker.record_failure()
         else:
@@ -515,30 +589,48 @@ def _completion(messages, tools=None):
     return response
 
 
-def _facts_context(memory):
-    """Build the synthetic memory message for known user facts.
+def _facts_context(memory, query=""):
+    """Build the synthetic memory message for the user's current request.
 
+    Semantic memory is asked for the three facts most relevant to ``query``.
     The static system prompt must stay byte-identical for Groq's prefix cache,
     so facts are injected separately as a user message immediately before the
     current request. Returns an empty string when there is nothing to inject.
     """
-    get_facts = getattr(memory, "get_facts", None)
-    if not callable(get_facts):
-        return ""
-    try:
-        facts = get_facts(limit=15)
-    except TypeError:
-        # Accept a minimal test double that only implements get_facts().
+    facts = None
+    retrieve = getattr(memory, "retrieve_relevant_memories", None)
+    if callable(retrieve):
         try:
-            facts = get_facts()
+            facts = retrieve(query, limit=3)
+        except TypeError:
+            # Accept a minimal test double with a query-only signature.
+            try:
+                facts = retrieve(query)
+            except Exception as exc:
+                logger.log_command_error("Memory retrieval failed", exc)
+        except Exception as exc:
+            logger.log_command_error("Memory retrieval failed", exc)
+
+    if facts is None:
+        # Older/minimal Memory stores (and a retrieval failure) still expose the
+        # recent-facts method. Keep the last three as a safe, small fallback.
+        get_facts = getattr(memory, "get_facts", None)
+        if not callable(get_facts):
+            return ""
+        try:
+            facts = get_facts(limit=3)
+        except TypeError:
+            try:
+                facts = get_facts()
+            except Exception:
+                return ""
         except Exception:
             return ""
-    except Exception:
-        return ""
+
     cleaned = []
     for fact in facts or []:
         text = " ".join(str(fact or "").split())
-        if text:
+        if text and text not in cleaned:
             cleaned.append(text)
     if not cleaned:
         return ""
@@ -559,7 +651,7 @@ def _chat(message, tools=None, memory_context=""):
     exposed when omitted.
     """
     if tools is None:
-        tools = _TOOL_SCHEMAS
+        tools = _with_mcp_tools(_TOOL_SCHEMAS)
     messages = [{"role": "system", "content": SYSTEM_INSTRUCTION}]
     if memory_context:
         messages.append({"role": "user", "content": memory_context})
@@ -634,7 +726,7 @@ def run_agent(user_text, memory=None):
 
     history = memory.as_text() if memory is not None else ""
     message = f"{history}\nUser: {query}" if history else query
-    memory_context = _facts_context(memory)
+    memory_context = _facts_context(memory, query)
 
     reply = ""
     tokens = 0
@@ -653,6 +745,18 @@ def run_agent(user_text, memory=None):
             used_fallback = True
         except CircuitOpenError:
             reply = _offline_fallback(query)
+            used_fallback = True
+        except (APIError, ConnectionError, TimeoutError) as exc:
+            # _completion normally logged this already; avoid a duplicate entry.
+            if not logger.was_logged(exc):
+                logger.log_api_error("AI service error", exc)
+            reply = API_FALLBACK
+            used_fallback = True
+        except (json.JSONDecodeError, AttributeError, IndexError, KeyError) as exc:
+            # HTTP 200 with an unusable body is still an API failure, not a bug
+            # the user should see.
+            logger.log_api_error("Invalid response from the AI service", exc)
+            reply = API_FALLBACK
             used_fallback = True
         finally:
             reset_active_memory(token)

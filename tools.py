@@ -27,6 +27,7 @@ import psutil
 
 import confirm
 import desktop
+import logger
 from platform_adapters.common import hidden_process_kwargs
 import memory as memory_store
 import net
@@ -244,12 +245,23 @@ def fn_remember_fact(fact: str) -> str:
     return f"I'll remember that: {fact}."
 
 
-def fn_recall_facts() -> str:
-    """Return the personal facts saved about the user."""
+def fn_recall_facts(query: str = "") -> str:
+    """Return personal facts saved about the user.
+
+    Pass ``query`` (for example "birthday" or "favourite drink") to retrieve the
+    facts most semantically relevant to it. With no query, every saved fact is
+    returned, newest first.
+    """
     try:
-        facts = _fact_memory().get_facts(limit=None)
+        mem = _fact_memory()
+        retrieve = getattr(mem, "retrieve_relevant_memories", None)
+        if query and callable(retrieve):
+            facts = retrieve(query, limit=5)
+        else:
+            facts = mem.get_facts(limit=None)
     except Exception as exc:
-        return f"I couldn't read my saved facts: {exc}"
+        logger.log_command_error("fn_recall_facts failed", exc)
+        return "I couldn't recall memories, sir."
     if not facts:
         return "I don't have any saved facts about you yet."
     return "Here is what I remember:\n" + "\n".join(
@@ -663,3 +675,18 @@ def fn_kill_process(name: str) -> str:
         return f"Stopped {count} process(es) matching {name}."
 
     return confirm.request(stop, f"Stop {count} process(es) matching {name}?")
+
+
+# --------------------------------------------------------------------------- #
+# command error boundary
+# --------------------------------------------------------------------------- #
+# Every tool is a plain function called both by the agent and (for a few shared
+# helpers such as ``screen_do``) directly from the router. Wrapping them here,
+# once, guarantees that an unexpected failure is written to command_errors.log
+# and answered with one clean sentence instead of a traceback. ``functools.wraps``
+# inside the guard preserves the signature and docstring that the agent uses to
+# build its tool schema.
+for _name, _func in list(globals().items()):
+    if (_name.startswith("fn_") or _name == "screen_do") and callable(_func):
+        globals()[_name] = logger.command_guard(_func)
+del _name, _func

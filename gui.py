@@ -40,6 +40,7 @@ from PyQt5.QtWidgets import (QApplication, QDialog, QHBoxLayout, QLabel,
                              QSystemTrayIcon, QVBoxLayout, QWidget)
 
 import config
+import logger
 import startup
 import voice
 from config import CHAT_ON, CHAT_TIMEOUT
@@ -456,6 +457,8 @@ class JarvisWorker(QThread):
                     # than immediately waiting for the next sentence.
                     return
         except Exception as exc:                      # never kill the UI
+            logger.log_command_error("GUI voice worker failed", exc)
+            self.state_changed.emit(IDLE)
             self.message.emit(f"⚠️ {exc}")
         finally:
             voice.set_level_sink(None)
@@ -492,8 +495,8 @@ class JarvisWorker(QThread):
         monitor = self._barge_monitor(on_barge)
         try:
             monitor.start()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.log_command_error("Barge-in monitor failed to start", exc)
         try:
             speak(reply)
         finally:
@@ -1088,8 +1091,7 @@ class JarvisWidget(QWidget):
             listener = _make_hotkey_listener(self._on_hotkey_signal)
             listener.start()
         except Exception as exc:                       # optional dependency
-            print(f"[gui] global hotkey unavailable: "
-                  f"{type(exc).__name__}: {exc}", flush=True)
+            logger.log_command_error("Global hotkey unavailable", exc)
             return
         self._hotkey = listener
 

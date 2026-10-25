@@ -15,6 +15,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+import logger
 from digest import DIGEST_THRESHOLD_CHARS, digest_text
 
 _UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
@@ -36,7 +37,8 @@ def _get(url, timeout=10, max_bytes=600_000, ua=None):
     try:
         with urllib.request.urlopen(request, timeout=timeout) as resp:
             raw = resp.read(max_bytes)
-    except (urllib.error.URLError, OSError, ValueError):
+    except Exception as exc:
+        logger.log_api_error(f"Network request failed for {url}", exc)
         return None
     for encoding in ("utf-8", "latin-1"):
         try:
@@ -52,7 +54,10 @@ def _get_json(url, timeout=10):
         return None
     try:
         return json.loads(text)
-    except ValueError:
+    except ValueError as exc:
+        # HTTP 200 with a non-JSON body (a block page, an HTML error page, a
+        # truncated response) is an API failure worth recording.
+        logger.log_api_error(f"Invalid JSON response from {url}", exc)
         return None
 
 
