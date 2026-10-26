@@ -462,7 +462,7 @@ such as `system`, `popen`, `rmtree`, `unlink`, `fork`, `kill`, `spawn`.
 ### Keyboard, mouse and window tools (agent)
 
 | Example |
-| --- | --- |
+| --- |
 | "Press ctrl+s" / "Press alt+tab" / "Press super" |
 | "Click at 800, 450" / "Double-click at 300, 200" |
 | "Move the mouse to 100, 100" |
