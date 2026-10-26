@@ -22,6 +22,7 @@ Controls:
 """
 
 import math
+import os
 import sys
 import threading
 import time
@@ -38,15 +39,16 @@ from PyQt5.QtCore import (QEasingCurve, QPoint, QPointF, QPropertyAnimation,
                           QRect, QRectF, QSize, Qt, QThread, QTimer, QUrl,
                           pyqtProperty, pyqtSignal)
 from PyQt5.QtGui import (QBrush, QColor, QDesktopServices, QFont, QIcon,
-                         QLinearGradient, QPainter, QPainterPath, QPen, QPixmap,
-                         QRadialGradient)
+                         QKeySequence, QLinearGradient, QPainter,
+                         QPainterPath, QPen, QPixmap, QRadialGradient)
 from PyQt5.QtWidgets import (QApplication, QComboBox, QDialog, QFrame,
                              QHBoxLayout, QLabel, QLineEdit, QMenu,
                              QProgressBar, QPushButton, QScrollArea,
-                             QSizeGrip, QSizePolicy, QSystemTrayIcon,
-                             QVBoxLayout, QWidget)
+                             QShortcut, QSizeGrip, QSizePolicy,
+                             QSystemTrayIcon, QVBoxLayout, QWidget)
 
 import config
+import hud
 import logger
 import startup
 import voice
@@ -76,19 +78,20 @@ MUTED = "Microphone muted"
 ERROR = "Something went wrong"
 
 # -- design system ---------------------------------------------------------- #
-# A restrained obsidian deck with cyan and teal used only as live highlights.
-_BG = "#080B10"
-_BG_DEEP = "#06090D"
-_BG_SECONDARY = "#0D1219"
-_PANEL_BG = "#101720"
-_SURFACE = "#151D28"
-_BORDER = "#243342"
-_ACCENT = "#00E5FF"
-_TEAL = "#00D9C5"
-_TEXT = "#F1F5F9"
-_TEXT_SECONDARY = "#94A3B8"
-_TEXT_MUTED = "#64748B"
-_DANGER = "#FB7185"
+# Obsidian instrument glass with cyan hairlines and restrained amber markings.
+_BG = "#03070A"
+_BG_DEEP = "#020507"
+_BG_SECONDARY = "#061018"
+_PANEL_BG = "#07121A"
+_SURFACE = "#0A1720"
+_BORDER = "#144A56"
+_ACCENT = "#22E6FF"
+_TEAL = "#19D3C5"
+_AMBER = "#FFB547"
+_TEXT = "#D9F6FA"
+_TEXT_SECONDARY = "#7FB3BF"
+_TEXT_MUTED = "#456B75"
+_DANGER = "#FF5C6C"
 
 # Compatibility aliases used by the tiny legacy telemetry helpers.
 _NEON = _ACCENT
@@ -938,12 +941,12 @@ class Orb(QWidget):
 
     #: Radians per second for the outer tick ring, per state.
     _SPIN = {
-        IDLE: 0.0,              # static — the calm state
-        LISTENING: 0.55,        # slow, attentive sweep
-        THINKING: 2.30,         # visibly faster while working
-        SPEAKING: 0.90,         # driven further by live audio below
-        MUTED: 0.0,             # static and dim
-        ERROR: 1.40,
+        IDLE: 0.10,             # barely-there orbital drift
+        LISTENING: 0.58,        # attentive sweep
+        THINKING: 2.40,         # visibly faster while working
+        SPEAKING: 0.95,         # driven further by live audio below
+        MUTED: 0.015,           # almost frozen and dim
+        ERROR: 1.55,
     }
 
     def __init__(self, diameter=196, parent=None):
@@ -953,7 +956,10 @@ class Orb(QWidget):
         self._state = IDLE
         self._phase = 0.0
         self._rotation = 0.0
+        self._counter_rotation = 0.0
         self._energy = 0.0
+        self._target_energy = 0.0
+        self._display_energy = 0.0
         self._pulse = 1.0
         self._activity = 1.0
         self._burst = 1.0
@@ -964,6 +970,20 @@ class Orb(QWidget):
         self._core = QColor(_COLORS[IDLE][1])
         self._target_glow = QColor(_COLORS[IDLE][0])
         self._target_core = QColor(_COLORS[IDLE][1])
+        # Deterministic particle belt.  Kept in plain tuples so rendering is
+        # allocation-light and the same layout appears on every launch.
+        self._particles = []
+        for index in range(46):
+            self._particles.append({
+                "angle": index * 2.399963229728653,
+                # Kept inside the widget bounds even at the largest size: the
+                # outermost spark rides at 1.58x the reactor radius.
+                "radius": 1.10 + ((index * 0.137) % 1.0) * 0.48,
+                "speed": 0.035 + ((index * 0.071) % 1.0) * 0.16,
+                "size": 0.7 + ((index * 0.37) % 1.0) * 1.9,
+                "phase": (index * 0.83) % (2 * math.pi),
+                "amber": index % 7 == 0,
+            })
         self.setCursor(Qt.PointingHandCursor)
 
         self._breathe = QPropertyAnimation(self, b"pulse", self)
@@ -988,8 +1008,19 @@ class Orb(QWidget):
         self._timer = QTimer(self)
         self._timer.setTimerType(Qt.PreciseTimer)
         self._timer.timeout.connect(self._tick)
-        self._timer.start(16)              # ~60 fps
+        self._timer.start(self._INTERVAL.get(IDLE, 33))
         self._start_breathe()
+
+    #: Refresh interval per state: live states run at 60 fps, calm states at
+    #: 30 fps and a muted reactor at ~15 fps, which keeps an idle JARVIS light.
+    _INTERVAL = {
+        IDLE: 33,
+        LISTENING: 16,
+        THINKING: 16,
+        SPEAKING: 16,
+        MUTED: 66,
+        ERROR: 16,
+    }
 
     # -- animated properties --------------------------------------------- #
     def _get_pulse(self):
@@ -1034,26 +1065,62 @@ class Orb(QWidget):
             speed += self._energy * 1.1
         if state != MUTED:
             self._rotation = (self._rotation + speed * dt) % (2 * math.pi)
-            # Breathing runs continuously for the core; the QPropertyAnimation
-            # above adds the slower idle body swell.
+            self._counter_rotation = (
+                self._counter_rotation - speed * 0.62 * dt
+            ) % (2 * math.pi)
             self._phase = (self._phase + 1.7 * dt) % (2 * math.pi)
+
+        # Smooth the raw microphone/TTS level so particles and rings never
+        # snap on a single noisy PCM block.
+        rate = 1.0 - math.exp(-10.0 * dt)
+        self._display_energy += (
+            self._target_energy - self._display_energy
+        ) * rate
+        if self._display_energy < 0.002:
+            self._display_energy = 0.0
+
+        particle_speed = {
+            IDLE: 0.025,
+            LISTENING: 0.10 + self._display_energy * 0.22,
+            THINKING: 0.30,
+            SPEAKING: 0.14 + self._display_energy * 0.38,
+            MUTED: 0.005,
+            ERROR: 0.18,
+        }.get(state, 0.02)
+        for particle in self._particles:
+            particle["angle"] = (
+                particle["angle"] + particle_speed * particle["speed"] * 6.0 * dt
+            ) % (2 * math.pi)
+
         # Colours still ease into the muted slate, even though the orb is
         # otherwise static.
         self._ease_colors(1.0 - math.exp(-7.0 * dt))
-        self.update()
+        if self.isVisible() or self._timer.isActive():
+            self.update()
 
     def _ease_colors(self, amount):
         self._glow = _mix_color(self._glow, self._target_glow, amount)
         self._core = _mix_color(self._core, self._target_core, amount)
 
-    def _start_breathe(self):
-        if self._breathe.state() != QPropertyAnimation.Running:
-            self._breathe.start()
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._last_tick = time.monotonic()
+        if not self._timer.isActive():
+            self._timer.start()
+
+    def hideEvent(self, event):
+        # A hidden reactor does not need a 60 fps painter; stopping the clock
+        # keeps a tray-resident JARVIS close to idle CPU.
+        self._timer.stop()
+        super().hideEvent(event)
 
     def set_state(self, state):
         self._state = state
         self._target_glow = QColor(_COLORS.get(state, _COLORS[IDLE])[0])
         self._target_core = QColor(_COLORS.get(state, _COLORS[IDLE])[1])
+        interval = self._INTERVAL.get(state, 33)
+        if self._timer.interval() != interval:
+            self._timer.setInterval(interval)
         # Start the blend immediately so the very first repaint already reads
         # as the new state, then let the clock ease the rest of the way.
         self._ease_colors(0.35)
@@ -1082,7 +1149,126 @@ class Orb(QWidget):
             self._energy = max(0.0, min(1.0, float(value)))
         except (TypeError, ValueError):
             self._energy = 0.0
+        self._target_energy = self._energy
         self.update()
+
+    def _draw_particle_belt(self, painter, center, radius, color, state,
+                            energy):
+        """Sparks orbiting the reactor; amber every seventh particle."""
+        muted = state == MUTED
+        energy = self._display_energy or energy
+        painter.save()
+        painter.setPen(Qt.NoPen)
+        for index, particle in enumerate(self._particles):
+            angle = particle["angle"] + (
+                self._rotation * (0.25 if particle["amber"] else 1.0)
+            )
+            spread = particle["radius"]
+            if state in (LISTENING, SPEAKING):
+                spread += float(energy) * 0.10 * math.sin(
+                    self._phase + particle["phase"]
+                )
+            orbit = radius * spread
+            x = center.x() + math.cos(angle) * orbit
+            y = center.y() + math.sin(angle) * orbit
+            twinkle = 0.55 + 0.45 * math.sin(self._phase * 1.6
+                                             + particle["phase"])
+            if muted:
+                alpha = int(18 + 14 * twinkle)
+                tint = QColor(120, 134, 148)
+            elif particle["amber"]:
+                alpha = int(46 + 66 * twinkle)
+                tint = QColor(255, 181, 71)
+            else:
+                alpha = int(40 + 92 * twinkle)
+                tint = color
+            size = particle["size"] * (1.0 + 0.9 * energy) if state in (
+                LISTENING, SPEAKING
+            ) else particle["size"]
+            painter.setBrush(_rgba(tint, alpha))
+            painter.drawEllipse(QPointF(x, y), size, size)
+            if particle["amber"] and not muted and size > 1.4:
+                painter.setBrush(_rgba(tint, int(alpha * 0.24)))
+                painter.drawEllipse(QPointF(x, y), size * 3.0, size * 3.0)
+        painter.restore()
+
+    def _draw_orbit_rings(self, painter, center, radius, color, state, energy,
+                          breath):
+        """Counter-rotating segmented orbit rings around the crown."""
+        muted = state == MUTED
+        base_alpha = 26 if muted else 66
+        boost = int(52 * energy) if state in (LISTENING, SPEAKING) else 0
+        painter.save()
+        painter.translate(center)
+        painter.setBrush(Qt.NoBrush)
+
+        # Outer ring, counter-clockwise, four long arcs.
+        painter.save()
+        painter.rotate(-math.degrees(self._counter_rotation))
+        pen = QPen(_rgba(color, base_alpha + boost),
+                   max(1.0, radius * 0.009),
+                   Qt.SolidLine, Qt.RoundCap)
+        painter.setPen(pen)
+        arc_radius = radius * (1.62 + 0.04 * energy)
+        rect = QRectF(-arc_radius, -arc_radius, arc_radius * 2,
+                      arc_radius * 2)
+        for start in (12, 102, 192, 282):
+            painter.drawArc(rect, start * 16, 58 * 16)
+        painter.restore()
+
+        # Second ring, co-rotating, shorter dashes.
+        painter.save()
+        painter.rotate(math.degrees(self._rotation * 0.7))
+        painter.setPen(QPen(_rgba(color, (base_alpha + boost) // 2 + 14),
+                            max(0.9, radius * 0.006)))
+        dash_radius = radius * 1.52
+        dash_rect = QRectF(-dash_radius, -dash_radius, dash_radius * 2,
+                           dash_radius * 2)
+        for start in range(0, 360, 30):
+            painter.drawArc(dash_rect, (start + 6) * 16, 12 * 16)
+        painter.restore()
+
+        # A single amber datum mark rides the outer ring.
+        if not muted:
+            painter.save()
+            painter.rotate(-math.degrees(self._counter_rotation))
+            mark_radius = radius * 1.40
+            angle = math.radians(-28)
+            painter.setPen(QPen(QColor(255, 181, 71, 170),
+                                max(1.2, radius * 0.012)))
+            painter.drawLine(
+                QPointF(math.cos(angle) * radius * 1.36,
+                        math.sin(angle) * radius * 1.36),
+                QPointF(math.cos(angle) * mark_radius,
+                        math.sin(angle) * mark_radius),
+            )
+            painter.restore()
+        painter.restore()
+
+    def _draw_coil_ring(self, painter, center, radius, color, state, energy):
+        """Ten reactor coil slots around the core, like the arc-reactor icon."""
+        muted = state == MUTED
+        slots = 10
+        slot_radius = radius * 0.70
+        painter.save()
+        painter.translate(center)
+        painter.setBrush(Qt.NoBrush)
+        for index in range(slots):
+            angle = -math.pi / 2.0 + index * (2.0 * math.pi / slots)
+            length = radius * (0.10 + 0.03 * energy)
+            alpha = 40 if muted else 110
+            if state in (LISTENING, SPEAKING):
+                alpha += int(60 * energy)
+            painter.setPen(QPen(_rgba(color, alpha),
+                                max(1.2, radius * 0.018),
+                                Qt.SolidLine, Qt.RoundCap))
+            painter.drawLine(
+                QPointF(math.cos(angle) * slot_radius,
+                        math.sin(angle) * slot_radius),
+                QPointF(math.cos(angle) * (slot_radius + length),
+                        math.sin(angle) * (slot_radius + length)),
+            )
+        painter.restore()
 
     def _draw_radar_crown(self, painter, center, radius, color, state, energy):
         """Draw the segmented tick ring that rotates around the orb."""
@@ -1197,6 +1383,12 @@ class Orb(QWidget):
         painter.setPen(QPen(_rgba(crown_color, guide_alpha + 16), 1.1))
         painter.drawEllipse(center, radius * 1.16, radius * 1.16)
 
+        # -- particle belt + counter-rotating orbit rings --------------------- #
+        self._draw_particle_belt(painter, center, radius, crown_color, state,
+                                 energy)
+        self._draw_orbit_rings(painter, center, radius, crown_color, state,
+                               energy, breath)
+
         # -- segmented radar crown (rotates with the state) ------------------ #
         self._draw_radar_crown(painter, center, radius, crown_color,
                                state, energy)
@@ -1223,6 +1415,8 @@ class Orb(QWidget):
         # -- luminous breathing core ------------------------------------------ #
         core_scale = 0.48 + 0.035 * breath + (0.045 * energy if live else 0.0)
         core_radius = radius * core_scale
+        self._draw_coil_ring(painter, center, radius, crown_color, state,
+                             energy)
         core_glow = QRadialGradient(
             QPointF(center.x() - core_radius * 0.10,
                     center.y() - core_radius * 0.12),
@@ -1923,6 +2117,7 @@ class JarvisWorker(QThread):
     replied = pyqtSignal(str)
     failed = pyqtSignal(str)
     level = pyqtSignal(float)
+    latency = pyqtSignal(float)
     mic_changed = pyqtSignal(bool)
     exit_requested = pyqtSignal()
 
@@ -1991,7 +2186,11 @@ class JarvisWorker(QThread):
                 self.state_changed.emit(THINKING)
                 # main.handle() is the single dispatch path: it resolves any pending
                 # confirmation, then tries the router and finally the agent.
+                started = time.monotonic()
                 reply, _kind, _tokens = handle(user, self.memory)
+                self.latency.emit(
+                    max(0.0, (time.monotonic() - started) * 1000.0)
+                )
                 self.replied.emit(reply)
                 # A local command can mute/unmute the mic (media playback mutes
                 # it), so keep the GUI button and tray in sync.
@@ -2055,6 +2254,47 @@ class JarvisWorker(QThread):
         finally:
             monitor.stop()
         return self._barged_in
+
+
+class TextCommandWorker(QThread):
+    """Run one typed command through the same dispatcher as the voice loop.
+
+    The command bar is a text conversation surface, so replies are rendered in
+    the transcript but not spoken.  A real measured round-trip is emitted for
+    the SYSTEM panel instead of a synthetic latency figure.
+    """
+
+    state_changed = pyqtSignal(str)
+    replied = pyqtSignal(str)
+    failed = pyqtSignal(str)
+    latency = pyqtSignal(float)
+    kind = pyqtSignal(str)
+
+    def __init__(self, memory, text, parent=None):
+        super().__init__(parent)
+        self.memory = memory
+        self.text = str(text or "").strip()
+
+    def run(self):
+        self.state_changed.emit(THINKING)
+        started = time.monotonic()
+        try:
+            reply, kind, _tokens = handle(self.text, self.memory)
+            self.latency.emit(max(0.0, (time.monotonic() - started) * 1000.0))
+            self.kind.emit(str(kind or ""))
+            self.replied.emit(reply)
+        except Exception as exc:                  # never kill the GUI
+            logger.log_command_error("Typed command failed", exc)
+            self.latency.emit(max(0.0, (time.monotonic() - started) * 1000.0))
+            self.failed.emit(str(exc) or type(exc).__name__)
+        finally:
+            self.state_changed.emit(
+                MUTED if voice.is_mic_muted() else IDLE
+            )
+
+    def stop(self):
+        """Text commands cannot be cancelled mid-tool; Stop remains voice-only."""
+        return
 
 
 # --------------------------------------------------------------------------- #
@@ -2288,7 +2528,7 @@ class JarvisWidget(QWidget):
     # Emitted by the wake-socket thread when `main.py --quit` asks us to exit.
     quit_requested = pyqtSignal()
 
-    _WIDE_BREAKPOINT = 980
+    _WIDE_BREAKPOINT = 1180
 
     def __init__(self, compact=True):
         super().__init__()
@@ -2316,22 +2556,31 @@ class JarvisWidget(QWidget):
         # through the QSizeGrip in the corner and the custom edge dragging in the
         # mouse handlers below.
         self.setMinimumSize(250, 350)
+        self._compact_mode = bool(compact)
         if compact:
             self.resize(280, 400)
         else:
+            # The reference composition is 1536x1024.  On a smaller desktop the
+            # HUD shrinks to the available work area instead of spilling under
+            # the taskbar; the responsive pass folds panels away as needed.
             screen = QApplication.primaryScreen()
             if screen is not None:
                 available = screen.availableGeometry()
-                width = min(1240, max(1000, available.width() - 120))
-                height = min(800, max(680, available.height() - 100))
-                self.resize(min(width, max(640, available.width() - 40)),
-                            min(height, max(520, available.height() - 40)))
+                width = min(1536, max(1000, available.width() - 40))
+                height = min(1024, max(700, available.height() - 50))
+                self.resize(min(width, available.width() - 20),
+                            min(height, available.height() - 20))
             else:
-                self.resize(1240, 780)
+                self.resize(1536, 1024)
         self.setMouseTracking(True)
 
         self.memory = Memory()
         self.worker = None
+        self.text_worker = None
+        self._latency_ms = None
+        self._prev_state = IDLE
+        self._last_net = None
+        self._last_net_time = None
         self._drag_offset = None
         # Edge-resize drag state: which edges are grabbed, where the drag began
         # and the geometry it began from.
@@ -2386,20 +2635,20 @@ class JarvisWidget(QWidget):
 
     # -- layout ----------------------------------------------------------- #
     def _build_ui(self):
-        self.title_bar = TitleBar(self)
+        self.title_bar = hud.HudTitleBar(self)
         self.minimize_button = self.title_bar.minimize_button
         self.maximize_button = self.title_bar.maximize_button
         self.close_button = self.title_bar.close_button
 
-        # The orb is the visual signature at the centre of the command center.
+        # The reactor is the visual signature at the centre of the HUD.
         self.orb = Orb(214)
         self.orb.clicked.connect(self.trigger)
         self.orb.menu_requested.connect(self._show_menu)
         # Backwards-compatible alias: older code called the orb the "reactor".
         self.reactor = self.orb
 
-        # The waveform remains available to the live-level pipeline and to
-        # embedders, but the reference composition does not show it.
+        # Kept for the live-level pipeline, tests and embedders.  The HUD shows
+        # the level inside the reactor, so the optional strip stays hidden.
         self.waveform = Waveform(self)
         self.waveform.setFixedHeight(44)
         self.waveform.hide()
@@ -2408,6 +2657,7 @@ class JarvisWidget(QWidget):
         self.status.setObjectName("statusText")
         self.status.setAlignment(Qt.AlignCenter)
         self.status.setMinimumHeight(28)
+        self.status.setFont(_hud_font(15, QFont.DemiBold, 3.2))
         self.status.setStyleSheet(
             f"color:{_STATE_TEXT[IDLE]}; background:transparent;"
         )
@@ -2416,7 +2666,11 @@ class JarvisWidget(QWidget):
         self.status_hint.setObjectName("statusHint")
         self.status_hint.setAlignment(Qt.AlignCenter)
         self.status_hint.setWordWrap(True)
-        self.status_hint.setFixedHeight(38)
+        self.status_hint.setFixedHeight(34)
+        self.status_hint.setFont(_hud_font(7.6, QFont.Normal, 0.6, _UI_SANS))
+        self.status_hint.setStyleSheet(
+            f"color:{_TEXT_MUTED}; background:transparent;"
+        )
         self.status_hint.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
         self.state_dot = QLabel("●")
@@ -2425,9 +2679,7 @@ class JarvisWidget(QWidget):
             f"color:{_STATE_TEXT[IDLE]}; background:transparent; font-size:9px;"
         )
 
-        # ``transcript`` stays as a hidden compatibility sink for the internal
-        # flash messages and the existing tests; the visible conversation lives
-        # in the right-hand chat history panel only.
+        # Hidden compatibility sink used by the existing tests and flash path.
         self.transcript = QLabel("", self)
         self.transcript.setAlignment(Qt.AlignCenter)
         self.transcript.setWordWrap(False)
@@ -2436,37 +2688,39 @@ class JarvisWidget(QWidget):
         self.compact_telemetry = CompactTelemetry(self)
         self.compact_telemetry.hide()
 
-        self.left_panel = TelemetryPanel(self)
-        self.right_panel = BriefingPanel(self)
+        self.left_panel = hud.LeftRail(self)
+        self.right_panel = hud.RightRail(self)
+        self.command_bar = hud.CommandBar(self)
+        self.command_bar.submitted.connect(self._submit_text)
 
         status_row = QHBoxLayout()
         status_row.setContentsMargins(0, 0, 0, 0)
-        status_row.setSpacing(9)
+        status_row.setSpacing(8)
         status_row.addStretch(1)
         status_row.addWidget(self.state_dot)
         status_row.addWidget(self.status)
         status_row.addStretch(1)
 
-        # -- pill control dock: mic / stop / settings only ------------------- #
-        self.mic_button = DockButton(_MIC_LABEL, 52, "mic", self)
+        # -- circular control dock: mic / stop / settings ------------------- #
+        self.mic_button = DockButton(_MIC_LABEL, 48, "mic", self)
         self.mic_button.setCheckable(True)
         self.mic_button.setToolTip("Microphone on — click to mute")
         self.mic_button.clicked.connect(self.toggle_mute)
 
-        self.stop_button = DockButton("Stop", 50, "stop", self)
+        self.stop_button = DockButton("Stop", 46, "stop", self)
         self.stop_button.setEnabled(False)
         self.stop_button.setToolTip("Stop listening or speaking (Space)")
         self.stop_button.clicked.connect(self._stop)
 
-        self.settings_button = DockButton("Settings", 50, "settings", self)
+        self.settings_button = DockButton("Settings", 46, "settings", self)
         self.settings_button.setToolTip("Session options")
         self.settings_button.clicked.connect(self._show_settings)
 
         dock_bar = QFrame()
         dock_bar.setObjectName("controlDock")
         dock = QHBoxLayout(dock_bar)
-        dock.setContentsMargins(10, 8, 10, 8)
-        dock.setSpacing(6)
+        dock.setContentsMargins(9, 7, 9, 7)
+        dock.setSpacing(5)
         dock.addWidget(self.mic_button)
         dock.addWidget(self.stop_button)
         dock.addWidget(self.settings_button)
@@ -2523,34 +2777,71 @@ class JarvisWidget(QWidget):
                       self._session_label, self._hotkey_label):
             label.hide()
 
+        # -- central reactor stage ------------------------------------------ #
+        stage_caption = QHBoxLayout()
+        stage_caption.setContentsMargins(0, 0, 0, 0)
+        stage_caption.setSpacing(8)
+        stage_caption.addStretch(1)
+        core_tag = QLabel("ARC REACTOR")
+        core_tag.setFont(_hud_font(6.9, QFont.Bold, 2.0))
+        core_tag.setStyleSheet(
+            f"color:{_TEXT_MUTED}; background:transparent;"
+        )
+        stage_caption.addWidget(core_tag)
+        core_line = QFrame()
+        core_line.setFixedSize(32, 1)
+        core_line.setStyleSheet(
+            f"background:rgba(34,230,255,0.34); border:none;"
+        )
+        stage_caption.addWidget(core_line)
+        core_index = QLabel("CORE // 01")
+        core_index.setFont(_hud_font(6.2, QFont.DemiBold, 1.1))
+        core_index.setStyleSheet(
+            f"color:{_AMBER}; background:transparent;"
+        )
+        stage_caption.addWidget(core_index)
+        stage_caption.addStretch(1)
+
         center = QVBoxLayout()
         center.setContentsMargins(0, 0, 0, 0)
         center.setSpacing(0)
+        center.addLayout(stage_caption)
+        center.addSpacing(4)
         center.addStretch(1)
         center.addWidget(self.orb, 0, Qt.AlignHCenter)
-        center.addSpacing(14)
+        center.addSpacing(8)
         center.addLayout(status_row)
-        center.addSpacing(3)
+        center.addSpacing(1)
         center.addWidget(self.status_hint)
-        center.addSpacing(24)
+        center.addSpacing(12)
         center.addWidget(dock_bar, 0, Qt.AlignHCenter)
         center.addStretch(1)
 
         body = QHBoxLayout()
-        body.setContentsMargins(24, 18, 24, 22)
-        body.setSpacing(20)
+        body.setContentsMargins(22, 12, 22, 10)
+        body.setSpacing(14)
         body.addWidget(self.left_panel)
         body.addLayout(center, 1)
         body.addWidget(self.right_panel)
 
         body_host = QWidget()
+        body_host.setObjectName("hudBody")
+        body_host.setAttribute(Qt.WA_TranslucentBackground, True)
         body_host.setLayout(body)
+
+        command_host = QWidget()
+        command_host.setAttribute(Qt.WA_TranslucentBackground, True)
+        command_layout = QHBoxLayout(command_host)
+        command_layout.setContentsMargins(22, 0, 22, 16)
+        command_layout.setSpacing(0)
+        command_layout.addWidget(self.command_bar)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
         root.addWidget(self.title_bar)
         root.addWidget(body_host, 1)
+        root.addWidget(command_host, 0)
 
         # Frameless card: a visible QSizeGrip in the bottom-right corner resizes
         # the window; the custom edge dragging below covers the rest of the
@@ -2560,10 +2851,14 @@ class JarvisWidget(QWidget):
         self.size_grip.setToolTip("Resize")
         self.size_grip.raise_()
 
+        # Ctrl+K is the documented keyboard route into the command console.
+        self._command_shortcut = QShortcut(QKeySequence("Ctrl+K"), self)
+        self._command_shortcut.activated.connect(self._focus_command)
+
         # -- adaptive telemetry timer -------------------------------------- #
         self._telemetry_timer = QTimer(self)
         self._telemetry_timer.timeout.connect(self._update_telemetry)
-        self._telemetry_timer.start(1200)
+        self._telemetry_timer.start(1000)
 
         self.left_panel.set_mode(self._chat)
         self.left_panel.set_wake(self._wake is not None)
@@ -2573,6 +2868,15 @@ class JarvisWidget(QWidget):
         self._sync_briefing()
         self._sync_responsive()
         self._place_grip()
+        self._refresh_header_link()
+        self._log_activity("CORE reactor online", "state")
+        self._log_activity(
+            "wake word " + ("armed" if self._wake is not None else "offline"),
+            "info",
+        )
+        self._log_activity(
+            "second instance guard + shutdown safeguards active", "info"
+        )
 
     def _build_menu(self):
         talk = self._menu.addAction("Talk")
@@ -2703,25 +3007,42 @@ class JarvisWidget(QWidget):
 
     # -- responsive command center ---------------------------------------- #
     def _sync_responsive(self):
-        """Show both rails on wide layouts and fold to a compact card."""
+        """Show both rails on wide layouts and fold to a central card."""
         try:
             width, height = self.width(), self.height()
         except RuntimeError:                  # widget already torn down
             return
-        wide = width >= self._WIDE_BREAKPOINT and height >= 620
+        compact = getattr(self, "_compact_mode", False)
+        rails = (not compact and width >= self._WIDE_BREAKPOINT
+                 and height >= 700)
+        expanded = rails and height >= 950
+        medium = (not compact and width >= 860 and height >= 600)
+        show_command = not compact and height >= 500
 
         if hasattr(self, "left_panel"):
-            self.left_panel.setVisible(wide)
-            self.right_panel.setVisible(wide)
-            self.title_bar.set_compact(width < 620)
+            self.left_panel.setVisible(rails)
+            if rails:
+                self.left_panel.set_expanded(expanded)
+            self.right_panel.setVisible(medium)
+            self.command_bar.setVisible(show_command)
+            self.title_bar.set_compact(compact or width < 940)
             self.status_hint.setVisible(height >= 360)
 
-            if wide:
-                orb_size = 214
-            elif width >= 560 and height >= 560:
-                orb_size = 170
-            else:
+            if compact:
                 orb_size = max(96, min(132, height - 292))
+            else:
+                left_w = self.left_panel.width() if rails else 0
+                right_w = self.right_panel.width() if medium else 0
+                command_h = self.command_bar.height() + 16 if show_command else 0
+                available_w = width - 44 - 28 - left_w - right_w
+                # Reserve the real chrome around the reactor: body margins,
+                # stage caption, status line, hint and the control dock.
+                available_h = (height - self.title_bar.height()
+                               - command_h - 222)
+                orb_size = int(max(
+                    110,
+                    min(620, available_w * 0.94, available_h),
+                ))
             if self.orb.width() != orb_size:
                 self.orb.setFixedSize(orb_size, orb_size)
 
@@ -2737,53 +3058,107 @@ class JarvisWidget(QWidget):
             grip.raise_()
 
     def paintEvent(self, event):
-        """Paint the deep obsidian surface with one soft cinematic bloom."""
+        """Paint the full-screen instrument shell behind the panels."""
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
 
         rect = QRectF(self.rect()).adjusted(1.0, 1.0, -1.0, -1.0)
         path = QPainterPath()
-        path.addRoundedRect(rect, 24.0, 24.0)
+        path.addRoundedRect(rect, 18.0, 18.0)
 
         card = QLinearGradient(rect.topLeft(), rect.bottomRight())
-        card.setColorAt(0.0, QColor("#0B1118"))
-        card.setColorAt(0.42, QColor(_BG))
-        card.setColorAt(1.0, QColor("#06090D"))
+        card.setColorAt(0.0, QColor("#061019"))
+        card.setColorAt(0.38, QColor(_BG))
+        card.setColorAt(1.0, QColor("#010305"))
         painter.fillPath(path, QBrush(card))
 
         painter.save()
         painter.setClipPath(path)
 
-        # A single, low-intensity glow sits behind the orb.  No grid, scanlines,
-        # brackets or decorative HUD geometry.
+        # Faint instrument grid: deliberately below the contrast of the text.
+        grid_pen = QPen(QColor(34, 230, 255, 9), 1.0)
+        painter.setPen(grid_pen)
+        step = 44
+        x = int(rect.left()) + 22
+        while x < rect.right():
+            painter.drawLine(x, int(rect.top()) + 1,
+                             x, int(rect.bottom()) - 1)
+            x += step
+        y = int(rect.top()) + 30
+        while y < rect.bottom():
+            painter.drawLine(int(rect.left()) + 1, y,
+                             int(rect.right()) - 1, y)
+            y += step
+
+        # Scanlines give the dark glass depth without a visible pattern.
+        painter.setPen(QPen(QColor(180, 250, 255, 4), 1.0))
+        for line_y in range(int(rect.top()) + 2, int(rect.bottom()), 4):
+            painter.drawLine(int(rect.left()) + 1, line_y,
+                             int(rect.right()) - 1, line_y)
+
+        # Central reactor bloom; the orb paints its own tighter halo.
         glow = QRadialGradient(
-            QPointF(self.width() / 2.0, self.height() * 0.40),
-            max(140.0, self.width() * 0.34),
+            QPointF(self.width() / 2.0, self.height() * 0.46),
+            max(220.0, min(self.width(), self.height()) * 0.42),
         )
-        glow.setColorAt(0.0, QColor(0, 229, 255, 18))
-        glow.setColorAt(0.46, QColor(0, 217, 197, 7))
+        glow.setColorAt(0.0, QColor(34, 230, 255, 20))
+        glow.setColorAt(0.34, QColor(34, 230, 255, 8))
+        glow.setColorAt(0.68, QColor(25, 211, 197, 3))
         glow.setColorAt(1.0, QColor(0, 0, 0, 0))
         painter.fillRect(rect, QBrush(glow))
 
-        # Subtle depth at the bottom edge.
-        depth = QLinearGradient(0.0, self.height() * 0.62,
+        # Amber bias at the extreme left/right edges, like panel lighting.
+        left_glow = QLinearGradient(rect.left(), 0, rect.left() + 90, 0)
+        left_glow.setColorAt(0.0, QColor(255, 181, 71, 9))
+        left_glow.setColorAt(1.0, QColor(255, 181, 71, 0))
+        painter.fillRect(QRectF(rect.left(), rect.top(), 90, rect.height()),
+                         QBrush(left_glow))
+
+        depth = QLinearGradient(0.0, self.height() * 0.55,
                                 0.0, float(self.height()))
         depth.setColorAt(0.0, QColor(0, 0, 0, 0))
-        depth.setColorAt(1.0, QColor(3, 6, 10, 150))
+        depth.setColorAt(1.0, QColor(0, 2, 4, 190))
         painter.fillRect(rect, QBrush(depth))
         painter.restore()
 
+        # Border, then the bright HUD corner brackets.
         painter.setBrush(Qt.NoBrush)
-        painter.setPen(QPen(QColor(36, 51, 66, 225), 1.0))
+        painter.setPen(QPen(QColor(20, 74, 86, 235), 1.0))
         painter.drawPath(path)
 
-        # A restrained specular edge along the top of the card.
+        painter.setPen(QPen(QColor(34, 230, 255, 155), 1.2))
+        length = 26.0
+        inset = 8.0
+        painter.drawLine(QPointF(rect.left() + inset, rect.top() + inset),
+                         QPointF(rect.left() + inset + length,
+                                 rect.top() + inset))
+        painter.drawLine(QPointF(rect.left() + inset, rect.top() + inset),
+                         QPointF(rect.left() + inset,
+                                 rect.top() + inset + length))
+        painter.drawLine(QPointF(rect.right() - inset - length,
+                                 rect.bottom() - inset),
+                         QPointF(rect.right() - inset,
+                                 rect.bottom() - inset))
+        painter.drawLine(QPointF(rect.right() - inset,
+                                 rect.bottom() - inset - length),
+                         QPointF(rect.right() - inset,
+                                 rect.bottom() - inset))
+        painter.setPen(QPen(QColor(255, 181, 71, 150), 1.2))
+        painter.drawLine(QPointF(rect.right() - inset - 18,
+                                 rect.top() + inset),
+                         QPointF(rect.right() - inset, rect.top() + inset))
+        painter.drawLine(QPointF(rect.left() + inset,
+                                 rect.bottom() - inset),
+                         QPointF(rect.left() + inset + 18,
+                                 rect.bottom() - inset))
+
         highlight = QLinearGradient(rect.left(), rect.top(),
                                     rect.right(), rect.top())
-        highlight.setColorAt(0.0, QColor(0, 229, 255, 0))
-        highlight.setColorAt(0.36, QColor(0, 229, 255, 52))
-        highlight.setColorAt(0.64, QColor(0, 217, 197, 34))
-        highlight.setColorAt(1.0, QColor(0, 229, 255, 0))
+        highlight.setColorAt(0.0, QColor(34, 230, 255, 0))
+        highlight.setColorAt(0.28, QColor(34, 230, 255, 44))
+        highlight.setColorAt(0.62, QColor(25, 211, 197, 20))
+        highlight.setColorAt(0.82, QColor(255, 181, 71, 38))
+        highlight.setColorAt(1.0, QColor(255, 181, 71, 0))
         painter.setPen(QPen(QBrush(highlight), 1.0))
         painter.drawLine(int(rect.left() + 30), int(rect.top()),
                          int(rect.right() - 30), int(rect.top()))
@@ -2802,6 +3177,7 @@ class JarvisWidget(QWidget):
     def set_state(self, state):
         if self._error_hold and state != ERROR:
             return
+        previous = getattr(self, "_state", IDLE)
         self._state = state
         if state == LISTENING:
             # A new turn starts with a clean slate under the orb.
@@ -2819,7 +3195,11 @@ class JarvisWidget(QWidget):
         self.orb.set_state(state)
         self.waveform.set_state(state)
         self.left_panel.note_state(state)
+        self.right_panel.note_state(state)
         self.compact_telemetry.note_state(state)
+        bar = getattr(self, "command_bar", None)
+        if bar is not None:
+            bar.set_state(state)
 
         # The title-bar presence indicator mirrors the assistant state without
         # competing with the large status line below the orb.
@@ -2829,12 +3209,19 @@ class JarvisWidget(QWidget):
                 label, tint = "Attention", _DANGER
             elif state == MUTED:
                 label, tint = "Mic off", _TEXT_MUTED
+            elif state == THINKING:
+                label, tint = "Computing", _AMBER
             else:
-                label, tint = "Online", _TEAL
-            connection.connection_label.setText(label)
-            connection.connection_dot.setStyleSheet(
-                f"color:{tint}; background:transparent; font-size:9px;"
+                self._refresh_header_link()
+                label = tint = None
+            if label is not None:
+                connection.set_link(label, tint)
+
+        if previous != state:
+            self._log_activity(
+                f"state → {state}", "state" if state != ERROR else "error"
             )
+        self._prev_state = state
 
         # Stop can cut a reply short *or* abandon a listen that is still waiting
         # for you to speak, so it is live whenever Jarvis is busy.
@@ -2861,36 +3248,115 @@ class JarvisWidget(QWidget):
         self.compact_telemetry.note_energy(self._energy)
 
     def _update_telemetry(self):
-        """Refresh CPU, RAM and the state-derived latency estimate."""
-        cpu = ram = 0.0
+        """Refresh the SANE values actually available on this machine.
+
+        No figure in this method is synthesised.  Missing packages or metrics
+        become ``UNAVAILABLE``/``—`` in the SYSTEM panel.
+        """
+        cpu = ram = disk = net_rate = processes = battery = temp = None
+        session_uptime = int(max(0.0, time.monotonic() - self._started_at))
+        system_uptime = None
         if psutil is not None:
             try:
                 cpu = float(psutil.cpu_percent(interval=None))
                 ram = float(psutil.virtual_memory().percent)
             except Exception:
-                cpu = ram = 0.0
-        uptime = int(max(0.0, time.monotonic() - self._started_at))
+                cpu = ram = None
+            try:
+                usage = psutil.disk_usage(os.path.expanduser("~"))
+                disk = float(usage.percent)
+            except Exception:
+                disk = None
+            try:
+                counters = psutil.net_io_counters()
+                now = time.monotonic()
+                total = float(counters.bytes_sent + counters.bytes_recv)
+                if self._last_net is not None and self._last_net_time:
+                    elapsed = max(0.001, now - self._last_net_time)
+                    net_rate = max(0.0, (total - self._last_net) / elapsed)
+                else:
+                    net_rate = 0.0
+                self._last_net = total
+                self._last_net_time = now
+            except Exception:
+                net_rate = None
+            try:
+                processes = len(psutil.pids())
+            except Exception:
+                processes = None
+            try:
+                battery_info = psutil.sensors_battery()
+                if battery_info is not None:
+                    battery = f"{battery_info.percent:.0f}%" + (
+                        " CHG" if battery_info.power_plugged else ""
+                    )
+            except Exception:
+                battery = None
+            try:
+                system_uptime = int(time.time() - psutil.boot_time())
+            except Exception:
+                system_uptime = None
+            try:
+                temperatures = psutil.sensors_temperatures()
+                if temperatures:
+                    entries = next(iter(temperatures.values()), [])
+                    if entries:
+                        temp = float(entries[0].current)
+            except Exception:
+                temp = None
+
         state = getattr(self, "_state", IDLE)
         energy = getattr(self, "_energy", 0.0)
-        self.left_panel.update_metrics(cpu, ram, state, energy, uptime)
-        self.compact_telemetry.update_metrics(cpu, ram, state, energy, uptime)
+        self.left_panel.note_state(state)
+        self.left_panel.note_energy(energy)
+        self.left_panel.update_system(
+            cpu=cpu,
+            memory=ram,
+            disk=disk,
+            net_rate=net_rate,
+            uptime=system_uptime if system_uptime is not None
+            else session_uptime,
+            processes=processes,
+            battery=battery,
+            latency_ms=self._latency_ms,
+            temp_c=temp,
+        )
+        self.compact_telemetry.update_metrics(
+            cpu or 0.0, ram or 0.0, state, energy, session_uptime
+        )
         if hasattr(self, "_session_label"):
-            minutes, seconds = divmod(uptime, 60)
+            minutes, seconds = divmod(session_uptime, 60)
             self._session_label.setText(f"UPTIME {minutes:02d}:{seconds:02d}")
         self._telemetry_ticks += 1
-        if self._telemetry_ticks % 5 == 0:
+        if self._telemetry_ticks % 10 == 0:
             self._refresh_briefing()
+
+    def _on_latency(self, milliseconds):
+        """Record the measured round-trip from a real request."""
+        try:
+            self._latency_ms = max(0.0, float(milliseconds))
+        except (TypeError, ValueError):
+            self._latency_ms = None
+        self._log_activity(
+            "round trip "
+            + ("—" if self._latency_ms is None
+               else f"{self._latency_ms:.0f} ms"),
+            "info",
+        )
+        self._update_telemetry()
 
     # -- transcript / briefing -------------------------------------------- #
     def _on_heard(self, text):
         self.transcript.setText(_short(text, 34))
         self.right_panel.append_turn("YOU", text)
         self._live_text = f"You · {_short(text, 54)}"
+        self._log_activity(f'STT "{_short(text, 120)}"', "user")
         self._refresh_hint()
 
     def _on_reply(self, text):
         self.right_panel.append_turn("JARVIS", text)
         self._live_text = f"Jarvis · {_short(text, 54)}"
+        self._log_activity(f'CORE "{_short(text, 120)}"', "reply")
         self._refresh_hint()
         self._refresh_briefing()
 
@@ -2898,6 +3364,7 @@ class JarvisWidget(QWidget):
         """Flash the orb red after a worker failure, then recover to Idle."""
         self._error_hold = True
         self.transcript.setText(_short(f"⚠ {text}", 34))
+        self._log_activity(f"ERR {_short(text, 140)}", "error")
         self.set_state(ERROR)
         QTimer.singleShot(2800, self._clear_error)
 
@@ -2907,7 +3374,7 @@ class JarvisWidget(QWidget):
             self.set_state(MUTED if voice.is_mic_muted() else IDLE)
 
     def _refresh_briefing(self):
-        """Read the existing SQLite memory into the chat rail (never raises)."""
+        """Read the existing SQLite memory into the transcript rail."""
         panel = getattr(self, "right_panel", None)
         memory = getattr(self, "memory", None)
         if panel is None or memory is None:
@@ -2932,10 +3399,30 @@ class JarvisWidget(QWidget):
         panel.set_history(entries[-4:])
         panel.set_facts(facts)
 
+    def _log_activity(self, text, level="info"):
+        """Feed the real internal event stream into the terminal panel."""
+        panel = getattr(self, "right_panel", None)
+        if panel is not None:
+            try:
+                panel.log(text, level)
+            except Exception:
+                pass
+
+    def _refresh_header_link(self):
+        """Show the real backend mode: cloud link or local/offline router."""
+        title = getattr(self, "title_bar", None)
+        if title is None:
+            return
+        if config.is_api_key_configured():
+            title.set_link("Cloud link", _TEAL)
+        else:
+            title.set_link("Local mode", _AMBER)
+
     def _flash(self, text):
         """Show a short-lived contextual line under the orb and in the sink."""
         self.transcript.setText(text)
         self._flash_active = True
+        self._log_activity(f"SYS {_short(text, 150)}", "warn")
         if hasattr(self, "status_hint"):
             self.status_hint.setText(text)
         token = getattr(self, "_flash_token", 0) + 1
@@ -2949,6 +3436,72 @@ class JarvisWidget(QWidget):
             self._refresh_hint()
 
         QTimer.singleShot(2200, restore)
+
+    # -- typed command console ------------------------------------------- #
+    def _focus_command(self):
+        bar = getattr(self, "command_bar", None)
+        if bar is None or not bar.isVisible():
+            self._flash("Command console is hidden at this window size")
+            return
+        bar.focus_input()
+
+    def _submit_text(self, text):
+        """Dispatch one command bar entry through the real ``main.handle`` path."""
+        text = " ".join(str(text or "").split())
+        if not text:
+            return
+        bar = getattr(self, "command_bar", None)
+        worker = getattr(self, "worker", None)
+        if worker is not None and worker.isRunning():
+            self._log_activity("BUSY voice session is using the dispatcher", "warn")
+            self._flash("Voice session active — press Stop first")
+            return
+        text_worker = getattr(self, "text_worker", None)
+        if text_worker is not None and text_worker.isRunning():
+            self._flash("A typed command is already running")
+            return
+
+        self._log_activity(f'USR "{_short(text, 160)}"', "user")
+        self.right_panel.append_turn("YOU", text)
+        if is_shutdown(text):
+            # Same explicit shutdown phrase as the voice worker; the exit is
+            # intentional, but still goes through the guarded quit path.
+            self._live_text = "Shutting down…"
+            self._refresh_hint()
+            self._flash("Shutting down, sir.")
+            QTimer.singleShot(700, self.quit)
+            return
+
+        bar.set_busy(True)
+        self._log_activity("EXEC routing through the local router / agent", "info")
+        worker = TextCommandWorker(self.memory, text, self)
+        worker.state_changed.connect(self.set_state)
+        worker.replied.connect(self._on_text_reply)
+        worker.failed.connect(self._on_text_failed)
+        worker.latency.connect(self._on_latency)
+        worker.kind.connect(
+            lambda kind: self._log_activity(f"ROUTE {kind or 'agent'}", "info")
+        )
+        worker.finished.connect(self._on_text_done)
+        self.text_worker = worker
+        worker.start()
+
+    def _on_text_reply(self, text):
+        self._on_reply(text)
+
+    def _on_text_failed(self, text):
+        self._on_error(text)
+
+    def _on_text_done(self):
+        worker = getattr(self, "text_worker", None)
+        self.text_worker = None
+        if worker is not None:
+            worker.deleteLater()
+        bar = getattr(self, "command_bar", None)
+        if bar is not None:
+            bar.set_busy(False)
+            bar.focus_input()
+        self._log_activity("READY", "state")
 
     # -- wake word ("Hey Jarvis") ----------------------------------------- #
     def _start_wake(self):
@@ -3299,6 +3852,10 @@ class JarvisWidget(QWidget):
         """
         if voice.is_mic_muted():
             self.set_mic_muted(False)
+        text_worker = getattr(self, "text_worker", None)
+        if text_worker is not None and text_worker.isRunning():
+            self._flash("A typed command is still running — please wait")
+            return
         # A new explicit turn cancels a lingering error hold so the orb can
         # immediately show Listening instead of remaining red.
         self._error_hold = False
@@ -3311,9 +3868,11 @@ class JarvisWidget(QWidget):
             return
         if not self.isVisible():
             self.show()
+        self._log_activity("MIC opening capture for a voice turn", "state")
         self.worker = JarvisWorker(self.memory, self, chat=self._chat)
         self.worker.state_changed.connect(self.set_state)
         self.worker.message.connect(self._log)
+        self.worker.message.connect(self._on_worker_message)
         self.worker.heard.connect(self._on_heard)
         self.worker.level.connect(self._on_level)
         self.worker.mic_changed.connect(self._sync_mic_ui)
@@ -3324,6 +3883,9 @@ class JarvisWidget(QWidget):
         failed = getattr(self.worker, "failed", None)
         if failed is not None:
             failed.connect(self._on_error)
+        latency = getattr(self.worker, "latency", None)
+        if latency is not None:
+            latency.connect(self._on_latency)
         self.worker.start()
 
     def toggle_visible(self):
@@ -3349,11 +3911,25 @@ class JarvisWidget(QWidget):
         if self._wake is not None:
             self._wake.stop()
         voice.stop_speaking()
+        telemetry = getattr(self, "left_panel", None)
+        if telemetry is not None:
+            try:
+                telemetry.stop()
+            except Exception:
+                pass
         if self.tray is not None:
             self.tray.hide()
         if self.worker is not None and self.worker.isRunning():
             self.worker.wait(5000)
+        text_worker = getattr(self, "text_worker", None)
+        if text_worker is not None and text_worker.isRunning():
+            text_worker.wait(5000)
         QApplication.quit()
+
+    def _on_worker_message(self, text):
+        """Mirror worker diagnostics into the visible activity stream."""
+        level = "error" if str(text).strip().startswith("⚠") else "info"
+        self._log_activity(str(text), level)
 
     @staticmethod
     def _log(text):
@@ -3480,12 +4056,15 @@ class JarvisWidget(QWidget):
         super().leaveEvent(event)
 
     def keyPressEvent(self, event):
-        if event.key() == Qt.Key_Escape:
+        if (event.key() == Qt.Key_K
+                and event.modifiers() & Qt.ControlModifier):
+            self._focus_command()
+        elif event.key() == Qt.Key_Escape:
             self._halt_for_hide()            # same clean Idle state as the ✕
             self.hide()                      # hide to tray, don't quit
-        elif event.key() == Qt.Key_M:
+        elif event.key() == Qt.Key_M and not event.modifiers():
             self.toggle_mute()
-        elif event.key() == Qt.Key_Space:
+        elif event.key() == Qt.Key_Space and not event.modifiers():
             self._stop()
         else:
             super().keyPressEvent(event)
@@ -3497,6 +4076,8 @@ class JarvisWidget(QWidget):
         # not a misleading blue Idle orb.
         if voice.is_mic_muted():
             self.set_state(MUTED)
+        else:
+            self._refresh_header_link()
         if self.tray is not None:
             self.tray.sync_toggle(True)
 
@@ -3514,8 +4095,17 @@ class JarvisWidget(QWidget):
         """
         if self._quitting:
             self._stop_hotkey()
+            telemetry = getattr(self, "left_panel", None)
+            if telemetry is not None:
+                try:
+                    telemetry.stop()
+                except Exception:
+                    pass
             if self.worker is not None and self.worker.isRunning():
                 self.worker.wait(5000)
+            text_worker = getattr(self, "text_worker", None)
+            if text_worker is not None and text_worker.isRunning():
+                text_worker.wait(5000)
             event.accept()
             return
         event.ignore()
@@ -3559,6 +4149,7 @@ def main():
     server.start()
     widget.wake_server = server
 
+    widget._center()
     widget.show()
     try:
         return app.exec_()
