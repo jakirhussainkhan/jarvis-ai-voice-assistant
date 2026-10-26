@@ -71,14 +71,18 @@ python -m PyInstaller `
     --hidden-import PIL.ImageGrab `
     --hidden-import plyer.platforms.win.notification `
     --collect-all sounddevice `
-    --collect-data sounddevice `
+    --collect-binaries _sounddevice_data `
+    --collect-all onnxruntime `
+    --collect-all chromadb `
+    --collect-all silero_vad `
+    --collect-all pywinctl `
+    --collect-all pyautogui `
     --collect-submodules comtypes `
     --collect-submodules pycaw `
     --collect-data tzdata `
     --exclude-module faster_whisper `
     --exclude-module fastembed `
     --exclude-module openwakeword `
-    --exclude-module onnxruntime `
     --exclude-module ctranslate2 `
     --exclude-module tokenizers `
     --exclude-module huggingface_hub `

@@ -33,6 +33,43 @@ is installed.
 | Spoken voice | `en-GB-RyanNeural` (British male); override with `JARVIS_TTS_VOICE` |
 | Published | GitHub, tags **`v1.0.1`**…**`v3.0.0`** (README + MIT LICENSE) |
 
+## The v3.0.0 Final Release (2026-10-26)
+
+JARVIS v3.0.0 is the final release: the desktop app, the HUD, the packaged
+builds, the YouTube flow and the documentation all ship together under one
+version and one tag.
+
+- **Zero-dependency builds.** End users install no Python and no audio/desktop
+  helper tools by hand. The Windows `JARVIS.exe` bundles `ffmpeg.exe`; the macOS
+  `JARVIS.dmg` bundles a static ffmpeg; the Linux `.deb` declares its runtime
+  packages (including `ffmpeg` and `tzdata`). PyInstaller now also collects the
+  runtime pieces the intelligence layer needs — `onnxruntime`, `chromadb` and
+  `silero_vad` — so VAD and semantic memory work in the frozen app.
+- **The Iron Man HUD.** `gui.py` + `hud.py` provide a full-screen, frameless HUD
+  with the live Arc Reactor, CPU/RAM/disk telemetry, transcript and activity
+  panels, a command bar and a tray icon. It keeps click-to-talk, the
+  **"Hey Jarvis"** wake word, the **Ctrl+Shift+J** / **Ctrl+Alt+J** hotkey,
+  barge-in, mic mute and silent close-to-tray.
+- **YouTube confirmation flow.** A spoken "play <song>" first resolves the top
+  `yt-dlp` result, names the real title and asks **"I found <title>. Do you want
+  me to play this?"** before touching the browser. Playback is verified before
+  JARVIS says it is playing, the existing YouTube tab is reused instead of
+  opening duplicates, and an unresolvable query falls back to the results page.
+- **The Arc Reactor logo.** `assets/jarvis-reactor-source.svg` remains the single
+  source of truth. The window, tray, launcher PNGs and Windows ICO / macOS ICNS
+  are all generated from it, and legacy app logos are gone.
+- **Voice Commands documentation.** New
+  [`docs/voice_commands/COMMANDS.md`](docs/voice_commands/COMMANDS.md) documents
+  every supported command with examples, grouped into app control, system
+  telemetry, media and YouTube, memory, web and vision, terminal dictation and
+  CodeAct Python. The README links to it prominently and now spells out the
+  Linux/macOS curl and Windows PowerShell `irm` one-liners plus a dedicated
+  **How to Run** section.
+- **Release automation.** Pushing the annotated `v3.0.0` tag triggers
+  `.github/workflows/release.yml`, which builds `JARVIS.exe`,
+  `jarvis_3.0.0_amd64.deb` and `JARVIS.dmg`, then publishes them to the GitHub
+  release.
+
 ## The v3.0.0 Intelligence & Extensibility Update (2026-10-26)
 
 Jarvis v3.0.0 turns the assistant into an extensible platform: external tools can

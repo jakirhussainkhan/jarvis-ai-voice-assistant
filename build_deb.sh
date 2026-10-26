@@ -33,6 +33,8 @@ echo "==> Building the frozen GUI binary"
 # Optional ML extras (offline STT/embeddings/wake word) are deliberately not
 # frozen: they are loaded lazily at runtime and fall back cleanly when absent.
 # Keeping them out makes the release smaller and much more portable.
+# ffmpeg is intentionally NOT bundled: the .deb depends on the system package
+# so the distro keeps it patched, and voice._ffmpeg_binary() falls back to PATH.
 "$PYTHON" -m PyInstaller \
     --noconfirm \
     --clean \
@@ -46,12 +48,14 @@ echo "==> Building the frozen GUI binary"
     --hidden-import pynput.mouse._xorg \
     --hidden-import pywinctl \
     --collect-all sounddevice \
-    --collect-submodules pywinctl \
+    --collect-all onnxruntime \
+    --collect-all chromadb \
+    --collect-all silero_vad \
+    --collect-all pywinctl \
     --collect-data tzdata \
     --exclude-module faster_whisper \
     --exclude-module fastembed \
     --exclude-module openwakeword \
-    --exclude-module onnxruntime \
     --exclude-module ctranslate2 \
     --exclude-module tokenizers \
     --exclude-module huggingface_hub \
@@ -112,7 +116,7 @@ Priority: optional
 Architecture: ${ARCH}
 Installed-Size: ${INSTALLED_SIZE}
 Maintainer: Jakir Hussain Khan <jakirhussainkhan@users.noreply.github.com>
-Depends: libportaudio2, libasound2 | libasound2t64, ffmpeg, libxcb-xinerama0, libxcb-icccm4, libxcb-image0, libxcb-keysyms1, libxcb-render-util0, libxcb-shape0, libxkbcommon-x11-0, libegl1, libgl1, libdbus-1-3
+Depends: python3, ffmpeg, libportaudio2, libasound2 | libasound2t64, tzdata, libxcb-xinerama0, libxcb-icccm4, libxcb-image0, libxcb-keysyms1, libxcb-render-util0, libxcb-shape0, libxkbcommon-x11-0, libegl1, libgl1, libdbus-1-3
 Recommends: pulseaudio-utils, playerctl, brightnessctl, wmctrl, xdotool, yt-dlp, scrot, xclip
 Description: JARVIS voice-controlled desktop assistant
  JARVIS is a voice-controlled desktop assistant for Linux, Windows and macOS.

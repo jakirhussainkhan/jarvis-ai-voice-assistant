@@ -48,6 +48,39 @@ make_icon 512  icon_512x512.png
 make_icon 1024 icon_512x512@2x.png
 iconutil -c icns "$ICONSET" -o "build/JARVIS.icns"
 
+echo "==> Preparing a static macOS ffmpeg"
+# A downloaded .dmg cannot assume Homebrew or a system ffmpeg. Fetch the static
+# Intel build (the release runner is macos-15-intel; it also runs on Apple
+# Silicon through Rosetta) and place it beside the app executable later. Override
+# JARVIS_FFMPEG_URL when building a native arm64 bundle.
+FFMPEG_URL="${JARVIS_FFMPEG_URL:-https://evermeet.cx/ffmpeg/getrelease/zip}"
+FFMPEG_ZIP="build/ffmpeg-macos.zip"
+FFMPEG_UNPACKED="build/ffmpeg-macos"
+FFMPEG_BIN="build/ffmpeg"
+if [ ! -x "$FFMPEG_BIN" ]; then
+    mkdir -p build
+    rm -rf "$FFMPEG_UNPACKED"
+    mkdir -p "$FFMPEG_UNPACKED"
+    echo "    Downloading $FFMPEG_URL"
+    curl -L --fail --retry 3 --silent --show-error \
+        -o "$FFMPEG_ZIP" "$FFMPEG_URL"
+    unzip -q -o "$FFMPEG_ZIP" -d "$FFMPEG_UNPACKED"
+    if [ -f "$FFMPEG_UNPACKED/ffmpeg" ]; then
+        FOUND_FFMPEG="$FFMPEG_UNPACKED/ffmpeg"
+    else
+        # evermeet normally puts the binary at the archive root; keep a fallback
+        # for archives that wrap it in a directory. ``|| true`` keeps pipefail
+        # from treating head's early close as a build failure.
+        FOUND_FFMPEG="$(find "$FFMPEG_UNPACKED" -type f -name ffmpeg | head -n 1 || true)"
+    fi
+    if [ -z "$FOUND_FFMPEG" ]; then
+        echo "Build failed: ffmpeg was not found in the downloaded archive." >&2
+        exit 1
+    fi
+    cp "$FOUND_FFMPEG" "$FFMPEG_BIN"
+fi
+chmod +x "$FFMPEG_BIN"
+
 echo "==> Building JARVIS.app"
 # Optional ML extras are lazy runtime features, not part of the app bundle.
 "$PYTHON" -m PyInstaller \
@@ -67,12 +100,16 @@ echo "==> Building JARVIS.app"
     --hidden-import pyautogui \
     --hidden-import PIL.ImageGrab \
     --collect-all sounddevice \
-    --collect-submodules pywinctl \
+    --collect-binaries _sounddevice_data \
+    --collect-all onnxruntime \
+    --collect-all chromadb \
+    --collect-all silero_vad \
+    --collect-all pywinctl \
+    --collect-all pyautogui \
     --collect-data tzdata \
     --exclude-module faster_whisper \
     --exclude-module fastembed \
     --exclude-module openwakeword \
-    --exclude-module onnxruntime \
     --exclude-module ctranslate2 \
     --exclude-module tokenizers \
     --exclude-module huggingface_hub \
@@ -81,6 +118,17 @@ echo "==> Building JARVIS.app"
 APP="dist/JARVIS.app"
 if [ ! -d "$APP" ]; then
     echo "Build failed: $APP was not produced." >&2
+    exit 1
+fi
+
+# voice._ffmpeg_binary() checks sys._MEIPASS and the executable's directory.
+# Contents/MacOS is exactly where the frozen launcher lives, so the bundled
+# ffmpeg is found even when the app is launched from Finder.
+echo "==> Bundling ffmpeg into the app"
+cp "$FFMPEG_BIN" "$APP/Contents/MacOS/ffmpeg"
+chmod +x "$APP/Contents/MacOS/ffmpeg"
+if [ ! -x "$APP/Contents/MacOS/ffmpeg" ]; then
+    echo "Build failed: the app does not contain an executable ffmpeg." >&2
     exit 1
 fi
 
@@ -99,9 +147,12 @@ with open(path, "rb") as handle:
 
 info.update({
     "NSMicrophoneUsageDescription":
-        "JARVIS needs the microphone to hear your voice commands.",
+        "JARVIS needs microphone access to hear your voice commands.",
+    "NSAccessibilityUsageDescription":
+        "JARVIS needs accessibility access to control windows and send keyboard shortcuts.",
     "NSAppleEventsUsageDescription":
-        "JARVIS uses AppleScript to control apps, media, volume and notifications.",
+        "JARVIS needs to control other apps.",
+    "LSMinimumSystemVersion": "10.15",
     "NSDesktopFolderUsageDescription":
         "JARVIS opens files and folders you ask it to work with.",
     "NSDocumentsFolderUsageDescription":

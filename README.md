@@ -2,7 +2,9 @@
 
 # Jarvis — Cross-Platform Voice Assistant
 
-**Version 2.3.0**
+**Version 3.0.0**
+
+> 🎙️ **What can I say?** Open the complete **[Voice Commands Guide](docs/voice_commands/COMMANDS.md)** — every app, media, YouTube, memory, screen, terminal and Python command, with examples.
 
 ## Download and run (no Python needed)
 
@@ -12,13 +14,13 @@ Prebuilt apps are attached to the
 | Platform | Download | First launch |
 | --- | --- | --- |
 | Windows 10/11 | `JARVIS.exe` | Double-click it. If SmartScreen appears, choose **More info → Run anyway**. |
-| Linux (Debian/Ubuntu) | `jarvis_2.3.0_amd64.deb` | Double-click it, or run `sudo apt install ./jarvis_2.3.0_amd64.deb`. |
+| Linux (Debian/Ubuntu) | `jarvis_3.0.0_amd64.deb` | Double-click it, or run `sudo apt install ./jarvis_3.0.0_amd64.deb`. |
 | macOS 12+ (Intel or Apple Silicon) | `JARVIS.dmg` | Open it, drag **JARVIS** to **Applications**, then right-click the app and choose **Open** the first time. |
 
 The macOS build is Intel; Apple Silicon runs it through Rosetta 2, which macOS
 offers to install automatically the first time.
 
-The app opens a small window and asks for a free
+The app opens the HUD and asks for a free
 [Groq API key](https://console.groq.com/keys) on first run. The key is stored
 only in your own home folder (`~/.jarvis/.env`). Microphone permission is
 requested automatically; see the platform guides for screen/accessibility
@@ -26,7 +28,7 @@ permissions.
 
 The packaged Windows build bundles `ffmpeg.exe`, so audio playback works without
 a separate install. The EXE does **not** include the optional offline wake word:
-press **Ctrl+Shift+J** (or **Ctrl+Alt+J**), or click the floating orb, to talk.
+press **Ctrl+Shift+J** (or **Ctrl+Alt+J**), or click the Arc Reactor, to talk.
 The first launch unpacks roughly 150 MB, so the window can take 10–20 seconds to
 appear — do not double-click it twice.
 
@@ -39,9 +41,9 @@ A voice-controlled desktop assistant for **Linux, Windows and macOS** that can
 command; Jarvis either handles it **locally and offline** (regex router — no API
 call) or hands it to a **Groq-backed agent** that can call 44 tools, then answers
 out loud in English. Speech recognition and replies are **English-only by
-design**. A PyQt5 ChatGPT-Voice-style card lives in the system tray and talks
-when you click it — or when you just say **"Hey Jarvis"**, once the optional
-offline wake word is installed.
+design**. A full-screen Iron Man-style HUD lives in the system tray and talks
+when you click the reactor — or when you just say **"Hey Jarvis"**, once the
+optional offline wake word is installed.
 
 Every OS-specific action lives behind a **platform adapter**
 (`platform_adapters/`): Linux uses `arecord`/`pactl`/`playerctl`/`wmctrl`/`xdotool`/
@@ -58,7 +60,29 @@ copy-paste install command for you to run yourself, but it never executes one.
 
 ---
 
-## What's new in the UI overhaul
+## What's new in 3.0.0
+
+- **Zero-dependency end-user builds.** The Windows `JARVIS.exe` bundles
+  `ffmpeg.exe`, the macOS `JARVIS.dmg` bundles a static ffmpeg, and the Linux
+  `.deb` declares the system packages it needs. End users install no Python and
+  no audio/desktop tooling by hand.
+- **The Iron Man HUD.** The GUI is a full-screen, frameless HUD with a live Arc
+  Reactor, system telemetry, transcript and activity panels, and a command bar.
+  It still lives in the tray, still supports **"Hey Jarvis"**, and still hides
+  instead of quitting when you close it.
+- **A safer YouTube confirmation flow.** "Play *song*" resolves the real video
+  title first and asks **"I found <title>. Do you want me to play this?"** before
+  it touches the browser. It reuses the YouTube tab you already have open and
+  verifies that playback actually started instead of claiming success.
+- **The Arc Reactor logo everywhere.** One canonical SVG
+  (`assets/jarvis-reactor-source.svg`) drives the window, tray, launcher and
+  Windows/macOS icons, so the artwork can never drift between platforms.
+- **A complete Voice Commands guide.** Every supported command is now documented
+  in [`docs/voice_commands/COMMANDS.md`](docs/voice_commands/COMMANDS.md),
+  grouped by app control, system telemetry, media and YouTube, memory, web and
+  vision, and terminal/Python automation.
+
+## Earlier UI: the ChatGPT-Voice-style card
 
 - **A ChatGPT-Voice-style window.** The old floating reactor is now a frameless,
   rounded dark card (`#1E1E1E`), always on top, with minimise/close controls in
@@ -379,20 +403,82 @@ the wake word is missing, and Jarvis itself never installs anything.
 
 ## Installation
 
-Pick your platform and follow its guide. Each installer handles the Python venv, platform-specific dependencies, and the starter configuration — about 3 minutes on broadband.
+The installers create `venv/`, install `requirements.txt`, and add the
+platform's audio and desktop helper tools. Expect about 3 minutes on broadband.
 
-| Platform | Installation guide | One-liner |
+### 1. Clone the repository
+
+The one-liners below must run from inside the checkout:
+
+```bash
+git clone https://github.com/jakirhussainkhan/jarvis-ai-voice-assistant.git
+cd jarvis-ai-voice-assistant
+```
+
+### 2. Run your platform's one-liner
+
+**Linux (curl):**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jakirhussainkhan/jarvis-ai-voice-assistant/main/install.sh | bash
+```
+
+**Windows (PowerShell `irm`):**
+
+```powershell
+irm https://raw.githubusercontent.com/jakirhussainkhan/jarvis-ai-voice-assistant/main/install.ps1 | iex
+```
+
+**macOS (curl):**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jakirhussainkhan/jarvis-ai-voice-assistant/main/install.sh | bash
+```
+
+Each installer is a small shell/PowerShell script in this repository, so you can
+[read `install.sh`](install.sh) or
+[read `install.ps1`](install.ps1) before running it.
+
+### 3. Add your Groq API key
+
+Get a free key from [console.groq.com/keys](https://console.groq.com/keys), then:
+
+**Linux / macOS:**
+
+```bash
+echo "GROQ_API_KEY=your-key-here" > .env
+```
+
+**Windows PowerShell:**
+
+```powershell
+"GROQ_API_KEY=your-key-here" | Out-File -Encoding ascii .env
+```
+
+The packaged GUI also asks for the key on first run and stores it in
+`~/.jarvis/.env`.
+
+### 4. Check readiness and start
+
+```bash
+./venv/bin/python doctor.py          # Linux / macOS
+```
+
+```powershell
+.\venv\Scripts\python.exe main.py --check   # Windows
+```
+
+Then follow [How to Run](#how-to-run) below.
+
+| Platform | Detailed guide | Prebuilt download |
 | --- | --- | --- |
-| **Linux** | [Linux Instructions](docs/install-linux.md) | `curl -fsSL https://raw.githubusercontent.com/jakirhussainkhan/jarvis-ai-voice-assistant/main/install.sh \| bash` |
-| **Native Windows** | [Windows Instructions](docs/install-windows.md) | `irm https://raw.githubusercontent.com/jakirhussainkhan/jarvis-ai-voice-assistant/main/install.ps1 \| iex` |
-| **macOS** | [macOS Instructions](docs/install-macos.md) | `curl -fsSL https://raw.githubusercontent.com/jakirhussainkhan/jarvis-ai-voice-assistant/main/install.sh \| bash` |
-| **Desktop GUI** | Download from the [latest release](https://github.com/jakirhussainkhan/jarvis-ai-voice-assistant/releases) | — |
+| **Linux** | [Linux Instructions](docs/install-linux.md) | `jarvis_3.0.0_amd64.deb` |
+| **Native Windows** | [Windows Instructions](docs/install-windows.md) | `JARVIS.exe` |
+| **macOS** | [macOS Instructions](docs/install-macos.md) | `JARVIS.dmg` |
+| **All releases** | [Latest release](https://github.com/jakirhussainkhan/jarvis-ai-voice-assistant/releases/latest) | — |
 
-Run the one-liner from inside the cloned repository folder. Then launch JARVIS with `./run.sh` (Linux/macOS) or by double-clicking **`start.bat`** (Windows; `start.bat --console` keeps a log window open). Check readiness with `./venv/bin/python doctor.py` or `.\venv\Scripts\python.exe main.py --check`.
-
-On Windows, **`stop.bat`** stops Jarvis cleanly, even when the widget is hidden in the tray. To start it at login, run `.\venv\Scripts\python.exe main.py --autostart-enable` (undo with `--autostart-disable`).
-
-Platform-specific notes (WSL2 setup, native-Windows scheduled-task service, desktop prerequisites, manual install) are covered in the three guides above.
+Platform-specific notes (WSL2 setup, native-Windows scheduled-task service,
+desktop prerequisites, manual install) are covered in the three guides above.
 
 ### Configuration
 
@@ -441,10 +527,27 @@ token cap and tool-round limit are constants in `config.py`.
 
 ---
 
-## Usage
+## How to Run
+
+After installation, start the graphical HUD (the normal way to use JARVIS):
 
 ```bash
-./run.sh                                     # the GUI (floating widget + tray)
+./run.sh          # Linux / macOS
+```
+
+```powershell
+.\start.bat       # Windows (no console window)
+```
+
+The HUD opens on screen and adds a tray icon. Click the Arc Reactor — or say
+**"Hey Jarvis"**, press **Ctrl+Shift+J** / **Ctrl+Alt+J**, or use the tray menu —
+to talk. Closing the HUD hides it to the tray; use **Quit** in the tray menu or
+`main.py --quit` to stop it.
+
+You can also run the terminal voice loop or the individual tools:
+
+```bash
+./run.sh                                     # the HUD (same as above)
 ./venv/bin/python main.py                    # terminal voice loop
 ./venv/bin/python main.py --text             # type commands instead of speaking
 ./venv/bin/python main.py --offline          # router only (no network)
@@ -521,6 +624,12 @@ pkill -f "main.py --gui"                   # stop it again
 
 ### Voice commands
 
+📖 **[Open the complete Voice Commands Guide →](docs/voice_commands/COMMANDS.md)**
+It covers app control, system telemetry, media and YouTube, memory, web and
+vision, terminal dictation, CodeAct Python, timers and confirmations.
+
+A quick sample:
+
 | You say | Handled by |
 | --- | --- |
 | "open telegram" / "open files" / "open terminal" / "open settings" | local router (fuzzy app match) |
@@ -529,7 +638,7 @@ pkill -f "main.py --gui"                   # stop it again
 | "what windows are open" / "list windows" | local router (`wmctrl`) |
 | "open youtube" | local router |
 | "play lo-fi on youtube" | local router (`yt-dlp`; only the song name is used) |
-| "play kesariya" / "play the song kesariya" | local router (`yt-dlp`; plays it) |
+| "play kesariya" / "play the song kesariya" | local router (`yt-dlp`; resolves the title and asks before playing) |
 | "play the second song" / "play this video" / "play that one" / "play it" | local router → **vision** (finds it on your screen) |
 | "search cats on youtube" | Groq agent → YouTube search |
 | "pause" / "resume" / "next song" / "stop the music" | local router (`playerctl`; `next`/`previous` fall back to the YouTube page) |
@@ -542,11 +651,14 @@ pkill -f "main.py --gui"                   # stop it again
 | "help" / "what can you do offline" | local router (offline capability list) |
 | "terminal ls -la" / "run the command df -h" | local router → **guarded terminal** |
 | "shut down" / "restart" / "log out" / "suspend" | local router → **"Are you sure?"** |
-| "what's on my screen?" / "read this" / "describe the screen" | local router → **vision** |
+| "what's on my screen?" / "read the screen" / "describe the screen" | local router → **vision** |
 | "search for lo-fi music" / "look up the weather" / "latest python version" | Groq agent (live internet) |
-| "click the login button" / "open the first result" | Groq agent → screen automation |
+| "click the login button" | Groq agent → screen automation |
+| "open the first result" | local router → **vision** |
 | "run ls in the terminal and show me the output" | Groq agent → terminal tool |
 | "set a 5 minute timer" / "remind me to call mom in 10 minutes" | Groq agent → timers |
+| "remember my name is Jakir" / "what do you remember about me?" | Groq agent → long-term memory |
+| "turn off the mic" / "turn on the mic" | local router (microphone mute) |
 
 `close youtube` closes the *focused tab* (Ctrl+W) when possible, and never
 closes the whole browser unless you say "close the browser" / "close brave".
@@ -648,7 +760,7 @@ confirmation first, then tries the router, and only sends a miss to the agent.
 | `assets/jarvis-reactor-source.svg` | The sole tracked app-icon artwork; generated PNG/ICO variants are ignored and recreated by builds. |
 | `test_mic.py` | Standalone mic diagnostic. |
 
-### Tools (43)
+### Tools (44)
 
 Apps & windows: `fn_open_app`, `fn_close_app`, `fn_list_running`, `fn_list_windows`,
 `fn_focus_window`, `fn_minimize_window`, `fn_maximize_window`.

@@ -27,6 +27,7 @@ import sys
 import threading
 import time
 from collections import deque
+from pathlib import Path
 
 # PyQt5 must not be the first to load onnxruntime's DLLs on Windows: importing
 # fastembed afterwards (the semantic cache does it lazily from the worker
@@ -350,6 +351,38 @@ def _voice_label(configured=None):
 def make_icon(size=64):
     """Return the modern glowing-orb/J icon at ``size`` px as a ``QIcon``."""
     return QIcon(QPixmap.fromImage(render_icon(size)))
+
+
+def _assets_dir():
+    """Locate the bundled ``assets`` directory from source or PyInstaller."""
+    roots = []
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        roots.append(Path(meipass))
+    roots.append(Path(__file__).resolve().parent)
+    for root in roots:
+        candidate = root / "assets"
+        if candidate.is_dir():
+            return candidate
+    return Path(__file__).resolve().parent / "assets"
+
+
+def app_icon(size=64):
+    """Load the generated Arc Reactor PNG, falling back to the SVG renderer.
+
+    The PNG assets are produced by ``gen_icon.py`` and are the canonical tray,
+    window and application icon.  ``sys._MEIPASS`` is checked first so a frozen
+    build finds the copies bundled by PyInstaller, while a source checkout
+    resolves them relative to this file rather than the current directory.
+    """
+    assets = _assets_dir()
+    for name in (f"jarvis-{size}.png", "jarvis-256.png", "jarvis-64.png"):
+        path = assets / name
+        if path.is_file():
+            icon = QIcon(str(path))
+            if not icon.isNull():
+                return icon
+    return make_icon(size)
 
 
 # --------------------------------------------------------------------------- #
@@ -2682,7 +2715,7 @@ class JarvisTray(QSystemTrayIcon):
     """
 
     def __init__(self, widget):
-        super().__init__(make_icon(64), widget)
+        super().__init__(app_icon(64), widget)
         self.widget = widget
         self.setToolTip("JARVIS — click to show")
 
@@ -2787,7 +2820,7 @@ class JarvisWidget(QWidget):
         self.setObjectName("jarvisCard")
         self.setStyleSheet(_APP_STYLE)
         self.setWindowTitle("JARVIS")
-        self.setWindowIcon(make_icon(64))
+        self.setWindowIcon(app_icon(256))
         # Frameless windows have no system resize border, so the card resizes
         # through the QSizeGrip in the corner and the custom edge dragging in the
         # mouse handlers below.
@@ -4484,7 +4517,7 @@ def main():
 
     app = QApplication(sys.argv)
     app.setApplicationName("JARVIS")
-    app.setWindowIcon(make_icon(64))
+    app.setWindowIcon(app_icon(256))
     # Keep running after the floating window is hidden/closed -> tray lives on.
     app.setQuitOnLastWindowClosed(False)
     configured = run_setup_wizard()
