@@ -11,6 +11,14 @@ TOKEN.txt
 *.wav
 *.mp3
 
+# Generated app icons: the SVG is the only tracked artwork source.
+/assets/jarvis-32.png
+/assets/jarvis-48.png
+/assets/jarvis-64.png
+/assets/jarvis-128.png
+/assets/jarvis-256.png
+/assets/jarvis.ico
+
 # Packaging output (PyInstaller / Debian / macOS)
 build/
 dist/

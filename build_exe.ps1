@@ -17,6 +17,10 @@ Write-Host "==> Installing PyInstaller and the Windows runtime extras"
 python -m pip install --upgrade pyinstaller
 python -m pip install pycaw comtypes pyautogui screen-brightness-control pillow plyer
 
+Write-Host "==> Regenerating icons from the canonical Arc Reactor artwork"
+python gen_icon.py
+if ($LASTEXITCODE -ne 0) { throw "Icon generation failed." }
+
 Write-Host "==> Preparing a static ffmpeg.exe"
 # Jarvis decodes every edge-tts MP3 with ffmpeg and also uses it for media and
 # screenshots. Bundling the static Windows build means an end user never has to

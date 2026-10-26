@@ -22,7 +22,10 @@ echo "==> Installing PyInstaller and the macOS input dependencies"
 # pyautogui is not needed on Linux, but the shared window adapter uses it on
 # macOS for pointer/keyboard control. Without it the bundled app silently loses
 # screen-control commands.
-"$PYTHON" -m pip install --upgrade pyinstaller pyautogui
+"$PYTHON" -m pip install --upgrade pyinstaller pyautogui pillow
+
+echo "==> Regenerating icons from the canonical Arc Reactor artwork"
+"$PYTHON" gen_icon.py
 
 echo "==> Preparing the application icon"
 ICONSET="build/JARVIS.iconset"
