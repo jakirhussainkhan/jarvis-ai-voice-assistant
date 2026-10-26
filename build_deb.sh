@@ -23,8 +23,11 @@ ARCH="amd64"
 PKG="jarvis_${VERSION}_${ARCH}"
 ROOT="build/deb/${PKG}"
 
-echo "==> Installing PyInstaller"
-"$PYTHON" -m pip install --upgrade pyinstaller
+echo "==> Installing PyInstaller and icon tooling"
+"$PYTHON" -m pip install --upgrade pyinstaller pillow
+
+echo "==> Regenerating icons from the canonical Arc Reactor artwork"
+"$PYTHON" gen_icon.py
 
 echo "==> Building the frozen GUI binary"
 # Optional ML extras (offline STT/embeddings/wake word) are deliberately not

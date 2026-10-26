@@ -368,8 +368,15 @@ def test_default_chroma_path_honours_the_environment(monkeypatch):
 
 def test_default_chroma_path_is_under_the_home_directory(monkeypatch):
     monkeypatch.delenv("JARVIS_CHROMA_DB", raising=False)
-    monkeypatch.setenv("HOME", "/home/tester")
-    assert memory_module.default_chroma_path() == "/home/tester/.jarvis/chroma_db"
+    # Windows uses USERPROFILE for expanduser("~"); POSIX uses HOME.
+    if os.name == "nt":
+        home = r"C:\Users\tester"
+        monkeypatch.setenv("USERPROFILE", home)
+    else:
+        home = "/home/tester"
+        monkeypatch.setenv("HOME", home)
+    expected = os.path.join(home, ".jarvis", "chroma_db")
+    assert memory_module.default_chroma_path() == expected
 
 
 # --------------------------------------------------------------------------- #

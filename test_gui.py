@@ -725,25 +725,20 @@ def test_icon_has_a_margin_so_it_is_never_clipped(app):
     assert center.alpha() > 0, "the orb must be painted"
 
 
-def test_icon_is_a_dark_tile_with_a_glowing_orb_and_j(app):
-    """The new mark: charcoal rounded tile, azure orb, bright stylised J."""
+def test_icon_is_a_dark_tile_with_a_cyan_arc_reactor(app):
+    """The app icon uses a charcoal tile and the glowing cyan Arc Reactor."""
     image = gui.make_icon(256).pixmap(256, 256).toImage()
 
-    # The tile edge is dark; the orb core is bright and blue-dominant.
+    # The tile edge is dark; the reactor has a bright white core and cyan ring.
     tile = image.pixelColor(128, 12)
     assert tile.alpha() == 255 and tile.value() < 90, \
         f"the tile must stay dark, got {tile.name()}"
     core = image.pixelColor(128, 128)
-    assert core.blue() > 180 and core.blue() > core.red() + 40, \
-        f"the orb must glow azure, got {core.name()}"
-
-    # The J stem is a bright stroke over the orb, so its darkest channel is much
-    # higher than the orb immediately beside it.
-    stem = image.pixelColor(151, 120)
-    beside = image.pixelColor(128, 120)
-    assert min(stem.red(), stem.green(), stem.blue()) > \
-        min(beside.red(), beside.green(), beside.blue()) + 40, \
-        f"the J must read against the orb, stem {stem.name()} vs {beside.name()}"
+    assert core.alpha() > 0 and core.value() > 200, \
+        f"the reactor core must be bright, got {core.name()}"
+    cyan_ring = image.pixelColor(128, 112)
+    assert cyan_ring.blue() > cyan_ring.red(), \
+        f"the reactor ring must be cyan/blue, got {cyan_ring.name()}"
 
 
 def test_orb_listening_glows_green(app):
