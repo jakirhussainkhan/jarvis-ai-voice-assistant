@@ -1,14 +1,7 @@
-"""Generate the Jarvis application icons in ``assets/``.
+"""Generate shared JARVIS PNG icons and a multi-resolution Windows ICO.
 
-The artwork lives in :mod:`icon_art`, the same code the live window and tray use,
-so regenerating the PNGs can never make the launcher icon drift from the GUI.
-
-Usage::
-
-    ./venv/bin/python gen_icon.py
-
-Writes ``assets/jarvis-{32,48,64,128,256}.png``. The 48 px size is kept because
-some desktop environments look for it on their panel/task switcher.
+The Arc Reactor SVG is rendered through icon_art.py, which is also used by the
+live GUI and system tray. Running this script refreshes every packaged icon.
 """
 
 import os
@@ -19,6 +12,7 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt5.QtGui import QGuiApplication  # noqa: E402
+from PIL import Image  # noqa: E402
 
 from icon_art import render_icon  # noqa: E402
 
@@ -40,7 +34,18 @@ def main(argv=None):
         print(f"wrote {target}", flush=True)
         written += 1
 
-    print(f"Generated {written} icons in {ASSETS}", flush=True)
+    ico_path = ASSETS / "jarvis.ico"
+    with Image.open(ASSETS / "jarvis-256.png") as source:
+        source.convert("RGBA").save(
+            ico_path,
+            format="ICO",
+            sizes=[
+                (16, 16), (24, 24), (32, 32), (48, 48),
+                (64, 64), (128, 128), (256, 256),
+            ],
+        )
+    print(f"wrote {ico_path}", flush=True)
+    print(f"Generated {written} PNG icons and one ICO in {ASSETS}", flush=True)
     # Keep the reference alive for the duration of the run on some platforms.
     del app
     return 0
