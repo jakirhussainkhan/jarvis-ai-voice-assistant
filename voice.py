@@ -295,11 +295,15 @@ _mic_muted = False
 def set_mic_muted(flag):
     """Mute/unmute Jarvis's own listening and return the new state.
 
-    This is a *Jarvis-internal* mute only: it flips a boolean, cuts off any
-    in-flight capture, and pauses the barge-in monitor, so Jarvis stops
-    listening. The physical system microphone is deliberately left untouched --
-    Jarvis never issues an OS-level mute (``pactl set-source-mute`` or similar),
-    which would light up the keyboard mute LED and silence other applications.
+    This is a *Jarvis-internal* mute only: it flips a boolean, asks any
+    in-flight capture to stop, and pauses the barge-in monitor, so Jarvis stops
+    listening. It is intentionally non-blocking: it only sets events/flags and
+    never waits for a recorder thread or the audio device, so the GUI event
+    loop stays responsive.
+
+    The physical system microphone is deliberately left untouched -- Jarvis
+    never issues an OS-level mute (``pactl set-source-mute`` or similar), which
+    would light up the keyboard mute LED and silence other applications.
 
     Barge-in is explicitly paused while muted so its capture thread cannot keep
     the audio device open. Unmuting resumes normal barge-in detection.
@@ -314,6 +318,7 @@ def set_mic_muted(flag):
         # muted.") must finish, and manual speech must keep working.
     else:
         resume_barge_in()
+    _dbg(f"microphone muted={_mic_muted}")
     return _mic_muted
 
 
@@ -674,7 +679,7 @@ class BargeInMonitor:
 
     def feed(self, data):
         """Process one PCM chunk; return True once barge-in is confirmed."""
-        if not data:
+        if not data or _mic_muted or _barge_paused.is_set():
             return False
         rms = _rms(data, _SAMPLE_WIDTH)
         if rms < self.threshold:
@@ -696,11 +701,16 @@ class BargeInMonitor:
             # Discard the stream-open spike and let the room settle, exactly as
             # the normal listen path does.
             for _ in range(_WARMUP_CHUNKS):
-                if self._stop.is_set():
+                if (self._stop.is_set() or _mic_muted
+                        or _barge_paused.is_set()):
                     return
                 _read_chunk(stream, fd,
                             time.monotonic() + _CHUNK_SECONDS * 2)
-            while not self._stop.is_set():
+            # ``_mic_muted``/``_barge_paused`` are checked on every chunk so a
+            # mute issued while Jarvis is speaking releases the device promptly
+            # instead of leaving the monitor capturing in the background.
+            while (not self._stop.is_set() and not _mic_muted
+                   and not _barge_paused.is_set()):
                 data = _read_chunk(stream, fd,
                                    time.monotonic() + _CHUNK_SECONDS * 2)
                 if not data:
@@ -1131,6 +1141,11 @@ def listen(wait=None, *, label="", barge=False):
         _dbg(f"TIMEOUT:{label or 'listen'} no speech above threshold within "
              f"{wait or _LISTEN_TIMEOUT}s")
         return ""
+    if _mic_muted:
+        # The mic was muted while the recording was still being closed: never
+        # transcribe or dispatch audio that arrived after the mute.
+        _dbg("microphone muted after capture; discarding audio")
+        return ""
 
     rms = _rms(data, _SAMPLE_WIDTH)
     peak = _peak(data, _SAMPLE_WIDTH)
@@ -1169,6 +1184,11 @@ def listen(wait=None, *, label="", barge=False):
 
     _dbg(f"recognised: {text!r}")
     if not text:
+        return ""
+    if _mic_muted:
+        # Muted between capture and recognition: stay silent and do not hand
+        # the text to the agent.
+        _dbg("microphone muted before dispatch; discarding recognised text")
         return ""
     fixed = _fix_misheard_name(text)
     if fixed != text:
