@@ -17,8 +17,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        # macOS-latest has repeatedly left one job queued until GitHub cancels
+        # it without ever assigning a runner. Test macOS on the same Intel image
+        # the release build uses (macos-15-intel) and keep both Python versions
+        # covered by the Linux and Windows jobs.
+        os: [ubuntu-latest, windows-latest]
         python-version: ["3.10", "3.11"]
+        include:
+          - os: macos-15-intel
+            python-version: "3.11"
 
     env:
       # The suite exercises the PyQt5 GUI and the sounddevice-backed audio layer
