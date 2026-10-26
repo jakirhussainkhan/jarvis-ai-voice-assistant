@@ -114,13 +114,13 @@ def _refresh_menu_cache(apps_dir):
 
 
 def ensure_icon():
-    """Return the launcher icon, regenerating it with ``gen_icon`` if missing."""
-    if ICON.exists():
-        return ICON
+    """Refresh the launcher PNG and platform icon assets from the shared source."""
     try:
         import gen_icon
-        gen_icon.main([])
-    except Exception as exc:                       # PyQt missing, headless, ...
+        result = gen_icon.main([])
+        if result:
+            print(f"Jarvis: icon generation returned status {result}.")
+    except Exception as exc:                       # Qt/Pillow missing, headless, ...
         print(f"Jarvis: could not generate {ICON}: {exc}")
     return ICON
 

@@ -1,16 +1,15 @@
-"""Vector artwork for the Jarvis app icon.
+"""Shared Arc Reactor artwork for the JARVIS window, tray, and generated icons.
 
-The icon is drawn once here and consumed by both the live GUI
-(:func:`gui.make_icon`) and the PNG generator (:mod:`gen_icon`), so the window,
-tray and launcher icons can never drift apart.
-
-Only raster primitives are used (no text), which means :func:`render_icon` works
-headless without a QApplication -- useful for generating assets in CI.
+The SVG source is used by the live GUI and by gen_icon.py so every platform uses
+the same icon. The previous painter drawing stays available as a fallback.
 """
 
 import math
+import sys
+from pathlib import Path
 
 from PyQt5.QtCore import QPointF, QRectF, Qt
+from PyQt5.QtSvg import QSvgRenderer
 from PyQt5.QtGui import (QBrush, QColor, QImage, QLinearGradient, QPainter,
                          QPainterPath, QPen, QRadialGradient)
 
@@ -24,17 +23,48 @@ _CORE = QColor(186, 230, 253)         # sky-200
 _HOT = QColor(248, 252, 255)
 
 
+def _source_art_path():
+    """Find the shared SVG in a source checkout or a PyInstaller bundle."""
+    candidates = []
+    bundle_root = getattr(sys, "_MEIPASS", None)
+    if bundle_root:
+        candidates.append(Path(bundle_root) / "assets" / "jarvis-reactor-source.svg")
+    candidates.append(
+        Path(__file__).resolve().parent / "assets" / "jarvis-reactor-source.svg"
+    )
+    for path in candidates:
+        try:
+            if path.is_file():
+                return path
+        except OSError:
+            continue
+    return None
+
+
 def render_icon(size):
-    """Render the icon at ``size`` px and return it as an ARGB ``QImage``."""
-    size = int(size)
+    """Render the shared Arc Reactor source at the requested pixel size."""
+    size = max(1, int(size))
     image = QImage(size, size, QImage.Format_ARGB32)
     image.fill(Qt.transparent)
     painter = QPainter(image)
     painter.setRenderHint(QPainter.Antialiasing, True)
+
+    source_path = _source_art_path()
+    if source_path is not None:
+        try:
+            renderer = QSvgRenderer(str(source_path))
+            if renderer.isValid():
+                renderer.render(painter, QRectF(0, 0, size, size))
+                painter.end()
+                return image
+        except Exception:
+            # Keep icon creation available for incomplete/older distributions.
+            pass
+
+    # Compatibility fallback for source packages without the SVG asset.
     draw_icon(painter, float(size))
     painter.end()
     return image
-
 
 def draw_icon(painter, size):
     """Paint the icon into ``painter`` on a ``size`` x ``size`` canvas."""

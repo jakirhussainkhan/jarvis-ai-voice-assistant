@@ -2,6 +2,7 @@ openai
 SpeechRecognition
 edge-tts
 PyQt5
+Pillow  # shared icon pipeline and Windows ICO generation
 psutil
 python-dotenv
 pytest
