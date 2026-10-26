@@ -16,14 +16,17 @@ built here and in the adapters. Destructive/power actions are invoked through
 import os
 import platform
 import re
+import threading
 import time
 import unicodedata
+from contextlib import contextmanager
 from datetime import datetime
 from difflib import SequenceMatcher
 from pathlib import Path
 
 import psutil
 
+import confirm
 import logger
 from platform_adapters import Audio, Window, System
 from platform_adapters import common
@@ -596,8 +599,104 @@ def search_youtube(query):
 
 _YT_ID = re.compile(r"^[A-Za-z0-9_-]{6,}$")
 
+# The GUI keeps listening after a video starts so media/fullscreen commands work.
+# The worker reads and clears this token once, then arms its short follow-up
+# listening window (see ``JarvisWorker.run``).
+_youtube_state_lock = threading.Lock()
+_youtube_playback_token = None
+_youtube_confirmation = threading.local()
 
-def _finish_youtube_play(query, outcome):
+
+@contextmanager
+def youtube_confirmation():
+    """Mark the current call as a spoken/local YouTube request.
+
+    The low-level :func:`play_youtube` remains an immediate action for
+    programmatic callers and the confirmed action itself. The router wraps a
+    spoken "play <song>" in this context, so the same public function first
+    resolves the title and asks for permission instead of opening the browser.
+    """
+    previous = getattr(_youtube_confirmation, "enabled", False)
+    _youtube_confirmation.enabled = True
+    try:
+        yield
+    finally:
+        _youtube_confirmation.enabled = previous
+
+
+def _confirmation_requested():
+    return bool(getattr(_youtube_confirmation, "enabled", False))
+
+
+def _mark_youtube_playback_started(title=""):
+    """Remember that a video just started for the GUI's 15-second window."""
+    global _youtube_playback_token
+    with _youtube_state_lock:
+        _youtube_playback_token = {
+            "title": title or "",
+            "started_at": time.monotonic(),
+        }
+
+
+def consume_youtube_playback():
+    """Return and clear the "a video just started" token (GUI worker only)."""
+    global _youtube_playback_token
+    with _youtube_state_lock:
+        token = _youtube_playback_token
+        _youtube_playback_token = None
+    return token
+
+
+def _resolve_youtube(query):
+    """Resolve the top YouTube hit without opening or playing anything.
+
+    Returns ``(result, reason)`` where ``result`` is a dict with ``id``,
+    ``title`` and ``url``; ``reason`` explains a miss ("yt-dlp is not
+    installed", "I couldn't find a video"). ``--flat-playlist --print`` keeps
+    the lookup to metadata only -- yt-dlp never selects a media format.
+    """
+    if not has("yt-dlp"):
+        return None, "yt-dlp is not installed"
+
+    rc, out = _run(
+        ["yt-dlp", f"ytsearch1:{query}", "--flat-playlist",
+         "--print", "%(id)s\t%(title)s", "--no-warnings"],
+        timeout=25,
+    )
+    if rc == 0:
+        for line in out.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split("\t", 1)
+            vid = parts[0].strip()
+            if _YT_ID.match(vid):
+                title = parts[1].strip() if len(parts) > 1 else ""
+                return {
+                    "id": vid,
+                    "title": title or query,
+                    "url": f"https://www.youtube.com/watch?v={vid}",
+                }, ""
+    elif rc != 0:
+        # Surface yt-dlp's own error instead of failing silently.
+        _dbg(f"yt-dlp failed (rc={rc}): {out}")
+    return None, "I couldn't find a video"
+
+
+def _fallback_youtube_search(query, reason):
+    """Open the results page when a specific video cannot be resolved."""
+    outcome = _navigate_youtube(_yt_url_search(query))
+    if outcome == "reused":
+        return f"{reason}, so I searched your open YouTube tab for {query}."
+    if outcome == "opened":
+        return f"{reason}, so I opened the YouTube results for {query}."
+    if outcome == "blocked":
+        return ("YouTube is already open, but I couldn't navigate the "
+                "existing tab.")
+    return f"{reason}, and I couldn't open the browser."
+
+
+def _finish_youtube_play(query, outcome, title=""):
     """Wait for the page, make it play, then report the *verified* state.
 
     The spoken reply must never claim "Playing" before the video really is: the
@@ -607,6 +706,8 @@ def _finish_youtube_play(query, outcome):
     """
     time.sleep(2.0)                      # let the browser load the new video
     if ensure_browser_playing():
+        # Only arm the GUI's follow-up listening window after verified playback.
+        _mark_youtube_playback_started(title or query)
         if outcome == "reused":
             return f"Playing {query} in your open YouTube tab."
         return f"Playing {query} on YouTube."
@@ -617,14 +718,62 @@ def _finish_youtube_play(query, outcome):
             "press play or allow autoplay.")
 
 
+def _play_youtube_now(query, resolved=None):
+    """Play immediately (used after confirmation and by direct callers)."""
+    if resolved is None:
+        resolved, reason = _resolve_youtube(query)
+    else:
+        reason = ""
+
+    if resolved:
+        outcome = _navigate_youtube(resolved["url"])
+        if outcome in ("reused", "opened"):
+            # Autoplay is normally blocked without a user gesture, so verify
+            # (and nudge) playback before promising that it is playing.
+            return _finish_youtube_play(
+                query, outcome, resolved.get("title", "")
+            )
+        if outcome == "blocked":
+            return ("YouTube is already open, but I couldn't navigate the "
+                    "existing tab.")
+
+    # yt-dlp missing or failed: navigate to the results page and say so.
+    return _fallback_youtube_search(query, reason)
+
+
+def request_youtube(query):
+    """Resolve a video and ask before playing it.
+
+    This is the spoken-command entry point: it performs the metadata lookup now
+    (so the question can name the real title) and registers the playback action
+    with :mod:`confirm`. Saying "yes" plays exactly the resolved video; anything
+    else cancels. Returns the question to speak.
+    """
+    query = extract_media_query(query)
+    if not query:
+        return "What should I play?"
+
+    resolved, reason = _resolve_youtube(query)
+    if resolved is None:
+        # Nothing specific could be resolved. Searching the results page is not
+        # playback, so it is safe to do immediately (and preserves the old
+        # helpful fallback when yt-dlp is unavailable).
+        return _fallback_youtube_search(query, reason)
+
+    prompt = f"I found {resolved['title']}. Do you want me to play this?"
+    return confirm.ask_action(
+        prompt, lambda: _play_youtube_now(query, resolved)
+    )
+
+
 def play_youtube(query):
     """Play the top yt-dlp result for a song/video name; else open the results.
 
-    The argument may be a raw spoken sentence; only the song/video name is used.
+    Direct/programmatic calls play immediately. Calls made from the spoken/local
+    command path (the router wraps them in :func:`youtube_confirmation`) first
+    resolve the title and ask for confirmation via :func:`request_youtube`.
 
-    Uses ``--flat-playlist --print id`` so yt-dlp only resolves the search hit's
-    id -- it never tries to pick a video format (which fails on YouTube with
-    older yt-dlp builds and would silently downgrade us to a results page).
+    The argument may be a raw spoken sentence; only the song/video name is used.
 
     When a YouTube tab is already open the resolved watch URL (or the results
     URL) is typed into that tab's address bar with ``xdotool`` instead of opening
@@ -633,45 +782,9 @@ def play_youtube(query):
     query = extract_media_query(query)
     if not query:
         return "What should I play?"
-    # The mic stays live and media is never paused: Jarvis keeps listening while
-    # the video plays so "pause music" / "next song" work, and the RMS gate keeps
-    # the background audio from registering as speech.
-    if has("yt-dlp"):
-        rc, out = _run(
-            ["yt-dlp", f"ytsearch1:{query}", "--flat-playlist",
-             "--print", "id", "--no-warnings"],
-            timeout=25,
-        )
-        vid = ""
-        for line in out.splitlines():
-            line = line.strip()
-            if _YT_ID.match(line):
-                vid = line
-                break
-        if rc == 0 and vid:
-            watch_url = f"https://www.youtube.com/watch?v={vid}"
-            outcome = _navigate_youtube(watch_url)
-            if outcome in ("reused", "opened"):
-                # Autoplay is normally blocked without a user gesture, so verify
-                # (and nudge) playback before promising that it is playing.
-                return _finish_youtube_play(query, outcome)
-            if outcome == "blocked":
-                return ("YouTube is already open, but I couldn't navigate the "
-                        "existing tab.")
-        elif rc != 0:
-            # Surface yt-dlp's own error instead of failing silently.
-            _dbg(f"yt-dlp failed (rc={rc}): {out}")
-    # yt-dlp missing or failed: navigate to the results page and say so.
-    reason = "yt-dlp is not installed" if not has("yt-dlp") else "I couldn't find a video"
-    outcome = _navigate_youtube(_yt_url_search(query))
-    if outcome == "reused":
-        return f"{reason}, so I searched your open YouTube tab for {query}."
-    if outcome == "opened":
-        return f"{reason}, so I opened the YouTube results for {query}."
-    if outcome == "blocked":
-        return ("YouTube is already open, but I couldn't navigate the "
-                "existing tab.")
-    return f"{reason}, and I couldn't open the browser."
+    if _confirmation_requested():
+        return request_youtube(query)
+    return _play_youtube_now(query)
 
 
 def close_youtube():
@@ -791,6 +904,35 @@ def _browser_window():
             if wid:
                 return wid
     return None
+
+
+def browser_fullscreen(fullscreen=True):
+    """Toggle the browser/YouTube player's fullscreen mode with the ``f`` key.
+
+    YouTube uses ``f`` as a toggle, so the same key both enters and leaves full
+    screen. The browser window is activated and *verified* to own input focus
+    first (Chromium ignores synthetic keys sent to an unfocused window). The
+    browser is intentionally left focused so the mode change is visible.
+    """
+    state = "full screen" if fullscreen else "normal screen"
+    if not Window.can_send_keys():
+        return f"I can't switch to {state} on this display."
+    wid = _browser_window()
+    if not wid:
+        return "There is no browser window open."
+    if not _press_in_window(wid, "f", restore=False):
+        return f"I couldn't focus the browser to switch to {state}."
+    return f"Switched to {state}."
+
+
+def fullscreen():
+    """Enter the browser's fullscreen mode."""
+    return browser_fullscreen(True)
+
+
+def normal_screen():
+    """Leave the browser's fullscreen mode."""
+    return browser_fullscreen(False)
 
 
 def media_control(action):

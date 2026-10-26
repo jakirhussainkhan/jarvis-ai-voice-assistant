@@ -35,9 +35,9 @@ from semantic_cache import preload as _preload_embeddings
 
 _preload_embeddings()
 
-from PyQt5.QtCore import (QEasingCurve, QPoint, QPointF, QPropertyAnimation,
-                          QRect, QRectF, QSize, Qt, QThread, QTimer, QUrl,
-                          pyqtProperty, pyqtSignal)
+from PyQt5.QtCore import (QEasingCurve, QEvent, QPoint, QPointF,
+                          QPropertyAnimation, QRect, QRectF, QSize, Qt, QThread,
+                          QTimer, QUrl, pyqtProperty, pyqtSignal)
 from PyQt5.QtGui import (QBrush, QColor, QDesktopServices, QFont, QIcon,
                          QKeySequence, QLinearGradient, QPainter,
                          QPainterPath, QPen, QPixmap, QRadialGradient)
@@ -48,6 +48,7 @@ from PyQt5.QtWidgets import (QApplication, QComboBox, QDialog, QFrame,
                              QSystemTrayIcon, QVBoxLayout, QWidget)
 
 import config
+import desktop
 import hud
 import logger
 import startup
@@ -941,11 +942,11 @@ class Orb(QWidget):
 
     #: Radians per second for the outer tick ring, per state.
     _SPIN = {
-        IDLE: 0.10,             # barely-there orbital drift
+        IDLE: 0.24,             # slow orbital drift, clearly alive
         LISTENING: 0.58,        # attentive sweep
         THINKING: 2.40,         # visibly faster while working
         SPEAKING: 0.95,         # driven further by live audio below
-        MUTED: 0.015,           # almost frozen and dim
+        MUTED: 0.05,            # nearly frozen and dim
         ERROR: 1.55,
     }
 
@@ -1008,17 +1009,17 @@ class Orb(QWidget):
         self._timer = QTimer(self)
         self._timer.setTimerType(Qt.PreciseTimer)
         self._timer.timeout.connect(self._tick)
-        self._timer.start(self._INTERVAL.get(IDLE, 33))
+        self._timer.start(16)
         self._start_breathe()
 
-    #: Refresh interval per state: live states run at 60 fps, calm states at
-    #: 30 fps and a muted reactor at ~15 fps, which keeps an idle JARVIS light.
+    #: The reference animation is a constant 60 fps; the interval no longer
+    #: changes with state, so the hexagon core and orbit rings never stutter.
     _INTERVAL = {
-        IDLE: 33,
+        IDLE: 16,
         LISTENING: 16,
         THINKING: 16,
         SPEAKING: 16,
-        MUTED: 66,
+        MUTED: 16,
         ERROR: 16,
     }
 
@@ -1118,9 +1119,8 @@ class Orb(QWidget):
         self._state = state
         self._target_glow = QColor(_COLORS.get(state, _COLORS[IDLE])[0])
         self._target_core = QColor(_COLORS.get(state, _COLORS[IDLE])[1])
-        interval = self._INTERVAL.get(state, 33)
-        if self._timer.interval() != interval:
-            self._timer.setInterval(interval)
+        if self._timer.interval() != 16:
+            self._timer.setInterval(16)
         # Start the blend immediately so the very first repaint already reads
         # as the new state, then let the clock ease the rest of the way.
         self._ease_colors(0.35)
@@ -1194,81 +1194,157 @@ class Orb(QWidget):
 
     def _draw_orbit_rings(self, painter, center, radius, color, state, energy,
                           breath):
-        """Counter-rotating segmented orbit rings around the crown."""
+        """Thick segmented cyan rings with one amber datum on the outer ring."""
         muted = state == MUTED
-        base_alpha = 26 if muted else 66
-        boost = int(52 * energy) if state in (LISTENING, SPEAKING) else 0
+        base_alpha = 34 if muted else 112
+        boost = int(58 * energy) if state in (LISTENING, SPEAKING) else 0
+        live_alpha = base_alpha + boost
         painter.save()
         painter.translate(center)
         painter.setBrush(Qt.NoBrush)
 
-        # Outer ring, counter-clockwise, four long arcs.
+        # Outer ring, counter-clockwise: long, heavy cyan dashes.
         painter.save()
         painter.rotate(-math.degrees(self._counter_rotation))
-        pen = QPen(_rgba(color, base_alpha + boost),
-                   max(1.0, radius * 0.009),
+        pen = QPen(_rgba(color, live_alpha),
+                   max(2.0, radius * 0.019),
                    Qt.SolidLine, Qt.RoundCap)
         painter.setPen(pen)
-        arc_radius = radius * (1.62 + 0.04 * energy)
+        arc_radius = radius * (1.62 + 0.035 * energy)
         rect = QRectF(-arc_radius, -arc_radius, arc_radius * 2,
                       arc_radius * 2)
         for start in (12, 102, 192, 282):
-            painter.drawArc(rect, start * 16, 58 * 16)
+            painter.drawArc(rect, start * 16, 54 * 16)
+        # The single amber segment is deliberately part of the outer ring.
+        if not muted:
+            painter.setPen(QPen(QColor(255, 179, 0, 232),
+                                max(2.4, radius * 0.023),
+                                Qt.SolidLine, Qt.RoundCap))
+            painter.drawArc(rect, 326 * 16, 28 * 16)
         painter.restore()
 
-        # Second ring, co-rotating, shorter dashes.
+        # Second ring, co-rotating, shorter but still thick dashes.
         painter.save()
         painter.rotate(math.degrees(self._rotation * 0.7))
-        painter.setPen(QPen(_rgba(color, (base_alpha + boost) // 2 + 14),
-                            max(0.9, radius * 0.006)))
-        dash_radius = radius * 1.52
+        painter.setPen(QPen(_rgba(color, live_alpha - 26),
+                            max(1.8, radius * 0.014)))
+        dash_radius = radius * 1.50
         dash_rect = QRectF(-dash_radius, -dash_radius, dash_radius * 2,
                            dash_radius * 2)
         for start in range(0, 360, 30):
-            painter.drawArc(dash_rect, (start + 6) * 16, 12 * 16)
+            painter.drawArc(dash_rect, (start + 5) * 16, 15 * 16)
         painter.restore()
 
-        # A single amber datum mark rides the outer ring.
-        if not muted:
-            painter.save()
-            painter.rotate(-math.degrees(self._counter_rotation))
-            mark_radius = radius * 1.40
-            angle = math.radians(-28)
-            painter.setPen(QPen(QColor(255, 181, 71, 170),
-                                max(1.2, radius * 0.012)))
-            painter.drawLine(
-                QPointF(math.cos(angle) * radius * 1.36,
-                        math.sin(angle) * radius * 1.36),
-                QPointF(math.cos(angle) * mark_radius,
-                        math.sin(angle) * mark_radius),
-            )
-            painter.restore()
+        # A third, inner broken ring gives the concentric target its depth.
+        painter.save()
+        painter.rotate(-math.degrees(self._counter_rotation * 1.35))
+        painter.setPen(QPen(_rgba(color, max(20, live_alpha - 54)),
+                            max(1.2, radius * 0.008)))
+        inner_radius = radius * 1.31
+        inner_rect = QRectF(-inner_radius, -inner_radius,
+                            inner_radius * 2, inner_radius * 2)
+        for start in range(0, 360, 20):
+            painter.drawArc(inner_rect, start * 16, 8 * 16)
+        painter.restore()
         painter.restore()
 
-    def _draw_coil_ring(self, painter, center, radius, color, state, energy):
-        """Ten reactor coil slots around the core, like the arc-reactor icon."""
+    @staticmethod
+    def _hex_points(radius):
+        """Six vertices of a flat-top hexagon, in local coordinates."""
+        points = []
+        for index in range(6):
+            angle = -math.pi / 2.0 + index * (math.pi / 3.0)
+            points.append(QPointF(math.cos(angle) * radius,
+                                  math.sin(angle) * radius))
+        return points
+
+    @classmethod
+    def _hex_path(cls, radius):
+        points = cls._hex_points(radius)
+        path = QPainterPath()
+        path.moveTo(points[0])
+        for point in points[1:]:
+            path.lineTo(point)
+        path.closeSubpath()
+        return path
+
+    def _draw_hex_core(self, painter, center, radius, color, state, energy,
+                       breath):
+        """The glowing six-sided reactor core, rotating and breathing."""
         muted = state == MUTED
-        slots = 10
-        slot_radius = radius * 0.70
+        live = state in (LISTENING, SPEAKING)
+        # The reference calls for a cyan core in every state; the outer rings
+        # and crown carry the emerald/amber/violet state colour.
+        core = QColor(223, 253, 255) if not muted else QColor(148, 163, 184)
+        accent = QColor(0, 229, 255) if not muted else QColor(100, 116, 142)
+        base = radius * (0.385 + 0.026 * breath
+                         + (0.042 * energy if live else 0.0))
+        spin = self._rotation * 0.55 + self._counter_rotation * 0.45
+
         painter.save()
         painter.translate(center)
+        painter.rotate(math.degrees(spin))
         painter.setBrush(Qt.NoBrush)
-        for index in range(slots):
-            angle = -math.pi / 2.0 + index * (2.0 * math.pi / slots)
-            length = radius * (0.10 + 0.03 * energy)
-            alpha = 40 if muted else 110
-            if state in (LISTENING, SPEAKING):
-                alpha += int(60 * energy)
-            painter.setPen(QPen(_rgba(color, alpha),
-                                max(1.2, radius * 0.018),
+
+        # Layered bloom outlines: wide and faint to tight and bright.
+        for scale, alpha, width in (
+            (1.38, 14, 0.24),
+            (1.20, 24, 0.16),
+            (1.07, 40, 0.10),
+        ):
+            painter.setPen(QPen(_rgba(accent, alpha if not muted else alpha // 3),
+                                max(1.0, base * width),
                                 Qt.SolidLine, Qt.RoundCap))
-            painter.drawLine(
-                QPointF(math.cos(angle) * slot_radius,
-                        math.sin(angle) * slot_radius),
-                QPointF(math.cos(angle) * (slot_radius + length),
-                        math.sin(angle) * (slot_radius + length)),
-            )
+            painter.drawPath(self._hex_path(base * scale))
+
+        # Glass fill: white-hot centre, cyan body, transparent edge.
+        glow = QRadialGradient(QPointF(-base * 0.12, -base * 0.16),
+                               base * 1.32)
+        glow.setColorAt(0.0, QColor(255, 255, 255,
+                                    255 if not muted else 96))
+        glow.setColorAt(0.24, _rgba(core, 250 if not muted else 80))
+        glow.setColorAt(0.62, _rgba(accent, 190 if not muted else 48))
+        glow.setColorAt(1.0, _rgba(accent, 0))
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QBrush(glow))
+        painter.drawPath(self._hex_path(base))
+
+        # The bright machined rim of the hexagon.
+        painter.setBrush(Qt.NoBrush)
+        painter.setPen(QPen(_rgba(core, 232 if not muted else 72),
+                            max(1.6, radius * 0.013),
+                            Qt.SolidLine, Qt.RoundCap))
+        painter.drawPath(self._hex_path(base))
+
+        # A second, counter-rotated hexagon reads as an inner assembly.
+        painter.save()
+        painter.rotate(-math.degrees(spin * 1.9))
+        inner = base * 0.62
+        painter.setPen(QPen(_rgba(accent, 190 if not muted else 54),
+                            max(1.1, radius * 0.008)))
+        painter.drawPath(self._hex_path(inner))
+        painter.setPen(QPen(_rgba(core, 130 if not muted else 34),
+                            max(0.8, radius * 0.004)))
+        painter.drawPath(self._hex_path(inner * 0.58))
         painter.restore()
+
+        # Vertex lamps around the outer hexagon.
+        painter.setPen(Qt.NoPen)
+        for point in self._hex_points(base):
+            painter.setBrush(_rgba(core, 235 if not muted else 60))
+            painter.drawEllipse(point, max(1.4, radius * 0.012),
+                                max(1.4, radius * 0.012))
+            if not muted:
+                painter.setBrush(_rgba(accent, 46))
+                painter.drawEllipse(point, max(3.0, radius * 0.030),
+                                    max(3.0, radius * 0.030))
+
+        # A white-hot centre point keeps the core luminous at any scale.
+        painter.setBrush(QColor(255, 255, 255, 236 if not muted else 72))
+        painter.drawEllipse(QPointF(0, 0), max(1.2, base * 0.065),
+                            max(1.2, base * 0.065))
+        painter.restore()
+
 
     def _draw_radar_crown(self, painter, center, radius, color, state, energy):
         """Draw the segmented tick ring that rotates around the orb."""
@@ -1397,43 +1473,34 @@ class Orb(QWidget):
         body_center = QPointF(center.x() - radius * 0.16,
                               center.y() - radius * 0.18)
         body = QRadialGradient(body_center, radius * 1.30)
-        body.setColorAt(0.0, core.lighter(112))
-        body.setColorAt(0.30, glow.lighter(108))
-        body.setColorAt(0.62, glow.darker(235 if not muted else 180))
-        body.setColorAt(0.86, QColor(7, 16, 23, 235))
-        body.setColorAt(1.0, QColor(4, 9, 14, 248))
+        body.setColorAt(0.0, QColor(8, 26, 35, 248))
+        body.setColorAt(0.34, QColor(5, 17, 24, 250))
+        body.setColorAt(0.66, QColor(3, 10, 16, 251))
+        body.setColorAt(0.88, QColor(3, 8, 13, 252))
+        body.setColorAt(1.0, QColor(2, 6, 10, 253))
         painter.setPen(Qt.NoPen)
         painter.setBrush(QBrush(body))
         painter.drawEllipse(center, radius, radius)
 
+        # A soft instrument rim: the glass picks up the live state colour,
+        # while the centre stays dark enough for the hexagon to read.
+        rim = QRadialGradient(center, radius * 1.01)
+        rim.setColorAt(0.0, QColor(0, 0, 0, 0))
+        rim.setColorAt(0.68, QColor(0, 0, 0, 0))
+        rim.setColorAt(0.90, _rgba(crown_color, 58 if not muted else 20))
+        rim.setColorAt(1.0, QColor(0, 0, 0, 0))
+        painter.setBrush(QBrush(rim))
+        painter.drawEllipse(center, radius, radius)
+
         # A soft glass rim, not a hard instrument edge.
         painter.setBrush(Qt.NoBrush)
-        painter.setPen(QPen(_rgba(core, 92 if not muted else 42),
+        painter.setPen(QPen(_rgba(core, 80 if not muted else 38),
                             max(0.9, radius * 0.012)))
         painter.drawEllipse(center, radius * 0.995, radius * 0.995)
 
-        # -- luminous breathing core ------------------------------------------ #
-        core_scale = 0.48 + 0.035 * breath + (0.045 * energy if live else 0.0)
-        core_radius = radius * core_scale
-        self._draw_coil_ring(painter, center, radius, crown_color, state,
-                             energy)
-        core_glow = QRadialGradient(
-            QPointF(center.x() - core_radius * 0.10,
-                    center.y() - core_radius * 0.12),
-            core_radius * 1.35,
-        )
-        core_glow.setColorAt(0.0, QColor(255, 255, 255, 255))
-        core_glow.setColorAt(0.26, _rgba(core, 248))
-        core_glow.setColorAt(0.58, _rgba(glow, 118))
-        core_glow.setColorAt(1.0, _rgba(glow, 0))
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(QBrush(core_glow))
-        painter.drawEllipse(center, core_radius * 1.35, core_radius * 1.35)
-
-        painter.setBrush(Qt.NoBrush)
-        painter.setPen(QPen(_rgba(core, 92 if not muted else 38),
-                            max(0.8, radius * 0.008)))
-        painter.drawEllipse(center, core_radius * 0.92, core_radius * 0.92)
+        # -- glowing hexagon core -------------------------------------------- #
+        self._draw_hex_core(painter, center, radius, crown_color, state,
+                            energy, breath)
 
         # -- live state motion ------------------------------------------------- #
         if state == LISTENING:
@@ -2141,6 +2208,11 @@ class JarvisWorker(QThread):
         voice._stop_speaking.clear()          # a stale Stop must not end this chat
         self._failure = None
         self.stopped_for_mute = False
+        youtube_followup = False
+        # A video may have been started by a direct/programmatic call before this
+        # worker began (a previous session or a test); discard that stale token so
+        # it can never arm the window for an unrelated conversation.
+        desktop.consume_youtube_playback()
         try:
             while True:
                 # ``listen()`` also refuses while muted, but checking here keeps
@@ -2155,10 +2227,21 @@ class JarvisWorker(QThread):
                 # by barge-in, tell listen() so a pure "stop" is not dispatched.
                 was_barge = self._barged_in
                 self._barged_in = False
-                user = listen(None if first_turn else self.chat_timeout,
-                              barge=was_barge)
+                # After YouTube starts, keep the microphone open for exactly 15
+                # seconds so "pause", "next" and "full screen" work; then drop
+                # back to Idle instead of listening to the music.
+                wait = None if first_turn else self.chat_timeout
+                if youtube_followup:
+                    wait = voice.YOUTUBE_LISTEN_TIMEOUT
+                user = listen(wait, barge=was_barge)
                 first_turn = False
                 if not user:
+                    # A YouTube control window that simply expires says "Enjoy!"
+                    # and ends the session. An explicit Stop or mute does not.
+                    if (youtube_followup and not voice.is_mic_muted()
+                            and not voice._stop_listening.is_set()):
+                        self.state_changed.emit(SPEAKING)
+                        speak("Enjoy!")
                     # You went quiet (or pressed Stop / muted the mic): end the
                     # conversation instead of grabbing the microphone again.
                     if voice.is_mic_muted():
@@ -2195,6 +2278,10 @@ class JarvisWorker(QThread):
                 # A local command can mute/unmute the mic (media playback mutes
                 # it), so keep the GUI button and tray in sync.
                 self.mic_changed.emit(voice.is_mic_muted())
+                # A confirmed YouTube request starts playback inside handle();
+                # arm the short control window for the next listen.
+                if desktop.consume_youtube_playback():
+                    youtube_followup = True
 
                 self.state_changed.emit(SPEAKING)
                 if self._speak_with_barge_in(reply):
@@ -2414,6 +2501,155 @@ class ApiKeyDialog(QDialog):
         except (OSError, ValueError) as exc:
             self.error_label.setText(f"Could not save the key: {exc}")
             return
+        self.accept()
+
+
+class SettingsDialog(QDialog):
+    """HUD-themed settings panel for the Groq API key.
+
+    Unlike :class:`ApiKeyDialog`, this is not a first-run gate: it is opened
+    from the session menu at any time. ``SAVE`` writes the key to the per-user
+    ``~/.jarvis/.env`` (mode ``0600``) and calls :func:`config.apply_api_key`,
+    so the running process starts using it immediately without a restart.
+    """
+
+    CONSOLE_URL = ApiKeyDialog.CONSOLE_URL
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.saved_path = None
+        self.setWindowTitle("JARVIS // SETTINGS")
+        self.setModal(True)
+        self.setMinimumWidth(480)
+        self.setStyleSheet(
+            "QDialog { background:#03060A; }"
+            "QLabel { color:#D7F6FA; background:transparent; }"
+            "QLabel#settingsHeading { color:#F4FEFF; font-size:22px;"
+            " font-weight:800; letter-spacing:4px; }"
+            "QLabel#settingsSub { color:#2C7F8F;"
+            " font-family:'DejaVu Sans Mono','Consolas'; font-size:8px;"
+            " letter-spacing:1.6px; }"
+            "QLabel#settingsHint { color:#5E8C96; font-size:11px; }"
+            "QLabel#settingsError { color:#FCA5A5; font-size:11px; }"
+            "QLabel#settingsStatus { color:#5EEAD4; font-size:11px; }"
+            "QLineEdit { color:#F4FEFF; background:rgba(0,229,255,8);"
+            " border:1px solid rgba(0,229,255,80); border-radius:10px;"
+            " padding:10px; font-size:13px;"
+            " selection-background-color:rgba(0,229,255,90); }"
+            "QLineEdit:focus { border:1px solid #00E5FF;"
+            " background:rgba(0,229,255,14); }"
+            "QPushButton { color:#A9DCE5; background:rgba(0,229,255,8);"
+            " border:1px solid rgba(0,229,255,70); border-radius:9px;"
+            " padding:8px 16px; font-size:12px; font-weight:700; }"
+            "QPushButton:hover { background:rgba(0,229,255,20);"
+            " color:#F4FEFF; }"
+            "QPushButton#saveButton { color:#021014; background:#00E5FF;"
+            " border-color:#00E5FF; }"
+            "QPushButton#saveButton:hover { background:#7DF3FF; }"
+            "QPushButton#closeSettingsButton:hover {"
+            " background:rgba(251,113,133,20); border-color:#FB7185;"
+            " color:#FECDD3; }"
+        )
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(26, 24, 26, 22)
+        layout.setSpacing(12)
+
+        heading = QLabel("SETTINGS")
+        heading.setObjectName("settingsHeading")
+        layout.addWidget(heading)
+
+        sub = QLabel("NEURAL INTERFACE  //  API ACCESS")
+        sub.setObjectName("settingsSub")
+        layout.addWidget(sub)
+
+        prompt = QLabel("GROQ API KEY")
+        prompt.setStyleSheet(
+            "font-size:11px; font-weight:700; letter-spacing:1.4px;"
+            " color:#7FE6F5;"
+        )
+        layout.addWidget(prompt)
+
+        self.key_input = QLineEdit()
+        self.key_input.setObjectName("groqApiKeyInput")
+        self.key_input.setEchoMode(QLineEdit.Password)
+        self.key_input.setPlaceholderText("gsk_...")
+        self.key_input.setClearButtonEnabled(True)
+        # Pre-fill the active key (masked) so it can be edited instead of
+        # retyped. An empty field at startup is left empty, not guessed.
+        if config.API_KEY:
+            self.key_input.setText(config.API_KEY)
+        layout.addWidget(self.key_input)
+
+        hint = QLabel(
+            "Stored privately in ~/.jarvis/.env. The key is applied in-place, "
+            "so no restart is needed."
+        )
+        hint.setObjectName("settingsHint")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        self.status_label = QLabel("")
+        self.status_label.setObjectName("settingsStatus")
+        self.status_label.setWordWrap(True)
+        layout.addWidget(self.status_label)
+
+        self.error_label = QLabel("")
+        self.error_label.setObjectName("settingsError")
+        self.error_label.setWordWrap(True)
+        layout.addWidget(self.error_label)
+
+        self.console_button = QPushButton("GET A KEY")
+        self.console_button.setToolTip(self.CONSOLE_URL)
+        self.console_button.clicked.connect(self._open_console)
+
+        self.close_button = QPushButton("CLOSE")
+        self.close_button.setObjectName("closeSettingsButton")
+        self.close_button.clicked.connect(self.reject)
+
+        self.save_button = QPushButton("SAVE")
+        self.save_button.setObjectName("saveButton")
+        self.save_button.setDefault(True)
+        self.save_button.clicked.connect(self._save)
+
+        buttons = QHBoxLayout()
+        buttons.setSpacing(8)
+        buttons.addWidget(self.console_button)
+        buttons.addStretch(1)
+        buttons.addWidget(self.close_button)
+        buttons.addWidget(self.save_button)
+        layout.addLayout(buttons)
+
+        self.key_input.returnPressed.connect(self._save)
+        self.key_input.setFocus()
+
+    def _open_console(self):
+        """Open the Groq key page in the user's default browser."""
+        QDesktopServices.openUrl(QUrl(self.CONSOLE_URL))
+
+    def api_key(self):
+        """Return the trimmed key currently in the field."""
+        return self.key_input.text().strip()
+
+    def _save(self):
+        """Validate, persist and apply the key; keep the dialog open on error."""
+        key = self.api_key()
+        if not config.is_api_key_configured(key):
+            self.error_label.setText(
+                "Enter a valid Groq API key (it starts with gsk_)."
+            )
+            self.key_input.setFocus()
+            return
+        try:
+            self.saved_path = config.save_api_key(key)
+        except (OSError, ValueError) as exc:
+            self.error_label.setText(f"Could not save the key: {exc}")
+            return
+        # save_api_key already calls apply_api_key; calling it explicitly keeps
+        # the runtime contract obvious and makes a monkeypatched save harmless.
+        config.apply_api_key(key)
+        self.error_label.setText("")
+        self.status_label.setText("Key saved — JARVIS is ready.")
         self.accept()
 
 
@@ -2656,10 +2892,18 @@ class JarvisWidget(QWidget):
         self.status = QLabel(IDLE)
         self.status.setObjectName("statusText")
         self.status.setAlignment(Qt.AlignCenter)
-        self.status.setMinimumHeight(28)
-        self.status.setFont(_hud_font(15, QFont.DemiBold, 3.2))
+        self.status.setMinimumHeight(20)
+        self.status.setFont(_hud_font(10.5, QFont.DemiBold, 3.4))
         self.status.setStyleSheet(
             f"color:{_STATE_TEXT[IDLE]}; background:transparent;"
+        )
+
+        self.online_label = QLabel("ONLINE")
+        self.online_label.setObjectName("onlineLabel")
+        self.online_label.setAlignment(Qt.AlignCenter)
+        self.online_label.setFont(_hud_font(9.4, QFont.Bold, 8.0))
+        self.online_label.setStyleSheet(
+            f"color:{_ACCENT}; background:transparent;"
         )
 
         self.status_hint = QLabel(_STATE_HINT[IDLE])
@@ -2778,48 +3022,24 @@ class JarvisWidget(QWidget):
             label.hide()
 
         # -- central reactor stage ------------------------------------------ #
-        stage_caption = QHBoxLayout()
-        stage_caption.setContentsMargins(0, 0, 0, 0)
-        stage_caption.setSpacing(8)
-        stage_caption.addStretch(1)
-        core_tag = QLabel("ARC REACTOR")
-        core_tag.setFont(_hud_font(6.9, QFont.Bold, 2.0))
-        core_tag.setStyleSheet(
-            f"color:{_TEXT_MUTED}; background:transparent;"
-        )
-        stage_caption.addWidget(core_tag)
-        core_line = QFrame()
-        core_line.setFixedSize(32, 1)
-        core_line.setStyleSheet(
-            f"background:rgba(34,230,255,0.34); border:none;"
-        )
-        stage_caption.addWidget(core_line)
-        core_index = QLabel("CORE // 01")
-        core_index.setFont(_hud_font(6.2, QFont.DemiBold, 1.1))
-        core_index.setStyleSheet(
-            f"color:{_AMBER}; background:transparent;"
-        )
-        stage_caption.addWidget(core_index)
-        stage_caption.addStretch(1)
-
         center = QVBoxLayout()
-        center.setContentsMargins(0, 0, 0, 0)
+        center.setContentsMargins(0, 4, 0, 0)
         center.setSpacing(0)
-        center.addLayout(stage_caption)
-        center.addSpacing(4)
         center.addStretch(1)
         center.addWidget(self.orb, 0, Qt.AlignHCenter)
-        center.addSpacing(8)
+        center.addSpacing(10)
+        center.addWidget(self.online_label)
+        center.addSpacing(3)
         center.addLayout(status_row)
-        center.addSpacing(1)
+        center.addSpacing(0)
         center.addWidget(self.status_hint)
-        center.addSpacing(12)
+        center.addSpacing(10)
         center.addWidget(dock_bar, 0, Qt.AlignHCenter)
         center.addStretch(1)
 
         body = QHBoxLayout()
-        body.setContentsMargins(22, 12, 22, 10)
-        body.setSpacing(14)
+        body.setContentsMargins(24, 8, 24, 8)
+        body.setSpacing(16)
         body.addWidget(self.left_panel)
         body.addLayout(center, 1)
         body.addWidget(self.right_panel)
@@ -2829,11 +3049,23 @@ class JarvisWidget(QWidget):
         body_host.setAttribute(Qt.WA_TranslucentBackground, True)
         body_host.setLayout(body)
 
-        command_host = QWidget()
-        command_host.setAttribute(Qt.WA_TranslucentBackground, True)
-        command_layout = QHBoxLayout(command_host)
-        command_layout.setContentsMargins(22, 0, 22, 16)
-        command_layout.setSpacing(0)
+        # -- bottom console + the floating "HEY JARVIS" pill ---------------- #
+        self.hey_button = PillButton("• HEY JARVIS", "toggle", 28, self)
+        self.hey_button.setFixedWidth(144)
+        self.hey_button.setToolTip("Start a conversation with Jarvis")
+        self.hey_button.clicked.connect(self.trigger)
+
+        self.command_host = QWidget(self)
+        self.command_host.setAttribute(Qt.WA_TranslucentBackground, True)
+        command_layout = QVBoxLayout(self.command_host)
+        command_layout.setContentsMargins(24, 0, 24, 15)
+        command_layout.setSpacing(6)
+        pill_row = QHBoxLayout()
+        pill_row.setContentsMargins(0, 0, 0, 0)
+        pill_row.setSpacing(0)
+        pill_row.addStretch(1)
+        pill_row.addWidget(self.hey_button)
+        command_layout.addLayout(pill_row)
         command_layout.addWidget(self.command_bar)
 
         root = QVBoxLayout(self)
@@ -2841,7 +3073,28 @@ class JarvisWidget(QWidget):
         root.setSpacing(0)
         root.addWidget(self.title_bar)
         root.addWidget(body_host, 1)
-        root.addWidget(command_host, 0)
+        root.addWidget(self.command_host, 0)
+
+        # Frameless window gestures need to start on the surfaces that actually
+        # receive the mouse. The title bar, body and command console are
+        # transparent containers, so installing this widget as their event
+        # filter lets an empty header/body area drag the window and the outer
+        # 8 px border resize it, even though the QWidget below the layout would
+        # normally swallow the press before it reached JarvisWidget.
+        self.body_host = body_host
+        for surface in (self.title_bar, body_host, self.command_host):
+            surface.setMouseTracking(True)
+            surface.installEventFilter(self)
+
+        # Tab inside the command field starts listening, matching the hint.
+        self.command_bar.input.tab_pressed.connect(self.trigger)
+
+        # Cmd+Q (macOS) / Ctrl+Q (Linux, Windows) quits the app explicitly.
+        self._quit_shortcuts = []
+        for sequence in ("Ctrl+Q", "Meta+Q"):
+            shortcut = QShortcut(QKeySequence(sequence), self)
+            shortcut.activated.connect(self.quit)
+            self._quit_shortcuts.append(shortcut)
 
         # Frameless card: a visible QSizeGrip in the bottom-right corner resizes
         # the window; the custom edge dragging below covers the rest of the
@@ -2903,8 +3156,17 @@ class JarvisWidget(QWidget):
         self.toggle_action = self._menu.addAction("Hide to tray")
         self.toggle_action.triggered.connect(self.toggle_visible)
         self._menu.addSeparator()
+        self.settings_action = self._menu.addAction("Settings / API Key")
+        self.settings_action.triggered.connect(self._open_settings_dialog)
+        self._menu.addSeparator()
         quit_action = self._menu.addAction("Quit")
         quit_action.triggered.connect(self.quit)
+
+    def _open_settings_dialog(self):
+        """Open the API-key settings panel from the session/context menu."""
+        dialog = SettingsDialog(self)
+        self.settings_dialog = dialog
+        dialog.exec_()
 
     def _show_menu(self, global_pos):
         self._menu.exec_(global_pos)
@@ -2954,7 +3216,14 @@ class JarvisWidget(QWidget):
         self.move(available.center() - self.rect().center())
 
     def _minimize(self):
-        """Minimise the card; the tray keeps Jarvis running."""
+        """Minimise the card like a normal OS window; the tray keeps Jarvis up.
+
+        The custom title-bar ``−`` must not hide the card to the tray: that
+        would make it disappear from the taskbar and break the expected
+        minimise/restore gesture. ``showMinimized()`` lets the window manager
+        handle the taskbar entry and the restore animation.
+        """
+        self._reset_pointer_state()
         self.showMinimized()
 
     def _toggle_maximize(self):
@@ -2968,10 +3237,7 @@ class JarvisWidget(QWidget):
         """
         # A pending drag/resize from before the toggle would otherwise be
         # applied to the new geometry by the next mouse-move event.
-        self._drag_offset = None
-        self._resize_edges = set()
-        self._resize_origin = None
-        self._resize_start = None
+        self._reset_pointer_state()
 
         if self._is_maximized:
             if self._normal_geometry is not None:
@@ -3015,7 +3281,7 @@ class JarvisWidget(QWidget):
         compact = getattr(self, "_compact_mode", False)
         rails = (not compact and width >= self._WIDE_BREAKPOINT
                  and height >= 700)
-        expanded = rails and height >= 950
+        expanded = rails and height >= 960
         medium = (not compact and width >= 860 and height >= 600)
         show_command = not compact and height >= 500
 
@@ -3024,21 +3290,27 @@ class JarvisWidget(QWidget):
             if rails:
                 self.left_panel.set_expanded(expanded)
             self.right_panel.setVisible(medium)
-            self.command_bar.setVisible(show_command)
+            self.command_host.setVisible(show_command)
             self.title_bar.set_compact(compact or width < 940)
-            self.status_hint.setVisible(height >= 360)
+            self.status_hint.setVisible(height >= 380)
+            self.status.setVisible(height >= 330)
+            self.online_label.setFont(
+                _hud_font(7.0 if compact else 9.4, QFont.Bold,
+                         5.0 if compact else 8.0)
+            )
 
             if compact:
                 orb_size = max(96, min(132, height - 292))
             else:
                 left_w = self.left_panel.width() if rails else 0
                 right_w = self.right_panel.width() if medium else 0
-                command_h = self.command_bar.height() + 16 if show_command else 0
-                available_w = width - 44 - 28 - left_w - right_w
+                command_h = (self.command_host.sizeHint().height()
+                             if show_command else 0)
+                available_w = width - 48 - 32 - left_w - right_w
                 # Reserve the real chrome around the reactor: body margins,
-                # stage caption, status line, hint and the control dock.
+                # ONLINE line, status line, hint and the control dock.
                 available_h = (height - self.title_bar.height()
-                               - command_h - 222)
+                               - command_h - 250)
                 orb_size = int(max(
                     110,
                     min(620, available_w * 0.94, available_h),
@@ -3063,22 +3335,25 @@ class JarvisWidget(QWidget):
         painter.setRenderHint(QPainter.Antialiasing)
 
         rect = QRectF(self.rect()).adjusted(1.0, 1.0, -1.0, -1.0)
-        path = QPainterPath()
-        path.addRoundedRect(rect, 18.0, 18.0)
+        # The shell is chamfered, not rounded: the reference is an angular
+        # instrument plate.  The four clipped corners also keep the offscreen
+        # corner-transparency contract intact.
+        path = hud._cut_path(rect, 22.0)
 
         card = QLinearGradient(rect.topLeft(), rect.bottomRight())
-        card.setColorAt(0.0, QColor("#061019"))
-        card.setColorAt(0.38, QColor(_BG))
-        card.setColorAt(1.0, QColor("#010305"))
+        card.setColorAt(0.0, QColor("#071019"))
+        card.setColorAt(0.36, QColor(_BG))
+        card.setColorAt(0.72, QColor("#020609"))
+        card.setColorAt(1.0, QColor("#010204"))
         painter.fillPath(path, QBrush(card))
 
         painter.save()
         painter.setClipPath(path)
 
         # Faint instrument grid: deliberately below the contrast of the text.
-        grid_pen = QPen(QColor(34, 230, 255, 9), 1.0)
+        grid_pen = QPen(QColor(0, 229, 255, 8), 1.0)
         painter.setPen(grid_pen)
-        step = 44
+        step = 42
         x = int(rect.left()) + 22
         while x < rect.right():
             painter.drawLine(x, int(rect.top()) + 1,
@@ -3091,28 +3366,28 @@ class JarvisWidget(QWidget):
             y += step
 
         # Scanlines give the dark glass depth without a visible pattern.
-        painter.setPen(QPen(QColor(180, 250, 255, 4), 1.0))
+        painter.setPen(QPen(QColor(180, 250, 255, 3), 1.0))
         for line_y in range(int(rect.top()) + 2, int(rect.bottom()), 4):
             painter.drawLine(int(rect.left()) + 1, line_y,
                              int(rect.right()) - 1, line_y)
 
         # Central reactor bloom; the orb paints its own tighter halo.
         glow = QRadialGradient(
-            QPointF(self.width() / 2.0, self.height() * 0.46),
-            max(220.0, min(self.width(), self.height()) * 0.42),
+            QPointF(self.width() / 2.0, self.height() * 0.45),
+            max(220.0, min(self.width(), self.height()) * 0.44),
         )
-        glow.setColorAt(0.0, QColor(34, 230, 255, 20))
-        glow.setColorAt(0.34, QColor(34, 230, 255, 8))
-        glow.setColorAt(0.68, QColor(25, 211, 197, 3))
+        glow.setColorAt(0.0, QColor(0, 229, 255, 22))
+        glow.setColorAt(0.34, QColor(0, 229, 255, 8))
+        glow.setColorAt(0.68, QColor(0, 229, 255, 3))
         glow.setColorAt(1.0, QColor(0, 0, 0, 0))
         painter.fillRect(rect, QBrush(glow))
 
-        # Amber bias at the extreme left/right edges, like panel lighting.
-        left_glow = QLinearGradient(rect.left(), 0, rect.left() + 90, 0)
-        left_glow.setColorAt(0.0, QColor(255, 181, 71, 9))
-        left_glow.setColorAt(1.0, QColor(255, 181, 71, 0))
-        painter.fillRect(QRectF(rect.left(), rect.top(), 90, rect.height()),
-                         QBrush(left_glow))
+        # Amber bias at the extreme edges, like panel lighting.
+        left_glow = QLinearGradient(rect.right() - 90, 0, rect.right(), 0)
+        left_glow.setColorAt(0.0, QColor(255, 179, 0, 0))
+        left_glow.setColorAt(1.0, QColor(255, 179, 0, 8))
+        painter.fillRect(QRectF(rect.right() - 90, rect.top(), 90,
+                                rect.height()), QBrush(left_glow))
 
         depth = QLinearGradient(0.0, self.height() * 0.55,
                                 0.0, float(self.height()))
@@ -3121,47 +3396,47 @@ class JarvisWidget(QWidget):
         painter.fillRect(rect, QBrush(depth))
         painter.restore()
 
-        # Border, then the bright HUD corner brackets.
+        # Border, then the bright HUD corner brackets: cyan at the top-left
+        # and top-right edges, with small amber datum marks below.
         painter.setBrush(Qt.NoBrush)
-        painter.setPen(QPen(QColor(20, 74, 86, 235), 1.0))
+        painter.setPen(QPen(QColor(0, 130, 150, 220), 1.0))
         painter.drawPath(path)
 
-        painter.setPen(QPen(QColor(34, 230, 255, 155), 1.2))
-        length = 26.0
-        inset = 8.0
+        painter.setPen(QPen(QColor(0, 229, 255, 205), 1.4))
+        length = 34.0
+        inset = 11.0
         painter.drawLine(QPointF(rect.left() + inset, rect.top() + inset),
                          QPointF(rect.left() + inset + length,
                                  rect.top() + inset))
         painter.drawLine(QPointF(rect.left() + inset, rect.top() + inset),
                          QPointF(rect.left() + inset,
-                                 rect.top() + inset + length))
+                                 rect.top() + inset + 20.0))
         painter.drawLine(QPointF(rect.right() - inset - length,
-                                 rect.bottom() - inset),
-                         QPointF(rect.right() - inset,
-                                 rect.bottom() - inset))
-        painter.drawLine(QPointF(rect.right() - inset,
-                                 rect.bottom() - inset - length),
-                         QPointF(rect.right() - inset,
-                                 rect.bottom() - inset))
-        painter.setPen(QPen(QColor(255, 181, 71, 150), 1.2))
-        painter.drawLine(QPointF(rect.right() - inset - 18,
                                  rect.top() + inset),
                          QPointF(rect.right() - inset, rect.top() + inset))
+        painter.drawLine(QPointF(rect.right() - inset, rect.top() + inset),
+                         QPointF(rect.right() - inset,
+                                 rect.top() + inset + 20.0))
+
+        painter.setPen(QPen(QColor(255, 179, 0, 170), 1.2))
         painter.drawLine(QPointF(rect.left() + inset,
                                  rect.bottom() - inset),
-                         QPointF(rect.left() + inset + 18,
+                         QPointF(rect.left() + inset + 18.0,
                                  rect.bottom() - inset))
+        painter.drawLine(QPointF(rect.right() - inset - 18.0,
+                                 rect.bottom() - inset),
+                         QPointF(rect.right() - inset, rect.bottom() - inset))
 
         highlight = QLinearGradient(rect.left(), rect.top(),
                                     rect.right(), rect.top())
-        highlight.setColorAt(0.0, QColor(34, 230, 255, 0))
-        highlight.setColorAt(0.28, QColor(34, 230, 255, 44))
-        highlight.setColorAt(0.62, QColor(25, 211, 197, 20))
-        highlight.setColorAt(0.82, QColor(255, 181, 71, 38))
-        highlight.setColorAt(1.0, QColor(255, 181, 71, 0))
+        highlight.setColorAt(0.0, QColor(0, 229, 255, 0))
+        highlight.setColorAt(0.30, QColor(0, 229, 255, 38))
+        highlight.setColorAt(0.62, QColor(0, 229, 255, 14))
+        highlight.setColorAt(0.84, QColor(255, 179, 0, 30))
+        highlight.setColorAt(1.0, QColor(255, 179, 0, 0))
         painter.setPen(QPen(QBrush(highlight), 1.0))
-        painter.drawLine(int(rect.left() + 30), int(rect.top()),
-                         int(rect.right() - 30), int(rect.top()))
+        painter.drawLine(int(rect.left() + 34), int(rect.top()),
+                         int(rect.right() - 34), int(rect.top()))
         painter.end()
 
     # -- state ------------------------------------------------------------ #
@@ -3936,6 +4211,90 @@ class JarvisWidget(QWidget):
         print(text, flush=True)
 
     # -- window drag + resize (frameless) --------------------------------- #
+    def _watched_surface(self, obj):
+        """True for the transparent containers that host the window chrome."""
+        return (obj is getattr(self, "title_bar", None)
+                or obj is getattr(self, "body_host", None)
+                or obj is getattr(self, "command_host", None))
+
+    def eventFilter(self, obj, event):
+        """Route drags/resizes that start on the transparent HUD surfaces.
+
+        Child labels and panels keep their own mouse handling; this filter is
+        only installed on the containers themselves, so a press reaches it only
+        when it landed on empty header/body/console space. Returning ``True``
+        for a gesture keeps the container from starting an unrelated action.
+        """
+        if not self._watched_surface(obj):
+            return super().eventFilter(obj, event)
+
+        kind = event.type()
+        if kind == QEvent.MouseButtonPress:
+            if event.button() == Qt.RightButton:
+                # Right-clicking empty card space should still open the session
+                # menu even though the container, not JarvisWidget, received it.
+                self._show_menu(event.globalPos())
+                event.accept()
+                return True
+            if event.button() == Qt.LeftButton and not self._is_maximized:
+                edges = self._edge_at(self.mapFromGlobal(event.globalPos()))
+                if edges:
+                    self._begin_resize(edges, event.globalPos())
+                    event.accept()
+                    return True
+                if obj is not self.title_bar:
+                    # Empty body/console space behaves like the header.
+                    self._begin_move(event.globalPos())
+                    event.accept()
+                    return True
+        elif kind == QEvent.MouseMove:
+            if self._resize_edges:
+                self._apply_resize(event.globalPos())
+                event.accept()
+                return True
+            if (self._drag_offset is not None
+                    and event.buttons() & Qt.LeftButton):
+                self.move(event.globalPos() - self._drag_offset)
+                event.accept()
+                return True
+            if not event.buttons() and not self._is_maximized:
+                self.setCursor(self._cursor_for_edges(
+                    self._edge_at(self.mapFromGlobal(event.globalPos()))
+                ))
+        elif kind == QEvent.MouseButtonRelease:
+            if self._resize_edges or self._drag_offset is not None:
+                self._reset_pointer_state()
+                event.accept()
+                return True
+        elif kind == QEvent.Leave:
+            if not self._resize_edges and self._drag_offset is None:
+                self.setCursor(Qt.ArrowCursor)
+        return super().eventFilter(obj, event)
+
+    def _begin_move(self, global_pos):
+        """Start moving the card from a mouse press at ``global_pos``."""
+        self._resize_edges = set()
+        self._resize_origin = None
+        self._resize_start = None
+        self._drag_offset = global_pos - self.frameGeometry().topLeft()
+        self.setCursor(Qt.SizeAllCursor)
+
+    def _begin_resize(self, edges, global_pos):
+        """Start an edge/corner resize from a mouse press at ``global_pos``."""
+        self._drag_offset = None
+        self._resize_edges = set(edges)
+        self._resize_origin = global_pos
+        self._resize_start = self.geometry()
+        self.setCursor(self._cursor_for_edges(self._resize_edges))
+
+    def _reset_pointer_state(self):
+        """Forget any in-flight move/resize and restore the normal cursor."""
+        self._drag_offset = None
+        self._resize_edges = set()
+        self._resize_origin = None
+        self._resize_start = None
+        self.setCursor(Qt.ArrowCursor)
+
     def _edge_at(self, pos):
         """Return the set of window edges/corners under ``pos`` (empty = none).
 
@@ -3976,19 +4335,16 @@ class JarvisWidget(QWidget):
             return
         if self._is_maximized:
             # Pinned to the work area: neither edge-resize nor move.
-            self._drag_offset = None
-            self._resize_edges = set()
+            self._reset_pointer_state()
             event.accept()
             return
         if event.button() == Qt.LeftButton:
             edges = self._edge_at(event.pos())
             if edges:
                 # Near an edge/corner: resize rather than move.
-                self._resize_edges = edges
-                self._resize_origin = event.globalPos()
-                self._resize_start = self.geometry()
+                self._begin_resize(edges, event.globalPos())
             else:
-                self._drag_offset = event.globalPos() - self.frameGeometry().topLeft()
+                self._begin_move(event.globalPos())
         event.accept()
 
     def mouseMoveEvent(self, event):
@@ -4006,11 +4362,7 @@ class JarvisWidget(QWidget):
         event.accept()
 
     def mouseReleaseEvent(self, event):
-        self._drag_offset = None
-        self._resize_edges = set()
-        self._resize_origin = None
-        self._resize_start = None
-        self.setCursor(Qt.ArrowCursor)
+        self._reset_pointer_state()
         event.accept()
 
     def _apply_resize(self, global_pos):
@@ -4062,6 +4414,9 @@ class JarvisWidget(QWidget):
         elif event.key() == Qt.Key_Escape:
             self._halt_for_hide()            # same clean Idle state as the ✕
             self.hide()                      # hide to tray, don't quit
+        elif (event.key() == Qt.Key_Q
+              and event.modifiers() & (Qt.ControlModifier | Qt.MetaModifier)):
+            self.quit()
         elif event.key() == Qt.Key_M and not event.modifiers():
             self.toggle_mute()
         elif event.key() == Qt.Key_Space and not event.modifiers():

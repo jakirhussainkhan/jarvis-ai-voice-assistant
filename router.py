@@ -272,6 +272,25 @@ DATE_WORD = re.compile(r"\bdate\b|\btoday'?s date\b", re.I)
 YT_WORD = re.compile(r"\byoutube\b", re.I)
 YT_PLAY = re.compile(r"\b(play|watch|listen to|listen)\b", re.I)
 
+# YouTube's player uses "f" as a fullscreen toggle. These are whole-utterance
+# commands so "full screen" cannot become a song search for those words.
+FULLSCREEN_ON = re.compile(
+    r"^\s*(?:(?:please|jarvis|hey\s+jarvis|can\s+you|could\s+you)\s+)?"
+    r"(?:(?:play|put|switch|go|make\s+it)\s+)?"
+    r"(?:in\s+)?(?:full\s*[- ]?screen|fullscreen|"
+    r"maximi[sz]e\s+(?:the\s+)?(?:screen|video|browser|window))"
+    r"\s*[.!?]*$",
+    re.I,
+)
+FULLSCREEN_OFF = re.compile(
+    r"^\s*(?:(?:please|jarvis|hey\s+jarvis|can\s+you|could\s+you)\s+)?"
+    r"(?:(?:play|put|switch|go)\s+)?"
+    r"(?:in\s+)?(?:normal\s*[- ]?screen|windowed|"
+    r"(?:exit|leave|quit)\s+full\s*[- ]?screen)"
+    r"\s*[.!?]*$",
+    re.I,
+)
+
 # --- screen actions (vision) ------------------------------------------------ #
 # On-screen commands ("play the video on my screen", "click the play button on
 # screen", "play the second video") are routed to vision.act() -- behind the
@@ -427,6 +446,18 @@ def _battery_text():
     return f"Battery {battery.percent:.0f} percent, {state}."
 
 
+def _play_youtube_spoken(query):
+    """Route a spoken play request through the confirmation-aware path.
+
+    ``desktop.play_youtube`` stays the low-level immediate action; the context
+    tells it this call came from a user command, so it resolves the title and
+    asks before opening the browser. Keeping the actual call on
+    ``play_youtube`` also preserves existing desktop overrides/spies.
+    """
+    with desktop.youtube_confirmation():
+        return desktop.play_youtube(query)
+
+
 # --------------------------------------------------------------------------- #
 # main entry point
 # --------------------------------------------------------------------------- #
@@ -476,7 +507,7 @@ def _try_local(text):
     if SEARCH_AND_PLAY.match(t):
         query = desktop.extract_media_query(t)
         if query:
-            return desktop.play_youtube(query)
+            return _play_youtube_spoken(query)
         return "What should I play?"
 
     # Other search requests belong to the agent (it can call the search tools).
@@ -502,6 +533,14 @@ def _try_local(text):
         if seek.group("dir").lower() in ("back", "backward", "rewind"):
             seconds = -seconds
         return desktop.media_seek(seconds)
+
+    # --- browser / YouTube fullscreen (the player's "f" toggle) ------------ #
+    # Checked before media and play-by-name so "play in full screen" is not
+    # mistaken for a song called "in full screen".
+    if FULLSCREEN_OFF.search(t):
+        return desktop.normal_screen()
+    if FULLSCREEN_ON.search(t):
+        return desktop.fullscreen()
 
     # --- media (playerctl) ------------------------------------------------- #
     action = _media_action(t)
@@ -603,7 +642,7 @@ def _try_local(text):
             query = desktop.extract_media_query(t)
             if not query:
                 return "What should I play?"
-            return desktop.play_youtube(query)
+            return _play_youtube_spoken(query)
         if OPEN_VERB.search(t):
             return desktop.open_youtube()
         return None  # bare "youtube" -> agent
@@ -616,7 +655,7 @@ def _try_local(text):
         query = desktop.extract_media_query(t)
         if not query:
             return "What should I play?"
-        return desktop.play_youtube(query)
+        return _play_youtube_spoken(query)
 
     # --- open an application, folder, file or path ------------------------- #
     if OPEN_VERB.search(t):

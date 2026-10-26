@@ -37,7 +37,7 @@ from pathlib import Path
 from PyQt5.QtCore import (QEasingCurve, QObject, QPointF, QPropertyAnimation,
                           QRectF, Qt, QTimer, pyqtProperty,
                           pyqtSignal)
-from PyQt5.QtGui import (QColor, QFont, QLinearGradient, QPainter,
+from PyQt5.QtGui import (QBrush, QColor, QFont, QLinearGradient, QPainter,
                          QPainterPath, QPen, QRadialGradient)
 from PyQt5.QtWidgets import (QAbstractScrollArea, QFrame, QHBoxLayout, QLabel,
                              QLineEdit, QPushButton, QScrollArea, QSizePolicy,
@@ -52,17 +52,19 @@ except Exception:                            # pragma: no cover - optional
 
 
 # -- design tokens ---------------------------------------------------------- #
-BG = "#03070A"
-BG_DEEP = "#020507"
-PANEL_TOP = QColor(8, 19, 27, 238)
-PANEL_BOTTOM = QColor(3, 9, 13, 246)
-SURFACE = "#07121A"
-BORDER = QColor(20, 74, 86, 170)
-BORDER_SOFT = QColor(20, 74, 86, 92)
-CYAN = QColor(34, 230, 255)
-CYAN_SOFT = QColor(120, 240, 255)
-AMBER = QColor(255, 181, 71)
-AMBER_SOFT = QColor(255, 210, 140)
+BG = "#03060A"
+BG_DEEP = "#010306"
+PANEL_TOP = QColor(7, 17, 24, 242)
+PANEL_BOTTOM = QColor(2, 7, 11, 248)
+SURFACE = "#061018"
+BORDER = QColor(0, 120, 142, 180)
+BORDER_SOFT = QColor(0, 120, 142, 96)
+# The two accents named by the reference sheet.  Every plate, bar and glow
+# in the HUD derives from these, so the palette can be tuned in one place.
+CYAN = QColor(0, 229, 255)
+CYAN_SOFT = QColor(132, 244, 255)
+AMBER = QColor(255, 179, 0)
+AMBER_SOFT = QColor(255, 218, 140)
 TEXT = QColor(217, 246, 250)
 TEXT_SECONDARY = QColor(127, 179, 191)
 TEXT_MUTED = QColor(69, 107, 117)
@@ -209,24 +211,30 @@ class HudPanel(QFrame):
 
         fill = QLinearGradient(rect.topLeft(), rect.bottomRight())
         fill.setColorAt(0.0, PANEL_TOP)
-        fill.setColorAt(0.55, QColor(5, 13, 19, 242))
+        fill.setColorAt(0.55, QColor(4, 12, 18, 246))
         fill.setColorAt(1.0, PANEL_BOTTOM)
         painter.fillPath(path, fill)
 
         # A faint inner scan pattern keeps large plates from looking flat.
         painter.save()
         painter.setClipPath(path)
-        painter.setPen(QPen(QColor(34, 230, 255, 5), 1.0))
+        painter.setPen(QPen(QColor(0, 229, 255, 5), 1.0))
         y = rect.top() + 7
         while y < rect.bottom():
             painter.drawLine(QPointF(rect.left(), y),
                              QPointF(rect.right(), y))
             y += 7
+        # Inner bloom along the top-left edge, like a lit glass plate.
+        inner = QLinearGradient(rect.topLeft(), rect.bottomRight())
+        inner.setColorAt(0.0, QColor(0, 229, 255, 16))
+        inner.setColorAt(0.30, QColor(0, 229, 255, 0))
+        inner.setColorAt(1.0, QColor(255, 179, 0, 7))
+        painter.fillPath(path, QBrush(inner))
         painter.restore()
 
-        border = 96 if self._alert else 52
+        border = 150 if self._alert else 108
         painter.setBrush(Qt.NoBrush)
-        painter.setPen(QPen(_rgba(self._accent, border), 1.0))
+        painter.setPen(QPen(_rgba(self._accent, border), 1.1))
         painter.drawPath(path)
 
         # Corner brackets: cyan at top-left/bottom-right, amber at top-right.
@@ -312,16 +320,22 @@ class PanelHeader(QWidget):
 # -- system metrics --------------------------------------------------------- #
 
 class HudMetric(QWidget):
-    """Label + live value + segmented bar; no invented values."""
+    """Label, live value and a thick segmented instrument bar.
 
-    def __init__(self, label, accent=CYAN, parent=None):
+    The reference sheet draws the SYSTEM bars in amber; the metric keeps an
+    ``accent`` argument so other plates can still use the cyan channel.
+    """
+
+    SEGMENTS = 16
+
+    def __init__(self, label, accent=AMBER, parent=None):
         super().__init__(parent)
         self.label = str(label).upper()
         self._accent = QColor(accent)
         self._value = 0.0
         self._target = 0.0
         self._display = "—"
-        self.setMinimumHeight(38)
+        self.setMinimumHeight(52)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self._anim = QPropertyAnimation(self, b"value", self)
         self._anim.setDuration(620)
@@ -359,6 +373,10 @@ class HudMetric(QWidget):
         self._display = str(text).upper()
         self.update()
 
+    # -- geometry helpers -------------------------------------------------- #
+    def _bar_rect(self):
+        return QRectF(1.0, self.height() - 17.0, self.width() - 2.0, 9.0)
+
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
@@ -367,37 +385,60 @@ class HudMetric(QWidget):
             painter.end()
             return
 
-        painter.setFont(hud_font(7.4, QFont.DemiBold, 1.25))
-        painter.setPen(QColor(TEXT_SECONDARY))
-        painter.drawText(1, 11, self.label)
+        # Label on the left; the measured value right-aligned above the bar.
+        painter.setFont(hud_font(7.6, QFont.Bold, 1.45))
+        painter.setPen(QColor(CYAN_SOFT))
+        painter.drawText(1, 12, self.label)
 
-        painter.setFont(hud_font(9.0, QFont.Bold, 0.7))
+        painter.setFont(hud_font(10.2, QFont.Bold, 0.5))
         painter.setPen(QColor(TEXT))
         painter.drawText(QRectF(0, 0, width - 1, 14),
                          Qt.AlignRight | Qt.AlignVCenter, self._display)
 
-        text_width = painter.fontMetrics().horizontalAdvance(self._display)
-        if text_width > 2:
-            painter.setPen(QPen(_rgba(AMBER, 110), 1.0))
-            painter.drawLine(QPointF(width - text_width - 3, 12),
-                             QPointF(width - 2, 12))
+        bar = self._bar_rect()
+        # Recessed track with a hairline cyan lip.
+        painter.setPen(QPen(QColor(0, 229, 255, 38), 1.0))
+        painter.setBrush(QColor(4, 13, 18, 235))
+        painter.drawRect(bar)
 
-        track_y = height - 11.0
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(QColor(7, 17, 23))
-        painter.drawRoundedRect(QRectF(1, track_y, width - 2, 3.0), 1.5, 1.5)
+        filled = max(0.0, min(1.0, self._value))
+        gap = 2.0
+        segment = (bar.width() - gap * (self.SEGMENTS - 1)) / self.SEGMENTS
+        segment = max(1.0, segment)
+        for index in range(self.SEGMENTS):
+            left = bar.left() + index * (segment + gap)
+            if left >= bar.right():
+                break
+            cell = QRectF(left, bar.top() + 1.0, segment,
+                          bar.height() - 2.0)
+            threshold = (index + 1.0) / self.SEGMENTS
+            if filled >= threshold - 0.0001:
+                # Filled segment: a hot amber core with a soft top sheen.
+                grad = QLinearGradient(cell.topLeft(), cell.bottomLeft())
+                grad.setColorAt(0.0, _rgba(self._accent, 255))
+                grad.setColorAt(0.45, _rgba(self._accent, 228))
+                grad.setColorAt(1.0, _rgba(self._accent, 150))
+                painter.setPen(Qt.NoPen)
+                painter.setBrush(QBrush(grad))
+                painter.drawRect(cell)
+            elif filled > index / self.SEGMENTS:
+                # Partially reached segment.
+                part = (filled - index / self.SEGMENTS) * self.SEGMENTS
+                painter.setPen(Qt.NoPen)
+                painter.setBrush(_rgba(self._accent, 190))
+                painter.drawRect(QRectF(cell.left(), cell.top(),
+                                        cell.width() * part, cell.height()))
+            else:
+                painter.setPen(Qt.NoPen)
+                painter.setBrush(QColor(255, 179, 0, 12))
+                painter.drawRect(cell)
 
-        fill_w = max(0.0, (width - 2) * self._value)
-        if fill_w > 0.6:
-            grad = QLinearGradient(QPointF(1, track_y),
-                                   QPointF(1 + fill_w, track_y))
-            grad.setColorAt(0.0, _rgba(self._accent, 110))
-            grad.setColorAt(1.0, _rgba(self._accent, 245))
-            painter.setBrush(grad)
-            painter.drawRoundedRect(QRectF(1, track_y, fill_w, 3.0), 1.5, 1.5)
-
-        _draw_ticks(painter, 1, track_y - 2.0, width - 2, 13,
-                    self._accent, 60)
+        # A travelling highlight on the leading edge of a live bar.
+        if filled > 0.01:
+            lead = bar.left() + bar.width() * filled
+            painter.setPen(QPen(QColor(255, 236, 180, 190), 1.0))
+            painter.drawLine(QPointF(lead - 1.0, bar.top() - 2.0),
+                             QPointF(lead - 1.0, bar.bottom() + 2.0))
         painter.end()
 
 
@@ -486,10 +527,10 @@ class HudSparkline(QWidget):
 
 
 class SystemPanel(HudPanel):
-    """Real CPU / memory / storage / network telemetry."""
+    """CPU / memory / power, with the live clock inside the plate."""
 
     def __init__(self, parent=None):
-        super().__init__(parent, cut=10.0)
+        super().__init__(parent, cut=14.0)
         self._state = IDLE
         self._voice = "—"
         self._wake = False
@@ -497,26 +538,66 @@ class SystemPanel(HudPanel):
         self.setMinimumHeight(360)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(15, 12, 15, 12)
+        layout.setContentsMargins(16, 13, 16, 13)
         layout.setSpacing(0)
         self.header = PanelHeader("System", "Live")
         layout.addWidget(self.header)
         layout.addSpacing(7)
 
-        self.cpu = HudMetric("Core load")
-        self.memory = HudMetric("Memory")
-        self.disk = HudMetric("Storage")
-        self.network = HudMetric("Network")
-        for metric in (self.cpu, self.memory, self.disk, self.network):
+        self.cpu = HudMetric("CPU")
+        self.memory = HudMetric("MEM")
+        self.power = HudMetric("PWR")
+        self.disk = HudMetric("DSK")
+        self.network = HudMetric("NET")
+        for metric in (self.cpu, self.memory, self.power):
             layout.addWidget(metric)
+        # Kept as compatibility seams for integrations that still feed them;
+        # the reference plate only shows CPU / MEM / PWR.
+        for metric in (self.disk, self.network):
+            metric.hide()
         layout.addSpacing(7)
 
         rule = QFrame()
         rule.setFixedHeight(1)
-        rule.setStyleSheet("background:rgba(20,74,86,110); border:none;")
+        rule.setStyleSheet("background:rgba(0,229,255,90); border:none;")
         layout.addWidget(rule)
-        layout.addSpacing(9)
+        layout.addSpacing(8)
 
+        # -- digital clock -------------------------------------------------- #
+        clock_box = QWidget()
+        clock_box.setAttribute(Qt.WA_TranslucentBackground, True)
+        clock_row = QHBoxLayout(clock_box)
+        clock_row.setContentsMargins(0, 0, 0, 0)
+        clock_row.setSpacing(10)
+        self.clock = QLabel("00:00:00")
+        self.clock.setFont(hud_font(23, QFont.Bold, 1.8))
+        self.clock.setStyleSheet(
+            f"color:{CYAN_SOFT.name()}; background:transparent;"
+        )
+        clock_row.addWidget(self.clock)
+        clock_row.addStretch(1)
+        stamp = QVBoxLayout()
+        stamp.setContentsMargins(0, 0, 0, 0)
+        stamp.setSpacing(0)
+        self.clock_tag = QLabel("LOCAL")
+        self.clock_tag.setAlignment(Qt.AlignRight)
+        self.clock_tag.setFont(hud_font(6.2, QFont.DemiBold, 1.4))
+        self.clock_tag.setStyleSheet(
+            f"color:{AMBER.name()}; background:transparent;"
+        )
+        stamp.addWidget(self.clock_tag)
+        self.date_label = QLabel("")
+        self.date_label.setAlignment(Qt.AlignRight)
+        self.date_label.setFont(hud_font(6.8, QFont.DemiBold, 1.2))
+        self.date_label.setStyleSheet(
+            f"color:{TEXT_SECONDARY.name()}; background:transparent;"
+        )
+        stamp.addWidget(self.date_label)
+        clock_row.addLayout(stamp)
+        layout.addWidget(clock_box)
+        layout.addSpacing(8)
+
+        # -- compact measured footer --------------------------------------- #
         self.readout = QWidget()
         self.readout.setAttribute(Qt.WA_TranslucentBackground, True)
         grid = QHBoxLayout(self.readout)
@@ -524,34 +605,44 @@ class SystemPanel(HudPanel):
         grid.setSpacing(10)
         self.uptime_value = self._readout(grid, "UPTIME")
         self.proc_value = self._readout(grid, "PROCS")
-        self.power_value = self._readout(grid, "POWER")
         self.latency_value = self._readout(grid, "LATENCY")
+        self.power_value = QLabel("", self)
+        self.power_value.hide()
         layout.addWidget(self.readout)
-        layout.addSpacing(10)
-
-        self.load_caption = QLabel("CORE LOAD  //  LAST 60 SAMPLES")
-        self.load_caption.setFont(hud_font(6.2, QFont.DemiBold, 1.1))
-        self.load_caption.setStyleSheet(
-            f"color:{TEXT_MUTED.name()}; background:transparent;"
-        )
-        layout.addWidget(self.load_caption)
-        layout.addSpacing(3)
-        self.spark = HudSparkline()
-        layout.addWidget(self.spark)
-        layout.addSpacing(9)
+        layout.addSpacing(8)
 
         self.link = QLabel("")
-        self.link.setFont(hud_font(7.0, QFont.DemiBold, 1.1))
+        self.link.setFont(hud_font(6.4, QFont.DemiBold, 0.9))
         self.link.setStyleSheet(
             f"color:{TEXT_MUTED.name()}; background:transparent;"
         )
         self.link.setWordWrap(True)
         layout.addWidget(self.link)
-        layout.addStretch(1)
+        layout.addSpacing(6)
+
+        # A real CPU history fills the lower half of the plate; it is fed only
+        # by the psutil samples above, never a synthetic waveform.
+        self.load_caption = QLabel("CORE LOAD  //  LAST 60 SAMPLES")
+        self.load_caption.setFont(hud_font(6.0, QFont.DemiBold, 1.0))
+        self.load_caption.setStyleSheet(
+            f"color:{TEXT_MUTED.name()}; background:transparent;"
+        )
+        layout.addWidget(self.load_caption)
+        layout.addSpacing(2)
+        self.spark = HudSparkline()
+        self.spark.setMinimumHeight(58)
+        self.spark.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        layout.addWidget(self.spark, 1)
+        layout.addSpacing(6)
 
         self._uptime = 0
         self._latency = None
         self._refresh_link()
+
+        self._clock_timer = QTimer(self)
+        self._clock_timer.timeout.connect(self._update_clock)
+        self._clock_timer.start(1000)
+        self._update_clock()
 
     @staticmethod
     def _readout(parent_layout, label):
@@ -561,12 +652,12 @@ class SystemPanel(HudPanel):
         column.setContentsMargins(0, 0, 0, 0)
         column.setSpacing(1)
         name = QLabel(label)
-        name.setFont(hud_font(6.4, QFont.DemiBold, 1.2))
+        name.setFont(hud_font(5.9, QFont.DemiBold, 1.1))
         name.setStyleSheet(
             f"color:{TEXT_MUTED.name()}; background:transparent;"
         )
         value = QLabel("—")
-        value.setFont(hud_font(9.2, QFont.Bold, 0.5))
+        value.setFont(hud_font(8.4, QFont.Bold, 0.3))
         value.setStyleSheet(
             f"color:{TEXT.name()}; background:transparent;"
         )
@@ -574,6 +665,11 @@ class SystemPanel(HudPanel):
         column.addWidget(value)
         parent_layout.addWidget(box, 1)
         return value
+
+    def _update_clock(self):
+        now = time.localtime()
+        self.clock.setText(time.strftime("%H:%M:%S", now))
+        self.date_label.setText(time.strftime("%a %d %b %Y", now).upper())
 
     def _refresh_link(self):
         wake = "WAKE ON" if self._wake else "WAKE OFF"
@@ -630,9 +726,20 @@ class SystemPanel(HudPanel):
         if net_rate is None:
             self.network.set_value(0.0, "—")
         else:
-            # 2 MB/s fills the rail; the numeric value stays honest.
             self.network.set_value(min(1.0, float(net_rate) / (2 * 1024 * 1024)),
                                    _format_bytes(net_rate))
+        # PWR is the only power datum this machine exposes: the battery
+        # reserve.  A desktop reports AC, never a invented percentage.
+        if battery is None:
+            self.power.set_value(0.0, "AC")
+        else:
+            try:
+                percent = float(str(battery).split("%")[0])
+            except (TypeError, ValueError):
+                self.power.set_value(0.0, str(battery).upper())
+            else:
+                self.power.set_value(min(1.0, max(0.0, percent / 100.0)),
+                                     f"{percent:.0f}%")
         self.uptime_value.setText(_format_uptime(uptime))
         self.proc_value.setText(
             "—" if processes is None else f"{int(processes)}"
@@ -666,43 +773,48 @@ class SystemPanel(HudPanel):
         self.update()
 
 
+
 class InboxPanel(HudPanel):
-    """Honest 'not connected' state for a source the backend does not have."""
+    """The Gmail source is absent; say so plainly, never invent messages."""
 
     def __init__(self, parent=None):
-        super().__init__(parent, cut=9.0)
-        self.setMinimumHeight(126)
+        super().__init__(parent, cut=12.0)
+        self.setMinimumHeight(132)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(15, 12, 15, 12)
+        layout.setContentsMargins(16, 13, 16, 13)
         layout.setSpacing(0)
 
-        self.header = PanelHeader("Inbox", "No source", accent=AMBER)
-        self.header.set_tag("No source", AMBER)
+        self.header = PanelHeader("Inbox", "Offline", accent=AMBER)
+        self.header.set_tag("Offline", AMBER)
         layout.addWidget(self.header)
         layout.addSpacing(9)
 
+        line = QHBoxLayout()
+        line.setContentsMargins(0, 0, 0, 0)
+        line.setSpacing(8)
         self.count = QLabel("—")
-        self.count.setFont(hud_font(24, QFont.Bold, 1.0))
+        self.count.setFont(hud_font(22, QFont.Bold, 1.4))
         self.count.setStyleSheet(
-            f"color:{TEXT.name()}; background:transparent;"
+            f"color:{AMBER.name()}; background:transparent;"
         )
-        layout.addWidget(self.count)
-
-        self.note = QLabel("MAIL LINK NOT CONFIGURED")
+        line.addWidget(self.count)
+        self.note = QLabel("NOT CONNECTED  //  NOT CONFIGURED")
         self.note.setFont(hud_font(7.4, QFont.Bold, 1.0))
         self.note.setStyleSheet(
             f"color:{AMBER.name()}; background:transparent;"
         )
         self.note.setWordWrap(True)
-        layout.addWidget(self.note)
-        layout.addSpacing(4)
+        line.addWidget(self.note, 1)
+        layout.addLayout(line)
+        layout.addSpacing(7)
 
         self.detail = QLabel(
-            "Connect an email MCP server to stream real messages."
+            "add credentials.json\n"
+            "to ~/.jarvis/ - see README Gmail setup"
         )
-        self.detail.setFont(hud_font(6.8, QFont.Normal, 0.5, SANS))
+        self.detail.setFont(hud_font(6.9, QFont.Normal, 0.45, SANS))
         self.detail.setStyleSheet(
-            f"color:{TEXT_MUTED.name()}; background:transparent;"
+            f"color:{TEXT_SECONDARY.name()}; background:transparent;"
         )
         self.detail.setWordWrap(True)
         layout.addWidget(self.detail)
@@ -710,7 +822,10 @@ class InboxPanel(HudPanel):
 
     def set_unavailable(self, reason="No mail source configured"):
         self.count.setText("—")
-        self.note.setText(reason.upper())
+        text = str(reason).upper()
+        if "NOT CONFIGURED" not in text:
+            text = f"NOT CONNECTED  //  {text}"
+        self.note.setText(text)
         self.header.set_tag("Offline", AMBER)
 
     def set_messages(self, messages):
@@ -721,6 +836,7 @@ class InboxPanel(HudPanel):
         self.count.setText(str(len(messages)))
         self.note.setText("UNREAD")
         self.header.set_tag("Live", CYAN)
+
 
 
 class _GithubProbe(QObject):
@@ -782,6 +898,7 @@ class _GithubProbe(QObject):
             "notifications": None,
             "stars": None,
             "issues": None,
+            "pulls": None,
             "error": "",
         }
         if not shutil.which("git"):
@@ -843,6 +960,13 @@ class _GithubProbe(QObject):
                 if isinstance(meta, dict):
                     info["stars"] = meta.get("stargazers_count")
                     info["issues"] = meta.get("open_issues_count")
+                search = self._api(
+                    "https://api.github.com/search/issues"
+                    f"?q=repo:{owner}/{repo}+type:pr+state:open&per_page=1",
+                    token,
+                )
+                if isinstance(search, dict):
+                    info["pulls"] = int(search.get("total_count") or 0)
                 info["live"] = True
             except urllib.error.HTTPError as exc:
                 info["error"] = (
@@ -863,24 +987,46 @@ class _GithubProbe(QObject):
 
 
 class GithubPanel(HudPanel):
-    """Local repository state, plus remote notifications when configured."""
+    """Local repository state, plus live notifications when configured."""
 
     def __init__(self, root=None, parent=None):
-        super().__init__(parent, cut=9.0)
-        self.setMinimumHeight(190)
+        super().__init__(parent, cut=12.0)
+        self.setMinimumHeight(216)
         self._root = Path(root or Path(__file__).resolve().parent)
         self._probe = None
         self._last = {}
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(15, 12, 15, 11)
+        layout.setContentsMargins(16, 13, 16, 12)
         layout.setSpacing(0)
         self.header = PanelHeader("GitHub", "Scanning")
         layout.addWidget(self.header)
-        layout.addSpacing(7)
+        layout.addSpacing(6)
+
+        self.handle = QLabel("@—")
+        self.handle.setFont(hud_font(9.4, QFont.Bold, 0.5, SANS))
+        self.handle.setStyleSheet(
+            f"color:{CYAN_SOFT.name()}; background:transparent;"
+        )
+        layout.addWidget(self.handle)
+        layout.addSpacing(5)
+
+        self.notifs_value = QLabel("NOTIFS  —")
+        self.notifs_value.setFont(hud_font(6.8, QFont.Bold, 0.9))
+        self.notifs_value.setStyleSheet(
+            f"color:{AMBER.name()}; background:transparent;"
+        )
+        layout.addWidget(self.notifs_value)
+        self.pulls_value = QLabel("OPEN PRS  —")
+        self.pulls_value.setFont(hud_font(6.8, QFont.Bold, 0.9))
+        self.pulls_value.setStyleSheet(
+            f"color:{AMBER.name()}; background:transparent;"
+        )
+        layout.addWidget(self.pulls_value)
+        layout.addSpacing(4)
 
         self.repo = QLabel("—")
-        self.repo.setFont(hud_font(10.2, QFont.Bold, 0.4, SANS))
+        self.repo.setFont(hud_font(10.4, QFont.Bold, 0.5, SANS))
         self.repo.setStyleSheet(
             f"color:{TEXT.name()}; background:transparent;"
         )
@@ -888,24 +1034,31 @@ class GithubPanel(HudPanel):
         layout.addWidget(self.repo)
 
         self.branch = QLabel("BRANCH —")
-        self.branch.setFont(hud_font(7.0, QFont.DemiBold, 1.0))
+        self.branch.setFont(hud_font(6.8, QFont.DemiBold, 0.9))
         self.branch.setStyleSheet(
             f"color:{CYAN_SOFT.name()}; background:transparent;"
         )
         layout.addWidget(self.branch)
-        layout.addSpacing(6)
+        layout.addSpacing(4)
 
         self.commit = QLabel("No commit data")
-        self.commit.setFont(hud_font(6.8, QFont.Normal, 0.4, SANS))
+        self.commit.setFont(hud_font(6.6, QFont.Normal, 0.35, SANS))
         self.commit.setStyleSheet(
             f"color:{TEXT_SECONDARY.name()}; background:transparent;"
         )
         self.commit.setWordWrap(True)
         layout.addWidget(self.commit)
-        layout.addSpacing(5)
+        layout.addSpacing(4)
+
+        self.last_push = QLabel("last push: —")
+        self.last_push.setFont(hud_font(6.3, QFont.Normal, 0.35, SANS))
+        self.last_push.setStyleSheet(
+            f"color:{TEXT_SECONDARY.name()}; background:transparent;"
+        )
+        layout.addWidget(self.last_push)
 
         self.remote = QLabel("REMOTE // TOKEN ABSENT")
-        self.remote.setFont(hud_font(6.4, QFont.DemiBold, 0.9))
+        self.remote.setFont(hud_font(6.3, QFont.DemiBold, 0.8))
         self.remote.setStyleSheet(
             f"color:{AMBER.name()}; background:transparent;"
         )
@@ -930,7 +1083,9 @@ class GithubPanel(HudPanel):
     def apply(self, info):
         self._last = dict(info or {})
         repo_name = self._last.get("repo") or "repository"
+        owner = self._last.get("owner") or ""
         self.repo.setText(_short(repo_name, 28))
+        self.handle.setText(f"@{owner}" if owner else "LOCAL REPOSITORY")
         branch = self._last.get("branch") or "—"
         dirty = self._last.get("dirty")
         if dirty is None:
@@ -947,8 +1102,21 @@ class GithubPanel(HudPanel):
             self.commit.setText(f"{commit}  {subject}\n{when}")
         else:
             self.commit.setText("No commit data")
+
+        notes = self._last.get("notifications")
+        pulls = self._last.get("pulls")
+        self.notifs_value.setText(
+            "NOTIFS  —" if notes is None else f"NOTIFS  {notes}"
+        )
+        self.pulls_value.setText(
+            "OPEN PRS  —" if pulls is None else f"OPEN PRS  {pulls}"
+        )
+        if owner and repo_name:
+            self.last_push.setText(f"last push: {owner}/{repo_name}")
+        else:
+            self.last_push.setText(f"last push: {repo_name}")
+
         if self._last.get("live"):
-            notes = self._last.get("notifications")
             stars = self._last.get("stars")
             issues = self._last.get("issues")
             bits = []
@@ -986,22 +1154,23 @@ class GithubPanel(HudPanel):
             probe.stop()
 
 
+
 class LeftRail(QWidget):
     """The left instrument column: system, inbox and GitHub."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
-        self.setFixedWidth(284)
+        self.setFixedWidth(300)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(11)
         self.system = SystemPanel()
         self.inbox = InboxPanel()
         self.github = GithubPanel()
-        layout.addWidget(self.system, 1)
-        layout.addWidget(self.inbox, 0)
-        layout.addWidget(self.github, 0)
+        layout.addWidget(self.system, 3)
+        layout.addWidget(self.inbox, 1)
+        layout.addWidget(self.github, 1)
 
     def set_expanded(self, expanded):
         """Fold the inbox/GitHub plates away on shorter desktops."""
@@ -1039,65 +1208,52 @@ class LeftRail(QWidget):
 # -- transcript ------------------------------------------------------------- #
 
 class TranscriptRow(QWidget):
-    """One speaker turn with a hairline gutter and a timestamp."""
+    """One transcript line: a cyan ``>`` prefix, the text and a timestamp."""
 
     def __init__(self, speaker, text, stamp="", is_user=False, parent=None):
         super().__init__(parent)
-        self._accent = CYAN if not is_user else AMBER
+        self._accent = AMBER if is_user else CYAN
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(9)
+        layout.setContentsMargins(0, 1, 0, 1)
+        layout.setSpacing(8)
 
         gutter = QFrame()
         gutter.setFixedWidth(2)
         gutter.setStyleSheet(
-            f"background:{_rgba(self._accent, 170).name()}; border:none;"
+            f"background:{_rgba(self._accent, 150).name()}; border:none;"
         )
-        gutter.setMinimumHeight(26)
+        gutter.setMinimumHeight(20)
         layout.addWidget(gutter, 0, Qt.AlignTop)
 
-        column = QVBoxLayout()
-        column.setContentsMargins(0, 0, 0, 0)
-        column.setSpacing(2)
-        head = QHBoxLayout()
-        head.setContentsMargins(0, 0, 0, 0)
-        head.setSpacing(8)
-        tag = QLabel("YOU" if is_user else "JARVIS")
-        tag.setFont(hud_font(6.9, QFont.Bold, 1.15))
-        tag.setStyleSheet(
-            f"color:{self._accent.name()}; background:transparent;"
-        )
-        head.addWidget(tag)
-        head.addStretch(1)
-        if stamp:
-            clock = QLabel(stamp)
-            clock.setFont(hud_font(6.4, QFont.Normal, 0.4))
-            clock.setStyleSheet(
-                f"color:{TEXT_MUTED.name()}; background:transparent;"
-            )
-            head.addWidget(clock)
-        column.addLayout(head)
-
-        body = QLabel(text or "")
+        body = QLabel("> " + str(text or ""))
         body.setWordWrap(True)
         body.setTextFormat(Qt.PlainText)
         body.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        body.setFont(hud_font(8.4, QFont.Normal, 0.25, SANS))
+        body.setFont(hud_font(7.9, QFont.Normal, 0.15, SANS))
         body.setStyleSheet(
-            f"color:{'#C9EDF3' if not is_user else '#DCEFF2'};"
+            f"color:{'#BFEFF5' if not is_user else '#FFE9BC'};"
             "background:transparent;"
         )
-        column.addWidget(body)
-        layout.addLayout(column, 1)
+        layout.addWidget(body, 1)
+
+        if stamp:
+            clock = QLabel(stamp)
+            clock.setFont(hud_font(5.9, QFont.Normal, 0.2))
+            clock.setStyleSheet(
+                f"color:{TEXT_MUTED.name()}; background:transparent;"
+            )
+            clock.setAlignment(Qt.AlignRight | Qt.AlignTop)
+            layout.addWidget(clock, 0, Qt.AlignTop)
 
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-        painter.setPen(QPen(QColor(20, 74, 86, 62), 1.0))
+        painter.setPen(QPen(QColor(0, 229, 255, 38), 1.0))
         painter.drawLine(QPointF(0, self.height() - 1),
                          QPointF(self.width(), self.height() - 1))
         painter.end()
+
 
 
 class TranscriptPanel(HudPanel):
@@ -1143,7 +1299,8 @@ class TranscriptPanel(HudPanel):
         layout.addWidget(self.scroll, 1)
 
         self.empty = QLabel(
-            "AWAITING INPUT\nSay “Hey JARVIS”, tap the reactor, or type below."
+            "> No conversation yet.\n"
+            "Say “Hey JARVIS”, tap the reactor, or type below."
         )
         self.empty.setFont(hud_font(7.2, QFont.Normal, 0.5, SANS))
         self.empty.setStyleSheet(
@@ -1168,7 +1325,7 @@ class TranscriptPanel(HudPanel):
 
     def append_system(self, text):
         self._hide_empty()
-        note = QLabel(_short(text, 240))
+        note = QLabel("> " + _short(text, 240))
         note.setFont(hud_font(6.8, QFont.Normal, 0.4, SANS))
         note.setStyleSheet(
             f"color:{AMBER.name()}; background:transparent;"
@@ -1229,6 +1386,58 @@ class TranscriptPanel(HudPanel):
 
 # -- terminal / activity ---------------------------------------------------- #
 
+class TerminalHeader(QWidget):
+    """macOS traffic lights + ``jarvis://activity`` title."""
+
+    def __init__(self, title="jarvis://activity", parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(30)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(5)
+        for color, tip in (("#FF5F57", "close"),
+                           ("#FEBC2E", "minimise"),
+                           ("#28C840", "zoom")):
+            dot = QLabel("●")
+            dot.setToolTip(tip)
+            dot.setStyleSheet(
+                f"color:{color}; background:transparent; font-size:9px;"
+            )
+            row.addWidget(dot)
+        row.addSpacing(6)
+        self.title = QLabel(title)
+        self.title.setFont(hud_font(7.6, QFont.Bold, 0.7))
+        self.title.setStyleSheet(
+            f"color:{CYAN_SOFT.name()}; background:transparent;"
+        )
+        row.addWidget(self.title)
+        row.addStretch(1)
+        self.tag = QLabel("LIVE")
+        self.tag.setFont(hud_font(6.4, QFont.DemiBold, 1.0))
+        self.tag.setStyleSheet(
+            f"color:{GREEN.name()}; background:transparent;"
+        )
+        row.addWidget(self.tag)
+
+    def set_tag(self, text, color=None):
+        self.tag.setText(str(text).upper())
+        if color is not None:
+            self.tag.setStyleSheet(
+                f"color:{QColor(color).name()}; background:transparent;"
+            )
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        y = self.height() - 1.5
+        painter.setPen(QPen(QColor(0, 229, 255, 90), 1.0))
+        painter.drawLine(QPointF(0, y), QPointF(self.width(), y))
+        painter.setPen(QPen(QColor(255, 179, 0, 120), 1.0))
+        painter.drawLine(QPointF(0, y), QPointF(24, y))
+        painter.end()
+
+
 class ActivityPanel(HudPanel):
     """A real event stream; never a canned terminal transcript."""
 
@@ -1243,14 +1452,14 @@ class ActivityPanel(HudPanel):
     }
 
     def __init__(self, parent=None):
-        super().__init__(parent, cut=10.0)
-        self.setMinimumHeight(190)
+        super().__init__(parent, cut=14.0)
+        self.setMinimumHeight(200)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(15, 12, 15, 11)
+        layout.setContentsMargins(16, 12, 16, 11)
         layout.setSpacing(0)
-        self.header = PanelHeader("Terminal", "Activity")
+        self.header = TerminalHeader()
         layout.addWidget(self.header)
-        layout.addSpacing(6)
+        layout.addSpacing(4)
 
         self.view = QTextEdit()
         self.view.setObjectName("hudActivity")
@@ -1283,8 +1492,8 @@ class ActivityPanel(HudPanel):
         stamp = time.strftime("%H:%M:%S")
         safe = html.escape(text)
         self.view.append(
-            f'<span style="color:#335C66">{stamp}</span> '
-            f'<span style="color:#4E8F9C">›</span> '
+            f'<span style="color:#FFB300">⚡</span> '
+            f'<span style="color:#7A5A14">{stamp}</span> '
             f'<span style="color:{color.name()}">{safe}</span>'
         )
         if follow:
@@ -1303,10 +1512,10 @@ class RightRail(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
-        self.setFixedWidth(374)
+        self.setFixedWidth(390)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(11)
+        layout.setSpacing(12)
         self.transcript = TranscriptPanel()
         self.activity = ActivityPanel()
         layout.addWidget(self.transcript, 1)
@@ -1336,68 +1545,78 @@ class RightRail(QWidget):
 
 # -- command bar ------------------------------------------------------------ #
 
+class CommandInput(QLineEdit):
+    """Command field that turns Tab into a request to start listening."""
+
+    tab_pressed = pyqtSignal()
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key_Tab, Qt.Key_Backtab):
+            self.tab_pressed.emit()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+
 class CommandBar(HudPanel):
     """Full-width command console at the bottom of the HUD."""
 
     submitted = pyqtSignal(str)
+    PLACEHOLDER = (
+        "Type, or press Tab to talk... "
+        "(Enter to send · Cmd+Q to quit)"
+    )
+    BUSY_PLACEHOLDER = "JARVIS is processing…"
 
     def __init__(self, parent=None):
-        super().__init__(parent, cut=8.0, notch=8.0)
-        self.setFixedHeight(64)
+        super().__init__(parent, cut=12.0, notch=10.0)
+        self.setFixedHeight(58)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(18, 9, 16, 9)
+        layout.setContentsMargins(18, 8, 12, 8)
         layout.setSpacing(10)
 
-        prompt = QLabel(">_")
-        prompt.setFont(hud_font(10.5, QFont.Bold, 1.2))
+        prompt = QLabel(">")
+        prompt.setFont(hud_font(13.0, QFont.Bold, 1.2))
         prompt.setStyleSheet(
             f"color:{AMBER.name()}; background:transparent;"
         )
-        prompt.setFixedWidth(24)
+        prompt.setFixedWidth(16)
         layout.addWidget(prompt)
 
-        prefix = QLabel("CMD")
-        prefix.setFont(hud_font(7.0, QFont.Bold, 1.35))
-        prefix.setStyleSheet(
-            f"color:{TEXT_MUTED.name()}; background:transparent;"
-        )
-        layout.addWidget(prefix)
-
-        self.input = QLineEdit()
+        self.input = CommandInput()
         self.input.setObjectName("hudCommandInput")
-        self.input.setPlaceholderText(
-            "Type a command, a question, or “open youtube”…"
-        )
+        self.input.setPlaceholderText(self.PLACEHOLDER)
         self.input.setFont(hud_font(9.0, QFont.Normal, 0.35))
         self.input.setFrame(False)
         self.input.setStyleSheet(
             "QLineEdit#hudCommandInput { background:transparent; border:none;"
             f" color:{TEXT.name()}; padding:2px 4px;"
-            " selection-background-color:rgba(34,230,255,0.24); }"
+            " selection-background-color:rgba(0,229,255,0.24); }"
             "QLineEdit#hudCommandInput::placeholder { color:#3E6570; }"
         )
         self.input.returnPressed.connect(self._emit)
         layout.addWidget(self.input, 1)
 
-        self.hint = QLabel("ENTER  EXECUTE   ·   CTRL+K  FOCUS   ·   ESC  HIDE")
-        self.hint.setFont(hud_font(6.2, QFont.DemiBold, 0.9))
+        self.hint = QLabel("ENTER  SEND")
+        self.hint.setFont(hud_font(6.0, QFont.DemiBold, 0.9))
         self.hint.setStyleSheet(
             f"color:{TEXT_MUTED.name()}; background:transparent;"
         )
         layout.addWidget(self.hint)
 
-        self.send = QPushButton("EXECUTE")
+        self.send = QPushButton("↵")
         self.send.setCursor(Qt.PointingHandCursor)
         self.send.setFocusPolicy(Qt.NoFocus)
-        self.send.setFixedSize(86, 32)
-        self.send.setFont(hud_font(7.0, QFont.Bold, 1.4))
+        self.send.setFixedSize(38, 34)
+        self.send.setToolTip("Send command (Enter)")
+        self.send.setFont(hud_font(12.0, QFont.Bold, 0.0))
         self.send.setStyleSheet(
-            "QPushButton { background:rgba(255,181,71,0.07);"
-            " border:1px solid rgba(255,181,71,0.40);"
-            " border-radius:2px; color:#FFD79A; padding:0; }"
-            "QPushButton:hover { background:rgba(255,181,71,0.15);"
-            " border-color:rgba(255,181,71,0.75); color:#FFF0D0; }"
+            "QPushButton { background:rgba(0,229,255,0.06);"
+            " border:1px solid rgba(0,229,255,0.38);"
+            " border-radius:3px; color:#9FF5FF; padding:0; }"
+            "QPushButton:hover { background:rgba(0,229,255,0.16);"
+            " border-color:rgba(0,229,255,0.80); color:#FFFFFF; }"
             "QPushButton:disabled { color:#456B75;"
             " border-color:rgba(69,107,117,0.30); background:transparent; }"
         )
@@ -1420,11 +1639,9 @@ class CommandBar(HudPanel):
         self.input.setEnabled(not self._busy)
         self.send.setEnabled(not self._busy)
         if self._busy:
-            self.input.setPlaceholderText("JARVIS is processing…")
+            self.input.setPlaceholderText(self.BUSY_PLACEHOLDER)
         else:
-            self.input.setPlaceholderText(
-                "Type a command, a question, or “open youtube”…"
-            )
+            self.input.setPlaceholderText(self.PLACEHOLDER)
 
     def focus_input(self):
         if self.input.isEnabled():
@@ -1438,6 +1655,7 @@ class CommandBar(HudPanel):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self.hint.setVisible(self.width() >= 900)
+
 
 
 # -- header ----------------------------------------------------------------- #
@@ -1549,103 +1767,101 @@ class TechStrip(QWidget):
 
 
 class HudTitleBar(QWidget):
-    """Frameless header: identity, technical markings, link, clock, controls."""
+    """Centred identity plate with cyan corner brackets and window controls."""
 
     def __init__(self, window):
         super().__init__(window)
         self._window = window
         self._drag = None
         self._compact = False
-        self._full_title = "JARVIS"
+        self._full_title = "J A R V I S"
         self.setObjectName("hudTitleBar")
-        self.setFixedHeight(92)
+        self.setFixedHeight(96)
 
-        row = QHBoxLayout(self)
-        row.setContentsMargins(22, 10, 14, 0)
-        row.setSpacing(13)
-        self._row = row
-        self.mark = HudMark(40)
-        row.addWidget(self.mark)
-
-        titles = QVBoxLayout()
+        # The title block is a transparent overlay centred by resizeEvent(); the
+        # controls are positioned independently so the wordmark is centred on
+        # the window, not on the space left over by the buttons.
+        self.title_block = QWidget(self)
+        self.title_block.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.title_block.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        titles = QVBoxLayout(self.title_block)
         titles.setContentsMargins(0, 0, 0, 0)
-        titles.setSpacing(0)
+        titles.setSpacing(1)
         self.title = QLabel(self._full_title)
-        self.title.setFont(hud_font(25, QFont.Bold, 7.0, SANS))
+        self.title.setAlignment(Qt.AlignCenter)
+        self.title.setFont(hud_font(31, QFont.Bold, 2.0, SANS))
         self.title.setStyleSheet(
             f"color:{TEXT.name()}; background:transparent;"
         )
         titles.addWidget(self.title)
         self.subtitle = QLabel("JUST A RATHER VERY INTELLIGENT SYSTEM")
-        self.subtitle.setFont(hud_font(6.9, QFont.DemiBold, 1.8))
+        self.subtitle.setAlignment(Qt.AlignCenter)
+        self.subtitle.setFont(hud_font(7.2, QFont.DemiBold, 2.5))
         self.subtitle.setStyleSheet(
             f"color:{TEXT_SECONDARY.name()}; background:transparent;"
         )
         titles.addWidget(self.subtitle)
         self.build_label = QLabel("MK VII   //   NEURAL COMMAND INTERFACE")
+        self.build_label.setAlignment(Qt.AlignCenter)
         self.build_label.setFont(hud_font(6.1, QFont.DemiBold, 1.1))
         self.build_label.setStyleSheet(
             f"color:{AMBER.name()}; background:transparent;"
         )
-        titles.addWidget(self.build_label)
-        row.addLayout(titles)
-        row.addStretch(1)
+        self.build_label.hide()
 
+        # -- hidden compatibility plate (link / clock are in SYSTEM now) ---- #
         self.tech = TechStrip()
-        row.addWidget(self.tech, 0, Qt.AlignVCenter)
-        row.addStretch(1)
-
-        status_box = QVBoxLayout()
-        status_box.setContentsMargins(0, 0, 0, 0)
-        status_box.setSpacing(1)
-        status_line = QHBoxLayout()
-        status_line.setContentsMargins(0, 0, 0, 0)
-        status_line.setSpacing(6)
-        status_line.addStretch(1)
-        self.connection_dot = QLabel("●")
-        self.connection_dot.setStyleSheet(
-            f"color:{GREEN.name()}; background:transparent; font-size:8px;"
-        )
-        self.connection_label = QLabel("LINK ACTIVE")
-        self.connection_label.setFont(hud_font(6.6, QFont.Bold, 1.0))
-        self.connection_label.setStyleSheet(
-            f"color:{GREEN.name()}; background:transparent;"
-        )
-        status_line.addWidget(self.connection_dot)
-        status_line.addWidget(self.connection_label)
-        status_box.addLayout(status_line)
-
-        self.clock = QLabel("00:00:00")
-        self.clock.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self.clock.setFont(hud_font(15, QFont.DemiBold, 1.2))
-        self.clock.setStyleSheet(
-            f"color:{TEXT.name()}; background:transparent;"
-        )
-        self.date_label = QLabel("")
-        self.date_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self.date_label.setFont(hud_font(6.2, QFont.DemiBold, 0.9))
-        self.date_label.setStyleSheet(
-            f"color:{TEXT_MUTED.name()}; background:transparent;"
-        )
-        status_box.addWidget(self.clock)
-        status_box.addWidget(self.date_label)
-        row.addLayout(status_box)
-        row.addSpacing(8)
+        self.tech.hide()
+        self.connection_dot = QLabel("●", self)
+        self.connection_label = QLabel("LINK ACTIVE", self)
+        self.clock = QLabel("00:00:00", self)
+        self.date_label = QLabel("", self)
+        self.connection_dot.hide()
+        self.connection_label.hide()
+        self.clock.hide()
+        self.date_label.hide()
 
         self.minimize_button = _window_button("−", "minimizeButton", "Minimise")
         self.maximize_button = _window_button("□", "maximizeButton", "Maximise")
         self.close_button = _window_button("✕", "closeButton", "Hide to tray")
+        self.minimize_button.setParent(self)
+        self.maximize_button.setParent(self)
+        self.close_button.setParent(self)
         self.minimize_button.clicked.connect(window._minimize)
         self.maximize_button.clicked.connect(window._toggle_maximize)
         self.close_button.clicked.connect(window._close_to_tray)
-        row.addWidget(self.minimize_button)
-        row.addWidget(self.maximize_button)
-        row.addWidget(self.close_button)
 
         self._clock_timer = QTimer(self)
         self._clock_timer.timeout.connect(self._update_clock)
         self._clock_timer.start(1000)
         self._update_clock()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._place_children()
+
+    def _place_children(self):
+        compact = self._compact
+        width = self.width()
+        height = self.height()
+        size = 22 if compact else 28
+        gap = 3 if compact else 5
+        right = width - (10 if compact else 18)
+        top = 6 if compact else 9
+        for button in (self.close_button, self.maximize_button,
+                       self.minimize_button):
+            if button.isHidden():
+                continue
+            right -= size
+            button.setGeometry(right, top, size, size)
+            right -= gap
+
+        self.title_block.adjustSize()
+        block_w = min(self.title_block.sizeHint().width() + 8, width - 24)
+        block_h = self.title_block.sizeHint().height()
+        x = int((width - block_w) / 2)
+        y = max(4, int((height - block_h) / 2) - (2 if not compact else 2))
+        self.title_block.setGeometry(x, y, block_w, block_h)
 
     def _update_clock(self):
         now = time.localtime()
@@ -1657,27 +1873,30 @@ class HudTitleBar(QWidget):
         if compact == self._compact:
             return
         self._compact = compact
-        self.setFixedHeight(56 if compact else 92)
-        self.title.setText("JARVIS")
+        self.setFixedHeight(58 if compact else 96)
+        self.title.setText(self._full_title)
         self.title.setFont(
-            hud_font(14 if compact else 25, QFont.Bold, 2.4 if compact else 7.0,
-                     SANS)
+            hud_font(15 if compact else 31,
+                     QFont.Bold, 1.4 if compact else 2.0, SANS)
         )
-        self.mark.setFixedSize(26 if compact else 40, 26 if compact else 40)
-        if compact:
-            self._row.setContentsMargins(12, 4, 8, 0)
-            self._row.setSpacing(7)
-        else:
-            self._row.setContentsMargins(22, 10, 14, 0)
-            self._row.setSpacing(13)
+        self.subtitle.setFont(
+            hud_font(5.3 if compact else 7.2,
+                     QFont.DemiBold, 1.2 if compact else 2.5)
+        )
         for widget in (self.subtitle, self.build_label, self.tech,
                        self.connection_dot, self.connection_label,
                        self.clock, self.date_label):
             widget.setVisible(not compact)
+        self.build_label.setVisible(False)
+        self.connection_dot.setVisible(False)
+        self.connection_label.setVisible(False)
+        self.clock.setVisible(False)
+        self.date_label.setVisible(False)
         for button in (self.minimize_button, self.maximize_button,
                        self.close_button):
             button.setFixedSize(22 if compact else 28, 22 if compact else 28)
         self.maximize_button.setVisible(not compact)
+        self._place_children()
         self._update_clock()
 
     def set_link(self, label, color):
@@ -1693,14 +1912,38 @@ class HudTitleBar(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
+        width = self.width()
         y = self.height() - 1.0
-        painter.setPen(QPen(QColor(20, 74, 86, 155), 1.0))
-        painter.drawLine(QPointF(22, y), QPointF(self.width() - 22, y))
-        painter.setPen(QPen(QColor(255, 181, 71, 190), 1.2))
-        painter.drawLine(QPointF(22, y), QPointF(146, y))
-        painter.setPen(QPen(QColor(34, 230, 255, 120), 1.0))
-        painter.drawLine(QPointF(self.width() - 260, y),
-                         QPointF(self.width() - 22, y))
+
+        # Thin cyan corner brackets at the top-left and top-right edges.
+        painter.setPen(QPen(QColor(0, 229, 255, 170), 1.2))
+        inset = 10.0
+        length = 34.0 if not self._compact else 20.0
+        painter.drawLine(QPointF(inset, inset),
+                         QPointF(inset + length, inset))
+        painter.drawLine(QPointF(inset, inset),
+                         QPointF(inset, inset + (18.0 if not self._compact
+                                                 else 12.0)))
+        painter.drawLine(QPointF(width - inset - length, inset),
+                         QPointF(width - inset, inset))
+        painter.drawLine(QPointF(width - inset, inset),
+                         QPointF(width - inset, inset + (18.0
+                                                         if not self._compact
+                                                         else 12.0)))
+
+        # The header rule is broken in the centre so the wordmark floats.
+        mid = width / 2.0
+        gap = 190.0 if not self._compact else 76.0
+        painter.setPen(QPen(QColor(0, 229, 255, 76), 1.0))
+        painter.drawLine(QPointF(inset + 6, y), QPointF(max(inset + 6,
+                                                          mid - gap), y))
+        painter.drawLine(QPointF(min(width - inset - 6, mid + gap), y),
+                         QPointF(width - inset - 6, y))
+        painter.setPen(QPen(QColor(255, 179, 0, 120), 1.0))
+        painter.drawLine(QPointF(mid - gap, y), QPointF(mid - gap + 24, y))
+        painter.drawLine(QPointF(mid + gap - 24, y), QPointF(mid + gap, y))
+        painter.setPen(QPen(QColor(0, 229, 255, 190), 1.0))
+        painter.drawLine(QPointF(mid - 3, y), QPointF(mid + 3, y))
         painter.end()
 
     # -- frameless drag ---------------------------------------------------- #
