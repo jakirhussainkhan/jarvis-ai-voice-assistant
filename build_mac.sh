@@ -103,13 +103,18 @@ echo "==> Building JARVIS.app"
     --collect-binaries _sounddevice_data \
     --collect-all onnxruntime \
     --collect-all chromadb \
-    --collect-all silero_vad \
     --collect-all pywinctl \
     --collect-all pyautogui \
     --collect-data tzdata \
     --exclude-module faster_whisper \
     --exclude-module fastembed \
     --exclude-module openwakeword \
+    --exclude-module silero_vad \
+    --exclude-module torch \
+    --exclude-module torchaudio \
+    --exclude-module torchvision \
+    --exclude-module nvidia \
+    --exclude-module triton \
     --exclude-module ctranslate2 \
     --exclude-module tokenizers \
     --exclude-module huggingface_hub \

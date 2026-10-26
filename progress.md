@@ -42,9 +42,11 @@ version and one tag.
 - **Zero-dependency builds.** End users install no Python and no audio/desktop
   helper tools by hand. The Windows `JARVIS.exe` bundles `ffmpeg.exe`; the macOS
   `JARVIS.dmg` bundles a static ffmpeg; the Linux `.deb` declares its runtime
-  packages (including `ffmpeg` and `tzdata`). PyInstaller now also collects the
-  runtime pieces the intelligence layer needs — `onnxruntime`, `chromadb` and
-  `silero_vad` — so VAD and semantic memory work in the frozen app.
+  packages (including `ffmpeg` and `tzdata`). PyInstaller also collects the
+  runtime pieces the semantic layer needs — `onnxruntime` and `chromadb` — while
+  the torch-backed Silero VAD is deliberately excluded: its Linux wheel is
+  multi-GB and pushed the `.deb` past GitHub's 2 GB release-asset limit. Voice
+  falls back to the calibrated RMS gate, so packaged builds still work.
 - **The Iron Man HUD.** `gui.py` + `hud.py` provide a full-screen, frameless HUD
   with the live Arc Reactor, CPU/RAM/disk telemetry, transcript and activity
   panels, a command bar and a tray icon. It keeps click-to-talk, the

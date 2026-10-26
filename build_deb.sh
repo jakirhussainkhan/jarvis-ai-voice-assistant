@@ -30,9 +30,10 @@ echo "==> Regenerating icons from the canonical Arc Reactor artwork"
 "$PYTHON" gen_icon.py
 
 echo "==> Building the frozen GUI binary"
-# Optional ML extras (offline STT/embeddings/wake word) are deliberately not
-# frozen: they are loaded lazily at runtime and fall back cleanly when absent.
-# Keeping them out makes the release smaller and much more portable.
+# Optional ML extras (offline STT/embeddings/VAD) are deliberately not frozen:
+# they are loaded lazily at runtime and fall back cleanly when absent. Silero VAD
+# pulls the torch stack (multi-GB on Linux), which pushed the .deb past GitHub's
+# 2 GB release-asset limit; the calibrated RMS gate remains the fallback anyway.
 # ffmpeg is intentionally NOT bundled: the .deb depends on the system package
 # so the distro keeps it patched, and voice._ffmpeg_binary() falls back to PATH.
 "$PYTHON" -m PyInstaller \
@@ -50,12 +51,17 @@ echo "==> Building the frozen GUI binary"
     --collect-all sounddevice \
     --collect-all onnxruntime \
     --collect-all chromadb \
-    --collect-all silero_vad \
     --collect-all pywinctl \
     --collect-data tzdata \
     --exclude-module faster_whisper \
     --exclude-module fastembed \
     --exclude-module openwakeword \
+    --exclude-module silero_vad \
+    --exclude-module torch \
+    --exclude-module torchaudio \
+    --exclude-module torchvision \
+    --exclude-module nvidia \
+    --exclude-module triton \
     --exclude-module ctranslate2 \
     --exclude-module tokenizers \
     --exclude-module huggingface_hub \
