@@ -17,14 +17,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # macOS-latest has repeatedly left one job queued until GitHub cancels
-        # it without ever assigning a runner. Test macOS on the same Intel image
-        # the release build uses (macos-15-intel) and keep both Python versions
-        # covered by the Linux and Windows jobs.
+        # One macOS job only: GitHub has repeatedly left one of two macOS jobs
+        # queued until cancellation, and the PyQt5 offscreen suite aborts
+        # (SIGABRT) on the Intel image. macos-latest runs the suite cleanly.
         os: [ubuntu-latest, windows-latest]
         python-version: ["3.10", "3.11"]
         include:
-          - os: macos-15-intel
+          - os: macos-latest
             python-version: "3.11"
 
     env:
