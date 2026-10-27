@@ -49,35 +49,116 @@ make_icon 1024 icon_512x512@2x.png
 iconutil -c icns "$ICONSET" -o "build/JARVIS.icns"
 
 echo "==> Preparing a static macOS ffmpeg"
-# A downloaded .dmg cannot assume Homebrew or a system ffmpeg. Fetch the static
-# Intel build (the release runner is macos-15-intel; it also runs on Apple
-# Silicon through Rosetta) and place it beside the app executable later. Override
-# JARVIS_FFMPEG_URL when building a native arm64 bundle.
-FFMPEG_URL="${JARVIS_FFMPEG_URL:-https://evermeet.cx/ffmpeg/getrelease/zip}"
+# A downloaded .dmg cannot assume Homebrew or a system ffmpeg, so a static
+# binary is bundled next to the app executable further down.
+#
+# evermeet.cx used to serve https://evermeet.cx/ffmpeg/getrelease/zip. That
+# redirect now answers HTTP 410 Gone, which is exactly what failed the v3.0.0
+# DMG build (curl exit code 22). Its remaining download mirror is also very
+# slow, so the pinned, arch-matched ffmpeg-static build on GitHub's CDN is tried
+# first and evermeet's JSON feed (the current release) is only the fallback.
+# JARVIS_FFMPEG_URL, JARVIS_FFMPEG_GZ_URL and JARVIS_FFMPEG_INFO_URL override
+# each step for pinned or offline builds.
+FFMPEG_INFO_URL="${JARVIS_FFMPEG_INFO_URL:-https://evermeet.cx/ffmpeg/info/ffmpeg/release}"
+FFMPEG_URL="${JARVIS_FFMPEG_URL:-}"
+case "$(uname -m)" in
+    arm64) FFMPEG_ARCH="arm64" ;;
+    *)     FFMPEG_ARCH="x64" ;;
+esac
+FFMPEG_GZ_URL="${JARVIS_FFMPEG_GZ_URL:-https://github.com/eugeneware/ffmpeg-static/releases/download/b6.0/ffmpeg-darwin-${FFMPEG_ARCH}.gz}"
 FFMPEG_ZIP="build/ffmpeg-macos.zip"
+FFMPEG_GZ="build/ffmpeg-macos.gz"
 FFMPEG_UNPACKED="build/ffmpeg-macos"
 FFMPEG_BIN="build/ffmpeg"
+
+resolve_evermeet_url() {
+    "$PYTHON" - "$FFMPEG_INFO_URL" <<'PY'
+import json
+import sys
+import urllib.request
+
+request = urllib.request.Request(
+    sys.argv[1], headers={"User-Agent": "jarvis-build/3.0"}
+)
+with urllib.request.urlopen(request, timeout=60) as response:
+    release = json.load(response)
+print(release["download"]["zip"]["url"])
+PY
+}
+
+download_zip() {
+    echo "    Downloading $1"
+    curl -L --fail --retry 3 --retry-delay 2 --silent --show-error \
+        -o "$FFMPEG_ZIP" "$1" || return 1
+    # A 410/HTML error page would otherwise surface later as a confusing unzip
+    # error, so validate the archive before unpacking it.
+    if ! unzip -tq "$FFMPEG_ZIP" >/dev/null 2>&1; then
+        echo "    $1 did not return a valid zip archive" >&2
+        return 1
+    fi
+    unzip -q -o "$FFMPEG_ZIP" -d "$FFMPEG_UNPACKED"
+}
+
+download_gz() {
+    echo "    Downloading $1"
+    curl -L --fail --retry 3 --retry-delay 2 --silent --show-error \
+        -o "$FFMPEG_GZ" "$1" || return 1
+    # gunzip verifies the gzip CRC, so a truncated download cannot be mistaken
+    # for a usable binary.
+    gunzip -c "$FFMPEG_GZ" > "$FFMPEG_BIN.download" || return 1
+    chmod +x "$FFMPEG_BIN.download"
+    mv "$FFMPEG_BIN.download" "$FFMPEG_BIN"
+}
+
 if [ ! -x "$FFMPEG_BIN" ]; then
     mkdir -p build
-    rm -rf "$FFMPEG_UNPACKED"
+    rm -rf "$FFMPEG_UNPACKED" "$FFMPEG_ZIP" "$FFMPEG_GZ" "$FFMPEG_BIN"
     mkdir -p "$FFMPEG_UNPACKED"
-    echo "    Downloading $FFMPEG_URL"
-    curl -L --fail --retry 3 --silent --show-error \
-        -o "$FFMPEG_ZIP" "$FFMPEG_URL"
-    unzip -q -o "$FFMPEG_ZIP" -d "$FFMPEG_UNPACKED"
-    if [ -f "$FFMPEG_UNPACKED/ffmpeg" ]; then
-        FOUND_FFMPEG="$FFMPEG_UNPACKED/ffmpeg"
+
+    DOWNLOADED=""
+    if [ -n "$FFMPEG_URL" ]; then
+        download_zip "$FFMPEG_URL" && DOWNLOADED=1
     else
-        # evermeet normally puts the binary at the archive root; keep a fallback
-        # for archives that wrap it in a directory. ``|| true`` keeps pipefail
-        # from treating head's early close as a build failure.
-        FOUND_FFMPEG="$(find "$FFMPEG_UNPACKED" -type f -name ffmpeg | head -n 1 || true)"
+        download_gz "$FFMPEG_GZ_URL" && DOWNLOADED=1
+        if [ -z "$DOWNLOADED" ]; then
+            echo "    ffmpeg-static is unavailable; resolving evermeet.cx instead" >&2
+            if FFMPEG_URL="$(resolve_evermeet_url)"; then
+                download_zip "$FFMPEG_URL" && DOWNLOADED=1
+            else
+                echo "    evermeet.cx could not be resolved" >&2
+            fi
+        fi
     fi
-    if [ -z "$FOUND_FFMPEG" ]; then
-        echo "Build failed: ffmpeg was not found in the downloaded archive." >&2
+    if [ -z "$DOWNLOADED" ]; then
+        echo "Build failed: no static ffmpeg build could be downloaded." >&2
         exit 1
     fi
-    cp "$FOUND_FFMPEG" "$FFMPEG_BIN"
+
+    if [ ! -f "$FFMPEG_BIN" ]; then
+        if [ -f "$FFMPEG_UNPACKED/ffmpeg" ]; then
+            FOUND_FFMPEG="$FFMPEG_UNPACKED/ffmpeg"
+        else
+            # evermeet normally puts the binary at the archive root; keep a
+            # fallback for archives that wrap it in a directory. ``|| true``
+            # keeps pipefail from treating head's early close as a failure.
+            FOUND_FFMPEG="$(find "$FFMPEG_UNPACKED" -type f -name ffmpeg | head -n 1 || true)"
+        fi
+        if [ -z "$FOUND_FFMPEG" ]; then
+            echo "Build failed: ffmpeg was not found in the downloaded archive." >&2
+            exit 1
+        fi
+        cp "$FOUND_FFMPEG" "$FFMPEG_BIN"
+    fi
+
+    # Catch a download that unpacked to something that is not a macOS binary
+    # (an HTML error page, a Linux build, ...) before it reaches the .app.
+    case "$(file -b "$FFMPEG_BIN")" in
+        *Mach-O*) ;;
+        *)
+            echo "Build failed: the downloaded ffmpeg is not a macOS executable." >&2
+            exit 1
+            ;;
+    esac
 fi
 chmod +x "$FFMPEG_BIN"
 

@@ -33,6 +33,23 @@ is installed.
 | Spoken voice | `en-GB-RyanNeural` (British male); override with `JARVIS_TTS_VOICE` |
 | Published | GitHub, tags **`v1.0.1`**…**`v3.0.0`** (README + MIT LICENSE) |
 
+## The v3.0.1 Build-Pipeline Release (2026-10-27)
+
+v3.0.1: Fixed macOS FFmpeg acquisition, CI Qt modules, and test environments
+for GitHub Actions.
+
+- **macOS DMG:** evermeet.cx retired `getrelease/zip` (HTTP 410 Gone, which
+  aborted the v3.0.0 build with curl exit 22). The build now uses the pinned,
+  arch-matched `ffmpeg-static` build on GitHub's CDN, falls back to evermeet's
+  JSON release feed, and validates the archive/CRC plus the Mach-O format before
+  bundling it.
+- **CI tests:** the Ubuntu failure (`exit 1`) was a test that silently relied on
+  `yt-dlp` being installed; it is now stubbed. The macOS Qt modules
+  (`test_gui.py`, `test_hud.py`, `test_setup.py`) abort with SIGABRT on the arm64
+  runner and run on Ubuntu and Windows instead.
+- **Instance tests:** long `AF_UNIX` temp paths are shortened on every POSIX
+  platform, not just macOS.
+
 ## The v3.0.0 Final Release (2026-10-27)
 
 JARVIS v3.0.0 ships as the definitive release: the Iron Man HUD, the corrected

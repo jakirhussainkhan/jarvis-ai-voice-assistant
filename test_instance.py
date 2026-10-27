@@ -21,12 +21,15 @@ import main
 def _state_dir(tmp_path, monkeypatch):
     """Point the lock/socket at a throwaway directory for every test.
 
-    macOS caps an AF_UNIX path at 104 bytes, and pytest's nested ``tmp_path``
-    can be longer than that. When it would be, use a short directory under
-    ``/tmp`` so the test exercises the real socket instead of skipping it.
+    AF_UNIX paths are limited to roughly 104 bytes on macOS and 108 bytes on
+    Linux. pytest's nested ``tmp_path`` can be longer than that on CI, where
+    the runner's temp/workspace paths are much deeper than a local checkout.
+    When it would be, use a short directory under ``/tmp`` so the test exercises
+    the real socket on every POSIX platform instead of failing to bind.
     """
     directory = tmp_path
-    if sys.platform == "darwin" and len(str(tmp_path / "jarvis_dev.sock")) > 100:
+    socket_path = str(tmp_path / "jarvis_dev.sock")
+    if os.name == "posix" and len(socket_path) > 100:
         directory = Path(tempfile.mkdtemp(prefix="jv-", dir="/tmp"))
     monkeypatch.setenv("JARVIS_STATE_DIR", str(directory))
     try:

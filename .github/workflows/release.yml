@@ -118,7 +118,10 @@ jobs:
           cache: pip
 
       - name: Install system dependencies
-        run: brew install portaudio ffmpeg
+        # PortAudio is bundled into the .app for sounddevice. ffmpeg is not
+        # installed here: build_mac.sh downloads a static build so the .dmg does
+        # not depend on Homebrew on the user's machine.
+        run: brew install portaudio
 
       - name: Install Python dependencies
         run: |

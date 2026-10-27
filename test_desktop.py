@@ -1022,6 +1022,15 @@ def test_play_youtube_never_duplicates_an_open_tab(monkeypatch):
 
 
 def test_search_youtube_never_duplicates_an_open_tab(monkeypatch):
+    """A failed in-place navigation must not open a second tab -- even for search.
+
+    The lookup is stubbed: "search" resolves the top hit with ``yt-dlp`` now, and
+    CI runners do not ship it. Without the stub this test only passed on machines
+    that happened to have ``yt-dlp`` installed.
+    """
+    monkeypatch.setattr(common, "has", lambda tool: tool == "yt-dlp")
+    monkeypatch.setattr(common, "run",
+                        lambda args, timeout=25: (0, "dQw4w9WgXcQ"))
     monkeypatch.setattr(desktop, "_youtube_window", lambda: "555")
     monkeypatch.setattr(desktop, "_reuse_youtube_tab", lambda url: False)
     opened = []
