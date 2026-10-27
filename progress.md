@@ -1,6 +1,6 @@
 # Jarvis — Progress
 
-Last updated: 2026-10-26
+Last updated: 2026-10-27
 
 A voice-controlled cross-platform desktop assistant. You speak a command; Jarvis either
 handles it locally (regex, offline) or forwards it to a Groq-backed agent that
@@ -29,9 +29,29 @@ is installed.
 | Timers / reminders | Working |
 | Offline wake word ("Hey Jarvis") | **Built + unit-tested; NOT yet verified live** (needs `pip install openwakeword onnxruntime`) |
 | Desktop launcher (`run.sh` + app-menu entry) | Working (verified: `desktop-file-validate` clean, GUI starts) |
-| Tests | `pytest` suite — **645 passed, 3 skipped** |
+| Tests | `pytest` suite — **671 passed, 3 skipped** |
 | Spoken voice | `en-GB-RyanNeural` (British male); override with `JARVIS_TTS_VOICE` |
 | Published | GitHub, tags **`v1.0.1`**…**`v3.0.0`** (README + MIT LICENSE) |
+
+## The v3.0.0 Final Release (2026-10-27)
+
+JARVIS v3.0.0 ships as the definitive release: the Iron Man HUD, the corrected
+YouTube command flow and the zero-dependency installers are all finalized under
+one version and one tag.
+
+- **Zero-dependency builds:** Bundled FFmpeg, PortAudio, ONNX, and ChromaDB.
+  Frozen installers leave the heavy ONNX/ChromaDB wheels optional so the assets
+  stay under GitHub's 2 GB limit; a source install includes them through
+  `requirements.txt`.
+- **YouTube Autoplay Bypass:** Direct play with the YouTube `k` shortcut and a
+  `space` fallback, with playback verified through `playerctl` before JARVIS
+  reports success.
+- **YouTube Commands:** Direct search-play (the top hit plays instead of opening
+  a results page), fullscreen and normal-window toggles, and a 20-second idle
+  timeout before returning to Idle.
+- **HUD UI:** The Iron Man HUD with the Arc Reactor logo, live telemetry,
+  transcript and activity panels, and the tray/hotkey controls.
+- **Tests:** 671 passed, 3 skipped.
 
 ## The v3.0.0 Final Release (2026-10-26)
 

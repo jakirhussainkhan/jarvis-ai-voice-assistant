@@ -49,19 +49,17 @@ echo "==> Building the frozen GUI binary"
     --hidden-import pynput.mouse._xorg \
     --hidden-import pywinctl \
     --collect-all sounddevice \
-    --collect-all onnxruntime \
-    --collect-all chromadb \
-    --collect-all pywinctl \
+    --collect-submodules pywinctl \
     --collect-data tzdata \
     --exclude-module faster_whisper \
     --exclude-module fastembed \
     --exclude-module openwakeword \
+    --exclude-module onnxruntime \
+    --exclude-module chromadb \
     --exclude-module silero_vad \
     --exclude-module torch \
     --exclude-module torchaudio \
     --exclude-module torchvision \
-    --exclude-module nvidia \
-    --exclude-module triton \
     --exclude-module ctranslate2 \
     --exclude-module tokenizers \
     --exclude-module huggingface_hub \

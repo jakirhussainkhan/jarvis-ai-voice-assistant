@@ -220,12 +220,22 @@ def test_play_without_a_song_asks_instead_of_searching(monkeypatch):
     assert calls == []
 
 
-def test_search_on_youtube_defers_to_agent(monkeypatch):
-    # "search" is a search verb, so the router deliberately defers; the agent
-    # calls fn_youtube(action="search") to open the results page.
-    calls = _spy(monkeypatch, "search_youtube", "SHOULD NOT HAPPEN")
-    assert router.try_local("search cats on youtube") is None
-    assert calls == []
+def test_search_on_youtube_plays_directly(monkeypatch):
+    """'search <song> on youtube' plays the top hit: no results page, no prompt."""
+    calls = _spy(monkeypatch, "play_youtube", "Playing cats on YouTube.")
+    search = _spy(monkeypatch, "search_youtube", "SHOULD NOT HAPPEN")
+
+    assert router.try_local("search cats on youtube") == "Playing cats on YouTube."
+    assert router.try_local("look up lofi beats on youtube") == \
+        "Playing cats on YouTube."
+    assert router.try_local("find despacito on youtube") == \
+        "Playing cats on YouTube."
+
+    assert calls == [(("cats",), {}),
+                     (("lofi beats",), {}),
+                     (("despacito",), {})]
+    assert search == [], "the results-page helper must never be used"
+    assert not confirm.is_pending(), "playing on YouTube needs no confirmation"
 
 
 def test_search_then_play_goes_straight_to_the_video(monkeypatch):
@@ -244,6 +254,63 @@ def test_look_up_then_play_keeps_the_song(monkeypatch):
 
 def test_bare_youtube_defers(monkeypatch):
     assert router.try_local("youtube") is None
+
+
+# --------------------------------------------------------------------------- #
+# browser / YouTube fullscreen (the player's "f" toggle)
+# --------------------------------------------------------------------------- #
+
+def test_fullscreen_phrases_route_to_the_f_toggle(monkeypatch):
+    """Every 'full screen' phrasing goes to desktop.fullscreen(), not a search."""
+    full = _spy(monkeypatch, "fullscreen", "Switched to full screen.")
+    normal = _spy(monkeypatch, "normal_screen", "Switched to normal screen.")
+    play = _spy(monkeypatch, "play_youtube", "SHOULD NOT HAPPEN")
+
+    on = ("full screen", "play in full screen", "go full screen", "fullscreen",
+          "make it fullscreen", "jarvis full screen",
+          "can you play in fullscreen", "maximize the video",
+          "maximize video", "switch to full screen", "put it in full screen",
+          "play the video in full screen")
+    for phrase in on:
+        assert router.try_local(phrase) == "Switched to full screen.", phrase
+
+    off = ("normal screen", "exit full screen", "leave fullscreen", "windowed",
+           "go windowed", "quit full screen", "switch to normal screen",
+           "leave full screen please")
+    for phrase in off:
+        assert router.try_local(phrase) == "Switched to normal screen.", phrase
+
+    assert len(full) == len(on), full
+    assert len(normal) == len(off), normal
+    assert play == [], "'play in full screen' must never become a song search"
+
+
+def test_play_in_full_screen_never_searches(monkeypatch):
+    """Regression: the router checked YouTube play/search before fullscreen.
+
+    "Play in full screen" must toggle the CURRENT video: no song search, no
+    yt-dlp lookup, no confirmation prompt.
+    """
+    full = _spy(monkeypatch, "fullscreen", "Switched to full screen.")
+    play = _spy(monkeypatch, "play_youtube", "SHOULD NOT HAPPEN")
+    search = _spy(monkeypatch, "search_youtube", "SHOULD NOT HAPPEN")
+
+    assert router.try_local("play in full screen") == "Switched to full screen."
+
+    assert len(full) == 1, full
+    assert play == [], "must not start a YouTube play/search"
+    assert search == [], "must not open the YouTube results page"
+    assert not confirm.is_pending()
+
+
+def test_fullscreen_commands_never_ask_for_confirmation(monkeypatch):
+    _spy(monkeypatch, "fullscreen", "Switched to full screen.")
+    _spy(monkeypatch, "normal_screen", "Switched to normal screen.")
+
+    assert router.try_local("play in full screen") == "Switched to full screen."
+    assert not confirm.is_pending()
+    assert router.try_local("exit full screen") == "Switched to normal screen."
+    assert not confirm.is_pending()
 
 
 # --------------------------------------------------------------------------- #

@@ -50,10 +50,11 @@ _PHRASE_TIME_LIMIT = _env_int("JARVIS_PHRASE_LIMIT", 15, 3)
 # ^ max seconds of a single utterance (was 6 s): long enough for a whole sentence
 #   so a wordy request is never truncated mid-way.
 _RECOGNIZE_TIMEOUT = 15    # max seconds for the speech-to-text HTTP round-trip
-# After a YouTube video starts, Jarvis stays available for a short control
+# After a YouTube video starts, Jarvis stays available for a 20-second control
 # window ("pause", "next", "full screen", ...) and then goes Idle so it does not
-# sit listening to the music. Kept exactly 15 s by product requirement.
-YOUTUBE_LISTEN_TIMEOUT = 15
+# sit listening to the music, saying "Enjoy the music, sir." as it lets go.
+# Going Idle must never pause, mute or stop the background music.
+YOUTUBE_LISTEN_TIMEOUT = 20
 
 # Bias phrases fed to faster-whisper as ``initial_prompt``. Whisper uses the
 # prompt as preceding context, so it favours these spellings instead of guessing

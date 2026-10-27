@@ -19,14 +19,12 @@ import re
 import threading
 import time
 import unicodedata
-from contextlib import contextmanager
 from datetime import datetime
 from difflib import SequenceMatcher
 from pathlib import Path
 
 import psutil
 
-import confirm
 import logger
 from platform_adapters import Audio, Window, System
 from platform_adapters import common
@@ -584,52 +582,29 @@ def _navigate_youtube(url):
 
 
 def search_youtube(query):
+    """Play the top YouTube hit for a spoken search -- never a results page.
+
+    "search <song> on YouTube" is a playback request, so the video is resolved
+    with ``yt-dlp`` exactly like a "play" command and the browser is sent
+    straight to ``watch?v=ID``. The results page is deliberately never opened.
+    """
+    query = extract_media_query(query)
     if not query:
-        return open_youtube()
-    outcome = _navigate_youtube(_yt_url_search(query))
-    if outcome == "reused":
-        return f"Searching YouTube for {query}."
-    if outcome == "opened":
-        return f"Here are the YouTube results for {query}."
-    if outcome == "blocked":
-        return ("YouTube is already open, but I couldn't navigate the "
-                "existing tab.")
-    return "I couldn't open the browser."
+        return "What should I play?"
+    return _play_youtube_now(query, allow_search_fallback=False)
 
 
 _YT_ID = re.compile(r"^[A-Za-z0-9_-]{6,}$")
 
 # The GUI keeps listening after a video starts so media/fullscreen commands work.
-# The worker reads and clears this token once, then arms its short follow-up
+# The worker reads and clears this token once, then arms its 20-second follow-up
 # listening window (see ``JarvisWorker.run``).
 _youtube_state_lock = threading.Lock()
 _youtube_playback_token = None
-_youtube_confirmation = threading.local()
-
-
-@contextmanager
-def youtube_confirmation():
-    """Mark the current call as a spoken/local YouTube request.
-
-    The low-level :func:`play_youtube` remains an immediate action for
-    programmatic callers and the confirmed action itself. The router wraps a
-    spoken "play <song>" in this context, so the same public function first
-    resolves the title and asks for permission instead of opening the browser.
-    """
-    previous = getattr(_youtube_confirmation, "enabled", False)
-    _youtube_confirmation.enabled = True
-    try:
-        yield
-    finally:
-        _youtube_confirmation.enabled = previous
-
-
-def _confirmation_requested():
-    return bool(getattr(_youtube_confirmation, "enabled", False))
 
 
 def _mark_youtube_playback_started(title=""):
-    """Remember that a video just started for the GUI's 15-second window."""
+    """Remember that a video just started for the GUI's 20-second window."""
     global _youtube_playback_token
     with _youtube_state_lock:
         _youtube_playback_token = {
@@ -700,11 +675,12 @@ def _finish_youtube_play(query, outcome, title=""):
     """Wait for the page, make it play, then report the *verified* state.
 
     The spoken reply must never claim "Playing" before the video really is: the
-    page is given two seconds to load and ``ensure_browser_playing`` then checks
-    (and if needed nudges) the player. A blocked autoplay is reported honestly so
-    the user can press play instead of wondering why nothing happened.
+    page is given three seconds to load and ``ensure_browser_playing`` then
+    focuses the browser, sends the play shortcut and verifies playback. A blocked
+    autoplay is reported honestly so the user can press play instead of
+    wondering why nothing happened.
     """
-    time.sleep(2.0)                      # let the browser load the new video
+    time.sleep(3.0)                      # let the browser load the new video
     if ensure_browser_playing():
         # Only arm the GUI's follow-up listening window after verified playback.
         _mark_youtube_playback_started(title or query)
@@ -718,8 +694,13 @@ def _finish_youtube_play(query, outcome, title=""):
             "press play or allow autoplay.")
 
 
-def _play_youtube_now(query, resolved=None):
-    """Play immediately (used after confirmation and by direct callers)."""
+def _play_youtube_now(query, resolved=None, allow_search_fallback=True):
+    """Resolve and play immediately -- no confirmation prompt, ever.
+
+    ``allow_search_fallback`` stays available for the "play" path (a helpful
+    last resort when ``yt-dlp`` cannot resolve a video) but is disabled for
+    "search", which must never leave the user on a results page.
+    """
     if resolved is None:
         resolved, reason = _resolve_youtube(query)
     else:
@@ -737,43 +718,19 @@ def _play_youtube_now(query, resolved=None):
             return ("YouTube is already open, but I couldn't navigate the "
                     "existing tab.")
 
+    if not allow_search_fallback:
+        return f"{reason}."
+
     # yt-dlp missing or failed: navigate to the results page and say so.
     return _fallback_youtube_search(query, reason)
-
-
-def request_youtube(query):
-    """Resolve a video and ask before playing it.
-
-    This is the spoken-command entry point: it performs the metadata lookup now
-    (so the question can name the real title) and registers the playback action
-    with :mod:`confirm`. Saying "yes" plays exactly the resolved video; anything
-    else cancels. Returns the question to speak.
-    """
-    query = extract_media_query(query)
-    if not query:
-        return "What should I play?"
-
-    resolved, reason = _resolve_youtube(query)
-    if resolved is None:
-        # Nothing specific could be resolved. Searching the results page is not
-        # playback, so it is safe to do immediately (and preserves the old
-        # helpful fallback when yt-dlp is unavailable).
-        return _fallback_youtube_search(query, reason)
-
-    prompt = f"I found {resolved['title']}. Do you want me to play this?"
-    return confirm.ask_action(
-        prompt, lambda: _play_youtube_now(query, resolved)
-    )
 
 
 def play_youtube(query):
     """Play the top yt-dlp result for a song/video name; else open the results.
 
-    Direct/programmatic calls play immediately. Calls made from the spoken/local
-    command path (the router wraps them in :func:`youtube_confirmation`) first
-    resolve the title and ask for confirmation via :func:`request_youtube`.
-
-    The argument may be a raw spoken sentence; only the song/video name is used.
+    Spoken and programmatic calls behave identically: the song name is extracted,
+    resolved to the top video with ``yt-dlp`` and played immediately. There is no
+    confirmation step.
 
     When a YouTube tab is already open the resolved watch URL (or the results
     URL) is typed into that tab's address bar with ``xdotool`` instead of opening
@@ -782,8 +739,6 @@ def play_youtube(query):
     query = extract_media_query(query)
     if not query:
         return "What should I play?"
-    if _confirmation_requested():
-        return request_youtube(query)
     return _play_youtube_now(query)
 
 
@@ -841,18 +796,32 @@ def _playerctl_status(timeout=3):
     return (out or "").strip().lower()
 
 
-def ensure_browser_playing(verify_seconds=1.0):
+# YouTube's play/pause shortcuts, tried in order. ``k`` is YouTube's own
+# binding; ``space`` is the fallback when the page did not react to ``k``. Both
+# keys toggle, so the fallback is only ever sent while playerctl still reports
+# that playback is not running.
+_PLAY_PAUSE_KEYS = ("k", "space")
+
+
+def ensure_browser_playing(verify_seconds=1.0, settle_seconds=1.0):
     """Make sure the YouTube video is actually playing; return True when it is.
 
     Browsers refuse unmuted autoplay until the site has seen a user gesture, and a
     spoken command is not one -- so a video we just navigated to often sits paused
     and may publish no MPRIS session at all. ``playerctl status`` is checked
     first: "Playing" means leave it alone (a key press would pause it). "Paused",
-    no session, or a playerctl failure all mean playback is not running, so the
-    YouTube window is focused and Space is pressed, then the status is verified
-    after ``verify_seconds``. When playerctl is unavailable the delivered key is
-    trusted (there is nothing to verify against). Best effort, X11 only, never
-    raises.
+    no session, or a playerctl failure all mean playback is not running, so:
+
+    1. the YouTube window is activated and *verified* to own input focus,
+    2. focus is given ``settle_seconds`` to settle,
+    3. ``k`` is pressed; if playerctl still does not report playback after
+       ``verify_seconds``, ``space`` is tried as well,
+    4. after each key ``playerctl status`` is re-checked (never assumed).
+
+    Chromium/Brave drop synthetic key events sent to a window that does not own
+    focus, so the keys are never sprayed blind. When playerctl is unavailable the
+    delivered key is trusted (there is nothing to verify against). Best effort,
+    X11 only, never raises.
     """
     status = _playerctl_status()
     if status and "playing" in status:
@@ -862,13 +831,38 @@ def ensure_browser_playing(verify_seconds=1.0):
     wid = _youtube_window()
     if not wid:
         return False
-    if not _press_in_window(wid, "space", restore=False):
+
+    # 1. Focus the player (verified -- unfocused browsers ignore key events).
+    if not Window.activate_window(wid):
+        Window.force_focus(wid)
+    if not _window_has_input_focus(wid):
+        _dbg(f"window {wid} did not take focus; cannot force playback")
         return False
-    time.sleep(max(0.5, float(verify_seconds)))
-    status = _playerctl_status()
-    if status is None:
-        return True                  # no playerctl: trust the key we delivered
-    return "playing" in status
+
+    # 2. Let the focus settle before delivering the synthetic key event.
+    time.sleep(max(0.2, float(settle_seconds)))
+
+    # 3. Press k (YouTube's shortcut), falling back to Space if it did not take.
+    for key in _PLAY_PAUSE_KEYS:
+        # Focus can be stolen while waiting; never type into another window.
+        if not _window_has_input_focus(wid):
+            Window.force_focus(wid)
+            time.sleep(0.2)
+            if not _window_has_input_focus(wid):
+                _dbg(f"window {wid} lost focus; refusing to send the play key")
+                return False
+        if not Window.send_keys(key):
+            continue              # key could not be delivered: try the next one
+        # 4. Verify playback really started before trusting the key.
+        time.sleep(max(0.2, float(verify_seconds)))
+        status = _playerctl_status()
+        if status is None:
+            return True           # no playerctl: trust the key we delivered
+        if "playing" in status:
+            return True
+        _dbg(f"{key!r} did not start playback (playerctl={status!r}); "
+             "trying the next key")
+    return False
 
 
 def _youtube_page_fallback(key):

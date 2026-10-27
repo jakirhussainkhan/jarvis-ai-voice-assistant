@@ -2260,7 +2260,7 @@ class JarvisWorker(QThread):
                 # by barge-in, tell listen() so a pure "stop" is not dispatched.
                 was_barge = self._barged_in
                 self._barged_in = False
-                # After YouTube starts, keep the microphone open for exactly 15
+                # After YouTube starts, keep the microphone open for exactly 20
                 # seconds so "pause", "next" and "full screen" work; then drop
                 # back to Idle instead of listening to the music.
                 wait = None if first_turn else self.chat_timeout
@@ -2269,12 +2269,15 @@ class JarvisWorker(QThread):
                 user = listen(wait, barge=was_barge)
                 first_turn = False
                 if not user:
-                    # A YouTube control window that simply expires says "Enjoy!"
-                    # and ends the session. An explicit Stop or mute does not.
+                    # A YouTube control window that simply expires says "Enjoy
+                    # the music, sir." and ends the session. An explicit Stop or
+                    # mute does not. The music is left playing: Idle only
+                    # releases the microphone and never pauses, mutes or stops
+                    # media.
                     if (youtube_followup and not voice.is_mic_muted()
                             and not voice._stop_listening.is_set()):
                         self.state_changed.emit(SPEAKING)
-                        speak("Enjoy!")
+                        speak("Enjoy the music, sir.")
                     # You went quiet (or pressed Stop / muted the mic): end the
                     # conversation instead of grabbing the microphone again.
                     if voice.is_mic_muted():
@@ -2308,11 +2311,11 @@ class JarvisWorker(QThread):
                     max(0.0, (time.monotonic() - started) * 1000.0)
                 )
                 self.replied.emit(reply)
-                # A local command can mute/unmute the mic (media playback mutes
-                # it), so keep the GUI button and tray in sync.
+                # A local command can mute/unmute the mic, so keep the GUI button
+                # and tray in sync.
                 self.mic_changed.emit(voice.is_mic_muted())
-                # A confirmed YouTube request starts playback inside handle();
-                # arm the short control window for the next listen.
+                # A YouTube play/search request starts playback inside handle();
+                # arm the 20-second control window for the next listen.
                 if desktop.consume_youtube_playback():
                     youtube_followup = True
 

@@ -78,6 +78,16 @@ SEARCH_AND_PLAY = re.compile(
     re.I,
 )
 
+# "search <song> on YouTube" is also playback, not a web search. It is resolved
+# with yt-dlp and played directly, exactly like "play <song> on YouTube" -- the
+# results page is never opened. Anchored to the start so "open YouTube and
+# search for ..." keeps its normal agent/web-search behaviour.
+YT_SEARCH_PLAY = re.compile(
+    r"^\s*(?:(?:please|jarvis|hey\s+jarvis|can\s+you|could\s+you)[\s,]+)*"
+    r"(?:search|look\s*up|find)\b[^.]*\byoutube\b",
+    re.I,
+)
+
 # A terminal request must reach the agent (it can call fn_run_command). The
 # leading-verb match also stops "run ls" from being mistaken for "launch an app
 # called ls"; "open terminal" stays local because "terminal" is not hinted here.
@@ -273,21 +283,28 @@ YT_WORD = re.compile(r"\byoutube\b", re.I)
 YT_PLAY = re.compile(r"\b(play|watch|listen to|listen)\b", re.I)
 
 # YouTube's player uses "f" as a fullscreen toggle. These are whole-utterance
-# commands so "full screen" cannot become a song search for those words.
+# commands (checked first in ``_try_local``) so "full screen" can never become a
+# song search for those words. The optional prefix/object slots accept the way
+# people actually say it ("play the video in full screen", "switch to windowed")
+# without matching a normal sentence.
 FULLSCREEN_ON = re.compile(
     r"^\s*(?:(?:please|jarvis|hey\s+jarvis|can\s+you|could\s+you)\s+)?"
-    r"(?:(?:play|put|switch|go|make\s+it)\s+)?"
-    r"(?:in\s+)?(?:full\s*[- ]?screen|fullscreen|"
+    r"(?:(?:play|put|switch|go|make\s+it|turn|set)\s+)?"
+    r"(?:(?:it|the\s+(?:video|browser|window))\s+)?"
+    r"(?:to\s+|back\s+to\s+|in\s+|into\s+|on\s+)?"
+    r"(?:full\s*[- ]?screen|fullscreen|"
     r"maximi[sz]e\s+(?:the\s+)?(?:screen|video|browser|window))"
-    r"\s*[.!?]*$",
+    r"\s*(?:please\s*)?[.!?]*$",
     re.I,
 )
 FULLSCREEN_OFF = re.compile(
     r"^\s*(?:(?:please|jarvis|hey\s+jarvis|can\s+you|could\s+you)\s+)?"
-    r"(?:(?:play|put|switch|go)\s+)?"
-    r"(?:in\s+)?(?:normal\s*[- ]?screen|windowed|"
+    r"(?:(?:play|put|switch|go|make\s+it|turn|set|exit|leave|quit)\s+)?"
+    r"(?:(?:it|the\s+(?:video|browser|window))\s+)?"
+    r"(?:to\s+|back\s+to\s+|in\s+|into\s+)?"
+    r"(?:normal\s*[- ]?screen|windowed|"
     r"(?:exit|leave|quit)\s+full\s*[- ]?screen)"
-    r"\s*[.!?]*$",
+    r"\s*(?:please\s*)?[.!?]*$",
     re.I,
 )
 
@@ -447,15 +464,13 @@ def _battery_text():
 
 
 def _play_youtube_spoken(query):
-    """Route a spoken play request through the confirmation-aware path.
+    """Route a spoken play request straight to immediate playback.
 
-    ``desktop.play_youtube`` stays the low-level immediate action; the context
-    tells it this call came from a user command, so it resolves the title and
-    asks before opening the browser. Keeping the actual call on
-    ``play_youtube`` also preserves existing desktop overrides/spies.
+    ``desktop.play_youtube`` is the single low-level action: it extracts the
+    song, resolves the top video with yt-dlp and starts playing without any
+    confirmation prompt.
     """
-    with desktop.youtube_confirmation():
-        return desktop.play_youtube(query)
+    return desktop.play_youtube(query)
 
 
 # --------------------------------------------------------------------------- #
@@ -467,6 +482,16 @@ def _try_local(text):
     if not text or not text.strip():
         return None
     t = text.strip()
+
+    # --- browser / YouTube fullscreen (the player's "f" toggle) ------------ #
+    # FIRST, before every YouTube/search/play branch: "play in full screen" is
+    # a command aimed at the video already on screen, never a request to search
+    # for a song called "full screen". The patterns are anchored to the whole
+    # utterance, so they only match a bare fullscreen/windowed request.
+    if FULLSCREEN_OFF.search(t):
+        return desktop.normal_screen()
+    if FULLSCREEN_ON.search(t):
+        return desktop.fullscreen()
 
     # --- a dictated command with an explicit marker runs directly (offline) - #
     # Checked before the offline-help branch so a command that happens to
@@ -501,6 +526,15 @@ def _try_local(text):
         set_mic_muted(muted)
         return "Mic muted." if muted else "Mic unmuted."
 
+    # "search <song> on YouTube" is a playback request. Resolve the top hit with
+    # yt-dlp and play it directly -- never open the results page and never ask
+    # for confirmation.
+    if YT_SEARCH_PLAY.match(t):
+        query = desktop.extract_media_query(t)
+        if not query:
+            return "What should I play?"
+        return _play_youtube_spoken(query)
+
     # "search <song> and play it" is really a play command, so it goes to
     # play_youtube() -- which resolves the direct watch URL -- rather than to the
     # agent (that would only open the search results page).
@@ -533,14 +567,6 @@ def _try_local(text):
         if seek.group("dir").lower() in ("back", "backward", "rewind"):
             seconds = -seconds
         return desktop.media_seek(seconds)
-
-    # --- browser / YouTube fullscreen (the player's "f" toggle) ------------ #
-    # Checked before media and play-by-name so "play in full screen" is not
-    # mistaken for a song called "in full screen".
-    if FULLSCREEN_OFF.search(t):
-        return desktop.normal_screen()
-    if FULLSCREEN_ON.search(t):
-        return desktop.fullscreen()
 
     # --- media (playerctl) ------------------------------------------------- #
     action = _media_action(t)
@@ -636,7 +662,7 @@ def _try_local(text):
             return None  # unknown target -> let the agent decide
         return None
 
-    # --- YouTube: open or play (search defers to the agent) ---------------- #
+    # --- YouTube: open or play --------------------------------------------- #
     if YT_WORD.search(t):
         if YT_PLAY.search(t):
             query = desktop.extract_media_query(t)

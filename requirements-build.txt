@@ -1,0 +1,26 @@
+# Minimal runtime dependencies for the frozen release builds.
+#
+# Optional ML extras (faster-whisper, fastembed, silero-vad, onnxruntime and
+# chromadb) are deliberately absent here. They are loaded lazily at runtime and
+# fall back cleanly:
+#
+#   * faster-whisper  -> Google STT remains available
+#   * fastembed       -> exact-match cache
+#   * silero-vad      -> calibrated RMS endpointing
+#   * chromadb        -> SQLite fact retrieval
+#
+# Keeping them out makes the Windows/macOS/Linux bundles small, reliable and
+# well under GitHub's 2 GB per-asset release limit. Source installs still use
+# requirements.txt and keep every optional feature.
+openai
+SpeechRecognition
+edge-tts
+PyQt5
+Pillow
+psutil
+python-dotenv
+tzdata
+sounddevice
+pywinctl
+pynput
+mcp
