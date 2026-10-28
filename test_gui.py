@@ -266,21 +266,41 @@ def test_global_hotkey_triggers_a_cycle_from_idle(app):
     assert triggered == [True]
 
 
-def test_global_hotkey_restores_the_existing_window(app):
-    """The hotkey shows the existing card -- it never builds a second one."""
+def test_global_hotkey_toggles_state_without_revealing_window(app):
+    """The hotkey starts/stops a turn but never brings the card forward."""
     widget = gui.JarvisWidget()
     tray = widget.tray
-    triggered = []
-    widget.trigger = lambda: triggered.append(True)
+    calls = []
+
+    widget.trigger = lambda: calls.append("trigger")
+    # Any attempt to surface the window must show up in this list.
+    widget.show = lambda *a, **k: calls.append("show")
+    widget.showNormal = lambda *a, **k: calls.append("showNormal")
+    widget.raise_ = lambda *a, **k: calls.append("raise")
+    widget.activateWindow = lambda *a, **k: calls.append("activateWindow")
 
     widget.hide()
     assert widget.isVisible() is False
 
+    # Idle -> start listening, but keep the window hidden.
     widget.hotkey_pressed.emit()
 
-    assert widget.isVisible() is True        # same widget, brought forward
-    assert triggered == [True]
+    assert calls == ["trigger"]
+    assert widget.isVisible() is False
     assert widget.tray is tray               # no duplicate tray/instance
+
+    # Listening -> stop and return to Idle, still without revealing the card.
+    widget._state = gui.LISTENING
+    widget._stop = lambda: calls.append("stop")
+    widget.set_state = lambda state: calls.append(("state", state))
+
+    widget.hotkey_pressed.emit()
+
+    assert calls[1:] == ["stop", ("state", gui.IDLE)]
+    assert widget.isVisible() is False
+
+    widget._quitting = True
+    widget.close()
 
 
 def test_global_hotkey_unmutes_before_triggering(app):

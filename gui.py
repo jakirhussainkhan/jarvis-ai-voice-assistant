@@ -26,6 +26,7 @@ import os
 import sys
 import threading
 import time
+import weakref
 from collections import deque
 from pathlib import Path
 
@@ -2709,6 +2710,249 @@ def run_setup_wizard():
 # tray
 # --------------------------------------------------------------------------- #
 
+class MiniOrbWidget(QWidget):
+    """A tiny always-on-top Arc Reactor that keeps Jarvis one click away.
+
+    The main card is a large command centre, so hiding it to the tray used to
+    leave no visible affordance on Windows. This 80 px frameless orb floats at
+    the bottom-right of the desktop, can be dragged anywhere, opens the main
+    window on a left click and offers Show / Quit on a right click. It is a
+    top-level widget on purpose: hiding the card must not hide the orb.
+
+    The widget is larger than the 50 px orb so the breathing halo has room to
+    fade out before the widget edge, which keeps the translucent background
+    free of a square glow boundary.
+    """
+
+    SIZE = 80
+    ORB_SIZE = 50
+    GLOW_INTERVAL_MS = 33            # ~30 fps is smooth and cheap for an 80 px orb
+    PULSE_STEP = 0.05                # radians per frame: a slow, calm breath
+    ACTIVE_STATES = frozenset((LISTENING, THINKING, SPEAKING))
+
+    def __init__(self, widget):
+        super().__init__(
+            None,
+            Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool,
+        )
+        self._widget_ref = weakref.ref(widget)
+        self._state = IDLE
+        self._pixmap = QPixmap.fromImage(render_icon(self.ORB_SIZE))
+        self._press_global = None
+        self._drag_offset = None
+        self._dragged = False
+        self._pulse_phase = 0.0
+        self._animating = False
+        # ``timer`` is the public name; the old underscore name is kept so
+        # existing callers/tests keep working.
+        self.timer = QTimer(self)
+        self.timer.setInterval(self.GLOW_INTERVAL_MS)
+        self.timer.timeout.connect(self._tick_glow)
+        self._glow_timer = self.timer
+
+        self.setFixedSize(self.SIZE, self.SIZE)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WA_NoSystemBackground, True)
+        self.setAutoFillBackground(False)
+        self.setAttribute(Qt.WA_ShowWithoutActivating, True)
+        self.setWindowTitle("JARVIS")
+        self.setCursor(Qt.PointingHandCursor)
+        self.setToolTip("JARVIS — click to open, drag to move")
+        self._move_to_corner()
+        # The glow is static while idle; ``set_state`` starts the timer when a
+        # real turn begins (listening, thinking or speaking).
+
+    # -- placement -------------------------------------------------------- #
+    @property
+    def widget(self):
+        """The owning window, or ``None`` once it has been destroyed."""
+        return self._widget_ref()
+
+    def _move_to_corner(self):
+        """Park the orb at the bottom-right of the available desktop."""
+        screen = QApplication.primaryScreen()
+        if screen is None:
+            return
+        area = screen.availableGeometry()
+        margin = 22
+        self.move(area.right() - self.width() - margin,
+                  area.bottom() - self.height() - margin)
+
+    # -- state / animation ------------------------------------------------ #
+    def set_state(self, state):
+        """Show ``state`` and only breathe while JARVIS is actually working.
+
+        IDLE and MUTED are static: the timer is stopped and the halo is drawn
+        at a fixed mid-breath size, so a resting orb never blinks or pulses.
+        """
+        self._state = state
+        self._sync_animation(state in self.ACTIVE_STATES)
+        self.update()
+
+    def _sync_animation(self, active):
+        """Start/stop the breathing timer and settle the halo when idle."""
+        self._animating = bool(active)
+        if self._animating:
+            if self.isVisible() and not self.timer.isActive():
+                self.timer.start(self.GLOW_INTERVAL_MS)
+        else:
+            self.timer.stop()
+            # Park the phase mid-breath so the static halo keeps the same
+            # size and brightness every time the orb goes idle.
+            self._pulse_phase = 0.0
+
+    def _tick_glow(self):
+        """Advance the breathing phase and repaint the halo.
+
+        The timer only runs in an active state, and ``PULSE_STEP`` is small
+        enough that each frame moves the halo by a fraction of a pixel.
+        """
+        if not self._animating:
+            return
+        self._pulse_phase = (
+            self._pulse_phase + self.PULSE_STEP
+        ) % (2.0 * math.pi)
+        self.update()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self._animating and not self.timer.isActive():
+            self.timer.start(self.GLOW_INTERVAL_MS)
+        self.update()
+
+    def hideEvent(self, event):
+        # A hidden orb costs no CPU; a running breath resumes when shown again.
+        self.timer.stop()
+        super().hideEvent(event)
+
+    # -- painting --------------------------------------------------------- #
+    def paintEvent(self, _event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        rect = QRectF(self.rect())
+        center = rect.center()
+        orb_radius = self.ORB_SIZE / 2.0
+        glow, _core = _COLORS.get(self._state, _COLORS[IDLE])
+
+        # Sine breathing between 0.0 and 1.0. Both the radius and the opacity
+        # follow it, so the halo visibly swells and brightens, then shrinks
+        # and dims again. Idle/muted keeps a fixed mid-breath value instead.
+        pulse_value = (math.sin(self._pulse_phase) + 1.0) / 2.0
+        if not self._animating:
+            pulse_value = 0.5
+        # 30 -> 39.5 px: the outer edge stays inside the 80 px widget, where
+        # the gradient reaches zero alpha, so the glow is never clipped square.
+        glow_radius = 30.0 + 9.5 * pulse_value
+        strength = 0.5 + 0.5 * pulse_value
+
+        base_alpha = int(200 * strength)
+        mid_alpha = int(115 * strength)
+        edge_alpha = int(45 * strength)
+
+        halo = QRadialGradient(center, glow_radius)
+        halo.setColorAt(0.0, QColor(glow.red(), glow.green(), glow.blue(),
+                                    base_alpha))
+        halo.setColorAt(0.55, QColor(glow.red(), glow.green(), glow.blue(),
+                                     mid_alpha))
+        halo.setColorAt(0.80, QColor(glow.red(), glow.green(), glow.blue(),
+                                     edge_alpha))
+        # Fade out *before* the boundary so the translucent window never shows
+        # a hard circular edge.
+        halo.setColorAt(0.94, QColor(glow.red(), glow.green(), glow.blue(), 0))
+        halo.setColorAt(1.0, QColor(glow.red(), glow.green(), glow.blue(), 0))
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QBrush(halo))
+        painter.drawEllipse(center, glow_radius, glow_radius)
+
+        # The solid orb sits over the centre of the halo.
+        painter.setBrush(QColor(3, 7, 10, 235))
+        ring_alpha = 170 + int(70 * strength)
+        painter.setPen(QPen(QColor(glow.red(), glow.green(), glow.blue(),
+                                    ring_alpha), 1.6))
+        painter.drawEllipse(center, orb_radius, orb_radius)
+
+        if not self._pixmap.isNull():
+            side = self.ORB_SIZE
+            target = QRect(
+                int(round(center.x() - side / 2.0)),
+                int(round(center.y() - side / 2.0)),
+                side,
+                side,
+            ).adjusted(3, 3, -3, -3)
+            painter.drawPixmap(target, self._pixmap)
+        painter.end()
+
+    # -- interaction ------------------------------------------------------ #
+    def _open_main(self):
+        widget = self.widget
+        if widget is None:
+            return
+        reveal = getattr(widget, "reveal_window", None)
+        if callable(reveal):
+            reveal()
+            return
+        if widget.isMinimized():
+            widget.showNormal()
+        widget.show()
+        widget.raise_()
+        widget.activateWindow()
+
+    def _menu(self):
+        menu = QMenu(self)
+        menu.setStyleSheet(_MENU_STYLE)
+        show_action = menu.addAction("Show JARVIS")
+        show_action.triggered.connect(self._open_main)
+        menu.addSeparator()
+        quit_action = menu.addAction("Quit")
+        owner = self.widget
+        if owner is not None:
+            quit_action.triggered.connect(owner.quit)
+        else:
+            quit_action.setEnabled(False)
+        return menu
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._press_global = event.globalPos()
+            self._drag_offset = (
+                event.globalPos() - self.frameGeometry().topLeft()
+            )
+            self._dragged = False
+            self.setCursor(Qt.ClosedHandCursor)
+            event.accept()
+            return
+        if event.button() == Qt.RightButton:
+            self._menu().exec_(event.globalPos())
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if (self._drag_offset is not None
+                and event.buttons() & Qt.LeftButton):
+            if ((event.globalPos() - self._press_global).manhattanLength()
+                    > 4):
+                self._dragged = True
+            if self._dragged:
+                self.move(event.globalPos() - self._drag_offset)
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton and self._drag_offset is not None:
+            dragged = self._dragged
+            self._drag_offset = None
+            self._press_global = None
+            self._dragged = False
+            self.setCursor(Qt.PointingHandCursor)
+            if not dragged:
+                self._open_main()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+
 class JarvisTray(QSystemTrayIcon):
     """Tray icon so Jarvis can live in the background.
 
@@ -2728,6 +2972,13 @@ class JarvisTray(QSystemTrayIcon):
             "Hide JARVIS" if widget.isVisible() else "Show JARVIS"
         )
         self.toggle_action.triggered.connect(widget.toggle_visible)
+        self.orb_action = menu.addAction("Show Floating Orb")
+        self.orb_action.setCheckable(True)
+        enabled = getattr(widget, "mini_orb_enabled", None)
+        self.orb_action.setChecked(
+            bool(enabled() if callable(enabled) else config.SHOW_MINI_ORB)
+        )
+        self.orb_action.triggered.connect(widget.toggle_mini_orb)
         quit_action = menu.addAction("Quit")
         quit_action.triggered.connect(widget.quit)
         self.setContextMenu(menu)
@@ -2743,6 +2994,10 @@ class JarvisTray(QSystemTrayIcon):
         if reason not in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick):
             return
         widget = self.widget
+        reveal = getattr(widget, "reveal_window", None)
+        if callable(reveal):
+            reveal()
+            return
         if widget.isMinimized():
             widget.showNormal()
         widget.show()
@@ -2764,6 +3019,10 @@ class JarvisTray(QSystemTrayIcon):
     def sync_autostart(self, on):
         if self.autostart_action is not None:
             self.autostart_action.setChecked(on)
+
+    def sync_mini_orb(self, enabled):
+        if self.orb_action is not None:
+            self.orb_action.setChecked(bool(enabled))
 
 
 # Global wake hotkeys: press either from any application to talk to Jarvis.
@@ -2881,6 +3140,11 @@ class JarvisWidget(QWidget):
         self._state = IDLE
         self._energy = 0.0
         self._error_hold = False
+        # The global hotkey must never steal focus or surface the card. The
+        # trigger path checks this flag before showing a hidden window.
+        self._reveal_on_trigger = True
+        self.mini_orb = None
+        self._tray_retries = 0
         # The line under the state text shows the latest heard or spoken line,
         # falling back to the state hint when the conversation is quiet.
         self._live_text = ""
@@ -2895,15 +3159,100 @@ class JarvisWidget(QWidget):
         self._build_ui()
         self._build_menu()
         self._refresh_briefing()
+        # The tray is *always* created on Windows, even if Qt reports no system
+        # tray yet: Explorer can become ready a moment after launch, and the old
+        # single availability check left Jarvis with no icon at all. Other
+        # desktops create it whenever their tray service is present. show() is
+        # retried on Windows to close the startup race.
         self.tray = None
-        if QSystemTrayIcon.isSystemTrayAvailable():
+        if os.name == "nt" or QSystemTrayIcon.isSystemTrayAvailable():
             self.tray = JarvisTray(self)
             self.tray.show()
+        if (os.name == "nt" and self.tray is not None
+                and not QSystemTrayIcon.isSystemTrayAvailable()):
+            self._tray_timer = QTimer(self)
+            self._tray_timer.setInterval(2000)
+            self._tray_timer.timeout.connect(self._ensure_tray_icon)
+            self._tray_timer.start()
 
         # Started last so both menus already exist and can show the right state.
         self._start_wake()
         self._start_hotkey()
         self._center()
+        # The floating orb belongs to the full application (the command-centre
+        # layout). The compact card is also used as an embeddable widget by
+        # tests and other hosts, which must not spawn a desktop-level window.
+        if not self._compact_mode and config.SHOW_MINI_ORB:
+            self._create_mini_orb()
+
+    # -- tray / mini orb --------------------------------------------------- #
+    def _ensure_tray_icon(self):
+        """Retry the tray icon briefly when the desktop tray appears late."""
+        tray = getattr(self, "tray", None)
+        if tray is None:
+            return
+        if not tray.isVisible():
+            tray.show()
+        self._tray_retries += 1
+        timer = getattr(self, "_tray_timer", None)
+        if (QSystemTrayIcon.isSystemTrayAvailable() or self._tray_retries >= 15):
+            if timer is not None:
+                timer.stop()
+
+    def _create_mini_orb(self):
+        """Create the floating mini orb (idempotent)."""
+        if self.mini_orb is not None:
+            return self.mini_orb
+        self.mini_orb = MiniOrbWidget(self)
+        self.mini_orb.set_state(self._state)
+        self.mini_orb.show()
+        return self.mini_orb
+
+    def mini_orb_enabled(self):
+        """True when the user preference allows the floating orb to appear."""
+        return bool(getattr(config, "SHOW_MINI_ORB", True))
+
+    def toggle_mini_orb(self, checked=None):
+        """Show/hide the floating orb and persist the preference.
+
+        Called from the tray menu and the session menu. ``checked`` is passed
+        by ``QAction.triggered``; without it the current state is inverted.
+        """
+        enabled = (not self.mini_orb_enabled()) if checked is None \
+            else bool(checked)
+        if enabled:
+            self._create_mini_orb()
+            self.mini_orb.show()
+            self.mini_orb.raise_()
+        elif self.mini_orb is not None:
+            self.mini_orb.hide()
+        try:
+            config.save_show_mini_orb(enabled)
+        except OSError as exc:
+            # The UI must follow the user's choice even when ~/.jarvis is
+            # read-only; only the persistence failed.
+            logger.log_command_error("Could not save floating orb setting", exc)
+            config.apply_show_mini_orb(enabled)
+        self._sync_mini_orb_controls(enabled)
+        return enabled
+
+    def _sync_mini_orb_controls(self, enabled):
+        action = getattr(self, "mini_orb_action", None)
+        if action is not None:
+            action.setChecked(bool(enabled))
+        tray = getattr(self, "tray", None)
+        if tray is not None:
+            sync = getattr(tray, "sync_mini_orb", None)
+            if callable(sync):
+                sync(enabled)
+
+    def reveal_window(self):
+        """Bring the main card forward after a tray or mini-orb click."""
+        if self.isMinimized():
+            self.showNormal()
+        self.show()
+        self.raise_()
+        self.activateWindow()
 
     # -- layout ----------------------------------------------------------- #
     def _build_ui(self):
@@ -3189,6 +3538,10 @@ class JarvisWidget(QWidget):
         self.autostart_action.setCheckable(True)
         self.autostart_action.setChecked(startup.is_autostart_enabled())
         self.autostart_action.triggered.connect(self.toggle_autostart)
+        self.mini_orb_action = self._menu.addAction("Show Floating Orb")
+        self.mini_orb_action.setCheckable(True)
+        self.mini_orb_action.setChecked(self.mini_orb_enabled())
+        self.mini_orb_action.triggered.connect(self.toggle_mini_orb)
         self.toggle_action = self._menu.addAction("Hide to tray")
         self.toggle_action.triggered.connect(self.toggle_visible)
         self._menu.addSeparator()
@@ -3504,6 +3857,10 @@ class JarvisWidget(QWidget):
         )
         self._refresh_hint()
         self.orb.set_state(state)
+        mini = getattr(self, "mini_orb", None)
+        if mini is not None:
+            # Only LISTENING / THINKING / SPEAKING animate; idle stays still.
+            mini.set_state(state)
         self.waveform.set_state(state)
         self.left_panel.note_state(state)
         self.right_panel.note_state(state)
@@ -3546,6 +3903,9 @@ class JarvisWidget(QWidget):
             self._refresh_briefing()
         if self.tray is not None:
             self.tray.setToolTip(f"JARVIS — {state}")
+        mini = getattr(self, "mini_orb", None)
+        if mini is not None:
+            mini.set_state(state)
 
     def _on_level(self, value):
         """Feed one live loudness sample to the orb, waveform and telemetry."""
@@ -3868,21 +4228,28 @@ class JarvisWidget(QWidget):
         self.hotkey_pressed.emit()
 
     def _on_hotkey(self):
-        """GUI-thread slot: wake Jarvis from Idle, hidden or Mute.
+        """Toggle the assistant without surfacing the main window.
 
-        This only brings the *existing* window forward -- it never builds a new
-        widget, tray icon or hotkey listener, so pressing the hotkey can never
-        spawn a second Jarvis.
+        Idle → start listening; listening → stop and return to Idle. The card is
+        deliberately *not* shown, restored or raised here: only an explicit tray
+        or mini-orb click may bring JARVIS to the front.
         """
+        busy = (self._state == LISTENING
+                or (self.worker is not None and self.worker.isRunning()))
+        if busy:
+            self._stop()
+            # Reflect the stop immediately; the worker's final signal is queued
+            # and would otherwise leave the orb green for a moment.
+            self.set_state(MUTED if voice.is_mic_muted() else IDLE)
+            return
         if voice.is_mic_muted():
             # The hotkey is an explicit "talk to me" gesture, so it unmutes.
             self.set_mic_muted(False)
-        # Restore the card if it was hidden or minimised, then start a cycle.
-        self.show()
-        self.showNormal()
-        self.raise_()
-        self.activateWindow()
-        self.trigger()
+        self._reveal_on_trigger = False
+        try:
+            self.trigger()
+        finally:
+            self._reveal_on_trigger = True
 
     def _resume_wake(self):
         """Hand the microphone back to the wake listener, but only when idle."""
@@ -4177,7 +4544,7 @@ class JarvisWidget(QWidget):
         if self.worker is not None and self.worker.isRunning():
             # A cycle is already running: leave the mic with it.
             return
-        if not self.isVisible():
+        if not self.isVisible() and getattr(self, "_reveal_on_trigger", True):
             self.show()
         self._log_activity("MIC opening capture for a voice turn", "state")
         self.worker = JarvisWorker(self.memory, self, chat=self._chat)
@@ -4205,9 +4572,7 @@ class JarvisWidget(QWidget):
             self._halt_for_hide()
             self.hide()
         else:
-            self.show()
-            self.raise_()
-            self.activateWindow()
+            self.reveal_window()
 
     def quit(self):
         """Really exit: stop the tray and the Qt event loop."""
@@ -4230,6 +4595,9 @@ class JarvisWidget(QWidget):
                 pass
         if self.tray is not None:
             self.tray.hide()
+        mini = getattr(self, "mini_orb", None)
+        if mini is not None:
+            mini.hide()
         if self.worker is not None and self.worker.isRunning():
             self.worker.wait(5000)
         text_worker = getattr(self, "text_worker", None)
@@ -4471,6 +4839,10 @@ class JarvisWidget(QWidget):
             self._refresh_header_link()
         if self.tray is not None:
             self.tray.sync_toggle(True)
+        mini = getattr(self, "mini_orb", None)
+        if mini is not None and self.mini_orb_enabled():
+            mini.show()
+            mini.raise_()
 
     def hideEvent(self, event):
         super().hideEvent(event)
@@ -4497,6 +4869,9 @@ class JarvisWidget(QWidget):
             text_worker = getattr(self, "text_worker", None)
             if text_worker is not None and text_worker.isRunning():
                 text_worker.wait(5000)
+            mini = getattr(self, "mini_orb", None)
+            if mini is not None:
+                mini.hide()
             event.accept()
             return
         event.ignore()
@@ -4507,6 +4882,10 @@ class JarvisWidget(QWidget):
         self.hide()
         if self.tray is not None:
             self.tray.show()               # make sure the icon stays visible
+        mini = getattr(self, "mini_orb", None)
+        if mini is not None and self.mini_orb_enabled():
+            mini.show()                    # the mini orb outlives the card
+            mini.raise_()
 
 
 def main():

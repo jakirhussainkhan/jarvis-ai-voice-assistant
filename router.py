@@ -117,7 +117,11 @@ CREATOR_QUESTION = re.compile(
     r"who(?:'s| is| was)\s+your\s+"
     r"(?:creator|maker|developer|designer|builder)\b|"
     r"who\s+(?:is|was)\s+the\s+"
-    r"(?:creator|maker|developer|designer|builder)\s+of\s+jarvis\b"
+    r"(?:creator|maker|developer|designer|builder)\s+of\s+jarvis\b|"
+    r"who(?:'s| is| was)\s+(?:mr\.?\s+)?jakir"
+    r"(?:\s+hussain(?:\s+khan)?)?\b|"
+    r"(?:tell\s+me\s+about|what\s+about)\s+jakir"
+    r"(?:\s+hussain(?:\s+khan)?)?\b"
     r")",
     re.I,
 )

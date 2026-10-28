@@ -89,7 +89,7 @@ PROJECT_ENV = Path(__file__).resolve().parent / ".env"
 load_dotenv(USER_ENV)
 load_dotenv(PROJECT_ENV)
 
-__version__ = "3.0.1"
+__version__ = "3.0.2"
 
 # Groq (https://console.groq.com) exposes an OpenAI-compatible Chat Completions
 # API. The key is read from GROQ_API_KEY in .env; Groq keys start with "gsk_".
@@ -169,6 +169,13 @@ def _env_float(name, default, minimum=None):
 # or mute the mic. JARVIS_CHAT=0 gets the old click-to-talk behaviour back.
 CHAT_ON = os.getenv("JARVIS_CHAT", "1").strip().lower() not in ("0", "false", "no", "off")
 CHAT_TIMEOUT = _env_int("JARVIS_CHAT_TIMEOUT", 60, minimum=10)
+
+# The floating mini orb keeps JARVIS reachable when the main card is hidden.
+# On by default; JARVIS_SHOW_MINI_ORB=0 hides it for a tray-only setup. The
+# tray/session menu writes this value back to ~/.jarvis/.env.
+SHOW_MINI_ORB = os.getenv(
+    "JARVIS_SHOW_MINI_ORB", "1"
+).strip().lower() not in ("0", "false", "no", "off")
 
 # Barge-in sensitivity: speaking over Jarvis for this long cuts the reply.
 # 1200 is normal conversational volume (the old 2600 was too high for many
@@ -303,4 +310,72 @@ def save_api_key(key, path=None):
             os.unlink(temp_name)
 
     apply_api_key(value)
+    return target
+
+
+def _write_env_value(name, value, path=None):
+    """Atomically replace one ``NAME=value`` line in a private ``.env`` file.
+
+    Unrelated settings and comments are preserved. On POSIX the file is mode
+    ``0600`` inside a ``0700`` directory, matching ``save_api_key``. Returns the
+    path written; raises ``OSError`` when the file cannot be written.
+    """
+    target = Path(path).expanduser() if path else user_env_file()
+    target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        os.chmod(target.parent, 0o700)
+    except OSError:
+        pass
+
+    lines = []
+    if target.exists():
+        lines = target.read_text(encoding="utf-8").splitlines()
+
+    prefix = f"{name}="
+    setting_line = f"{name}={value}"
+    output = []
+    replaced = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith(prefix) or stripped == name:
+            if not replaced:
+                output.append(setting_line)
+                replaced = True
+            continue
+        output.append(line)
+    if not replaced:
+        output.append(setting_line)
+
+    data = "\n".join(output).rstrip("\n") + "\n"
+    fd, temp_name = tempfile.mkstemp(prefix=".env.", dir=str(target.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temp_name, 0o600)
+        os.replace(temp_name, target)
+    finally:
+        if os.path.exists(temp_name):
+            os.unlink(temp_name)
+    return target
+
+
+def apply_show_mini_orb(enabled):
+    """Set the in-process mini-orb preference without touching the disk."""
+    global SHOW_MINI_ORB
+    SHOW_MINI_ORB = bool(enabled)
+    os.environ["JARVIS_SHOW_MINI_ORB"] = "1" if SHOW_MINI_ORB else "0"
+    return SHOW_MINI_ORB
+
+
+def save_show_mini_orb(enabled, path=None):
+    """Persist the floating-orb preference and apply it in-process.
+
+    Returns the path written. Raises ``OSError`` if the ``.env`` file cannot be
+    written; the in-process value is updated only after the write succeeds.
+    """
+    value = "1" if enabled else "0"
+    target = _write_env_value("JARVIS_SHOW_MINI_ORB", value, path=path)
+    apply_show_mini_orb(enabled)
     return target

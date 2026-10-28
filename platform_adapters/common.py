@@ -187,41 +187,66 @@ def has(tool):
     return shutil.which(tool) is not None
 
 
+def run_silent(args, timeout=6, **options):
+    """Run a command with its console hidden on Windows.
+
+    This is the parser-friendly name for the shared runner used by media
+    helpers such as ``ffmpeg`` and ``yt-dlp``. ``options`` are forwarded to
+    :func:`subprocess.run`; the console-hiding flags are always applied last so
+    callers cannot accidentally reintroduce the black popup window. The
+    function never raises and returns ``(returncode, output)`` exactly like
+    :func:`run`.
+    """
+    if not args:
+        return 127, ""
+    if shutil.which(args[0]) is None:
+        return 127, f"{args[0]} is not installed"
+    params = {
+        "stdin": DEVNULL,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.STDOUT,
+        "text": True,
+        "timeout": timeout,
+    }
+    params.update(options)
+    params.update(hidden_process_kwargs())
+    try:
+        proc = subprocess.run(args, **params)
+        return proc.returncode, (proc.stdout or "").strip()
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return 1, str(exc)
+
+
 def run(args, timeout=6):
     """Run a command, never raising. Returns ``(returncode, output)``.
 
     ``returncode`` is 127 when the program is missing. Output is stripped text
     with stderr folded in, so a caller can surface the tool's own error.
     """
-    if not args:
-        return 127, ""
-    if shutil.which(args[0]) is None:
-        return 127, f"{args[0]} is not installed"
-    try:
-        proc = subprocess.run(
-            args,
-            stdin=DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            timeout=timeout,
-            **hidden_process_kwargs(),
-        )
-        return proc.returncode, (proc.stdout or "").strip()
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return 1, str(exc)
+    return run_silent(args, timeout=timeout)
+
+
+def popen_silent(args, **options):
+    """Start a child process with its console hidden on Windows.
+
+    Use this instead of :class:`subprocess.Popen` for ``ffmpeg``, ``yt-dlp`` or
+    any helper that streams data through pipes. The console-hiding flags are
+    applied last, so a caller can still pass ``stdout=PIPE`` and friends.
+    Raises ``OSError`` / ``ValueError`` like ``Popen`` does.
+    """
+    options.update(hidden_process_kwargs())
+    return subprocess.Popen(args, **options)
 
 
 def spawn(args):
     """Start a detached program with its output discarded. True on success."""
     try:
-        subprocess.Popen(
+        popen_silent(
             args,
             stdin=DEVNULL,
             stdout=DEVNULL,
             stderr=DEVNULL,
             start_new_session=True,
-            **hidden_process_kwargs(),
         )
         return True
     except OSError:

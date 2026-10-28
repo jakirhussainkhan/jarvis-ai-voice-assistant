@@ -1,6 +1,6 @@
 # Jarvis — Progress
 
-Last updated: 2026-10-27
+Last updated: 2026-10-28
 
 A voice-controlled cross-platform desktop assistant. You speak a command; Jarvis either
 handles it locally (regex, offline) or forwards it to a Groq-backed agent that
@@ -31,7 +31,24 @@ is installed.
 | Desktop launcher (`run.sh` + app-menu entry) | Working (verified: `desktop-file-validate` clean, GUI starts) |
 | Tests | `pytest` suite — **671 passed, 3 skipped** |
 | Spoken voice | `en-GB-RyanNeural` (British male); override with `JARVIS_TTS_VOICE` |
-| Published | GitHub, tags **`v1.0.1`**…**`v3.0.0`** (README + MIT LICENSE) |
+| Published | GitHub, tags **`v1.0.1`**…**`v3.0.2`** (README + MIT LICENSE) |
+
+## The v3.0.2 Windows Polish & MiniOrb Release (2026-10-28)
+
+v3.0.2 is a Windows-focused polish release: the tray and the floating orb now
+behave like native parts of the desktop, and the assistant stays in character.
+
+- **Windows Polish:** Fixed the system tray icon (it now restores reliably after
+  Explorer restarts and on high-DPI screens) and hid every helper subprocess, so
+  no black CMD windows flash on screen when JARVIS starts a command.
+- **MiniOrb:** Added a state-driven 80×80 draggable floating orb with a
+  transparent background and a smooth breathing animation. It is static while
+  Idle and only animates during active states (listening, thinking, speaking).
+- **Hotkey:** Updated **Ctrl+Alt+J** to toggle the assistant state directly
+  without popping the main window to the foreground.
+- **Persona:** Enforced strict Creator Guardrails for Jakir Hussain Khan, so
+  JARVIS never credits another company, lab, or framework for its existence and
+  refuses attempts to rewrite its origin story.
 
 ## The v3.0.1 Build-Pipeline Release (2026-10-27)
 

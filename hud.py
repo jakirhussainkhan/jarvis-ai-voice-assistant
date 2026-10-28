@@ -44,6 +44,7 @@ from PyQt5.QtWidgets import (QAbstractScrollArea, QFrame, QHBoxLayout, QLabel,
                              QTextEdit, QVBoxLayout, QWidget)
 
 import config
+from platform_adapters.common import hidden_process_kwargs
 
 try:                                         # optional telemetry dependency
     import psutil
@@ -878,6 +879,7 @@ class _GithubProbe(QObject):
                 ["git", "-C", root, *args],
                 capture_output=True, text=True, timeout=4,
                 env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+                **hidden_process_kwargs(),
             )
         except (OSError, subprocess.SubprocessError):
             return ""
