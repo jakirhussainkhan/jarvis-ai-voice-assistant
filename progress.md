@@ -1,37 +1,51 @@
 # Jarvis — Progress
 
-Last updated: 2026-10-28
+Last updated: 2026-10-30
 
 A voice-controlled cross-platform desktop assistant. You speak a command; Jarvis either
 handles it locally (regex, offline) or forwards it to a Groq-backed agent that
 can call tools, then answers out loud in English. STT and replies are
-English-only by design. A PyQt5 ChatGPT-Voice-style card provides a click-to-talk
-GUI — or a hands-free **"Hey Jarvis"** wake word once the optional offline engine
-is installed.
+English-only by design. A PyQt5 Iron Man-style HUD, a floating card and a
+state-driven MiniOrb provide the desktop interface — or use the hands-free
+**"Hey Jarvis"** wake word once the optional offline engine is installed.
 
 ## Status at a glance
 
 | Area | State |
 | --- | --- |
 | CLI loop (`main.py`) | Working |
-| Voice I/O (STT + TTS) | Working, English-only (STT via `arecord` + Google; continuous sounddevice streaming TTS) |
+| Voice I/O (STT + TTS) | Working, English-only (STT via `arecord`/sounddevice + Google, with a local faster-whisper fallback; TTS is edge-tts streamed through `sounddevice`) |
 | Local command router (offline-first) | Working (apps, folders, windows, media, volume, brightness, clipboard, screenshot, lock, status, time, dictated commands) |
 | Groq agent + 44 tools | Working (needs `GROQ_API_KEY`) |
 | Screen vision (read + operate) | Working on the real screen (`qwen/qwen3.8-27b`, verified live) |
 | Live internet (search/page/Wikipedia/weather) | Working (keyless, verified live) |
 | Guarded terminal | Working (3-layer guard; power/session commands refused in code) |
 | Offline mode (`main.py --offline`) | Working |
-| Conversation memory | Working |
-| GUI widget + system tray (`gui.py`) | Working (offscreen-tested); **ChatGPT-Voice-style dark card, breathing orb, live 13-bar waveform, mic mute/unmute, Stop, barge-in, minimize/maximize/restore, silent close-to-tray, and the "Hey Jarvis" wake word** |
+| Conversation memory | Working (SQLite history/facts + ChromaDB semantic retrieval) |
+| GUI + HUD + system tray (`gui.py`, `hud.py`) | Working (offscreen-tested); **Iron Man HUD and floating card, breathing orb, live 13-bar waveform, state-driven MiniOrb, mic mute/unmute, Stop, barge-in, minimize/maximize/restore, silent close-to-tray, and the "Hey Jarvis" wake word** |
 | Microphone diagnostic | Working |
 | Desktop control (apps/YouTube/media/volume/brightness/screenshot/lock) | Working |
 | Confirmation-gated actions | Working (power, risky terminal, risky screen goals) |
 | Timers / reminders | Working |
 | Offline wake word ("Hey Jarvis") | **Built + unit-tested; NOT yet verified live** (needs `pip install openwakeword onnxruntime`) |
 | Desktop launcher (`run.sh` + app-menu entry) | Working (verified: `desktop-file-validate` clean, GUI starts) |
-| Tests | `pytest` suite — **671 passed, 3 skipped** |
+| Tests | `pytest` suite — **672 passed, 3 skipped** (675 collected) |
 | Spoken voice | `en-GB-RyanNeural` (British male); override with `JARVIS_TTS_VOICE` |
 | Published | GitHub, tags **`v1.0.1`**…**`v3.0.2`** (README + MIT LICENSE) |
+
+## Post-v3.0.2 verification (2026-10-30)
+
+No code changes have landed since the v3.0.2 tag (`a6c75ba`). This pass
+re-verified the released tree and refreshed the living parts of this document
+(status, module map, known issues, next steps) to match the code that actually
+ships.
+
+- Full suite re-run on the Linux dev machine: **672 passed, 3 skipped** in 8.38 s
+  (675 collected).
+- `config.py` reports `__version__ = "3.0.2"`; `v3.0.2` is still the newest tag
+  and `main` is clean at the release commit.
+- Documentation gap found: `README.md` still advertises **Version 3.0.0** while
+  the code and the releases are at **3.0.2** (tracked under *Known issues*).
 
 ## The v3.0.2 Windows Polish & MiniOrb Release (2026-10-28)
 
@@ -1037,24 +1051,23 @@ Two front ends share the same brain:
 
 - `config.py` — loads `.env`, holds `API_KEY` (from `GROQ_API_KEY`), `BASE_URL`
   (`https://api.groq.com/openai/v1`), `MODEL_NAME` (`openai/gpt-oss-120b`),
-  `STT_LANG` (`en-US`), `TTS_VOICE` (`en-US-AriaNeural`), and the
-  history/output/tool limits.
-- `voice.py` — `listen()` and `speak()`. `listen()` captures through
-  `arecord -D <device> -f S16_LE -r 16000 -c 1` (no PyAudio/PortAudio), reads
-  0.1 s chunks and computes RMS per chunk. The stream-open spike (first chunk,
-  ~6000) is discarded (and its decaying tail, bounded at 0.5 s); the room floor
-  is then **auto-calibrated** to `1.5 × median(background)` clamped to
-  **150–300**. Speech starts on RMS > **300**, a ~0.3 s **pre-roll** keeps quiet
-  onsets, **hysteresis** keeps recording while RMS stays above the calibrated
-  floor, the phrase ends after ~**2 s** below it (`JARVIS_SILENCE_END`, was 1.2 s),
-  caps phrases at **15 s** (`JARVIS_PHRASE_LIMIT`, was 6 s), and
-  waits at most **30 s** (`JARVIS_LISTEN_TIMEOUT`, was 4 s) for speech to start.
-  Playing media is paused before the mic
-  opens and resumed after capture (best effort, `playerctl` then `pactl`), and
-  `JARVIS_PTT=1` switches to push-to-talk (Enter to start, Enter/silence to
-  stop). Bytes are wrapped in `sr.AudioData(data, 16000, 2)` and sent to Google
-  STT (`en-US`). `speak()` is edge-tts + pygame (`en-US-AriaNeural`). Device
-  defaults to `default`; override with `JARVIS_MIC_DEVICE`.
+  `STT_LANG` (`en-US`), `TTS_VOICE` (`en-GB-RyanNeural`), the history/output/tool
+  limits, API timeout/circuit-breaker settings, screen/shell limits, and the
+  MiniOrb / semantic-cache switches.
+- `voice.py` — `listen()` and `speak()`. Capture goes through the platform
+  adapter (`arecord` on Linux, `sounddevice` on Windows/macOS), reads 0.1 s
+  chunks and computes RMS per chunk. The stream-open spike is discarded, the room
+  floor is **auto-calibrated** to `1.5 × median(background)` clamped to
+  **150–300**, speech starts on RMS > **300**, a ~0.3 s **pre-roll** keeps quiet
+  onsets, **hysteresis** keeps recording while RMS stays above the floor, and the
+  phrase ends after ~**2 s** of silence (`JARVIS_SILENCE_END`), capped at
+  **15 s** (`JARVIS_PHRASE_LIMIT`) with a **30 s** start timeout
+  (`JARVIS_LISTEN_TIMEOUT`). Media is paused before the mic opens and resumed
+  after capture, and `JARVIS_PTT=1` switches to push-to-talk. Audio goes to
+  Google STT (`en-US`), with a lazy local **faster-whisper** fallback when the
+  network or Google is unavailable. `speak()` streams edge-tts audio through
+  ffmpeg into `sounddevice` (no pygame); the device defaults to `default` and
+  can be overridden with `JARVIS_MIC_DEVICE`.
 - `router.py` — `try_local()`: offline regex handling for **power (confirmation-
   gated)**, media (`playerctl`), volume (`pactl`), brightness (`brightnessctl`),
   screenshot, lock, battery, system status, time, date, YouTube (open/play),
@@ -1062,8 +1075,9 @@ Two front ends share the same brain:
   `close youtube` targets the tab (never a search). A weak app-name match asks
   "Did you mean <app>?" instead of guessing; an unknown target defers to the
   agent. Any command containing a search verb returns `None` (agent handles it).
-- `desktop.py` — the whitelisted desktop actions: app index from `.desktop`
-  files (`gtk-launch`/`gio launch`), fuzzy matching with weighted keys, graceful
+- `desktop.py` — the whitelisted desktop actions on top of `platform_adapters/`:
+  app index from `.desktop` files (`gtk-launch`/`gio launch`), fuzzy matching
+  with weighted keys, graceful
   close (`wmctrl -c` → SIGTERM → SIGKILL after ~3 s), `list_running()`, YouTube
   (`yt-dlp` top result / search / homepage / tab close), media, volume,
   brightness, screenshot, lock, and confirmed power actions. Holds the protected
@@ -1081,14 +1095,17 @@ Two front ends share the same brain:
   registered speaker.
 - `confirm.py` — tiny pending-action state machine for "Are you sure?": a "yes"
   runs the action, anything else cancels, and it expires after 15 s.
-- `agent.py` — Groq chat orchestration over the OpenAI-compatible client, md5
-  response cache, token accounting, tool schemas built from function signatures,
-  and an English-only system instruction.
-- `tools.py` — the **40** tool functions the model can call: apps/windows, media,
+- `agent.py` — Groq chat orchestration over the OpenAI-compatible client, an
+  exact-match response cache plus the semantic cache, token accounting, tool
+  schemas built from function signatures, intent-based tool pruning, the API
+  circuit breaker, dynamic MCP tools, and an English-only system instruction.
+- `tools.py` — the **44** tool functions the model can call: apps/windows, media,
   screen (screenshot/see/act/click/type/keys/scroll), internet, terminal, files,
   clipboard, notifications, system info, notes and timers. Signatures +
   docstrings become the schema (no hand-written schema).
-- `memory.py` — rolling `deque` window of recent turns, rendered as a transcript.
+- `memory.py` — SQLite-backed conversation history and remembered facts, plus a
+  lazy ChromaDB semantic index (`~/.jarvis/chroma_db`) for retrieval; degrades to
+  a keyword-scored SQLite fallback when ChromaDB or the embedder is unavailable.
 - `main.py` — terminal entry point and `handle()` dispatch (confirmation first,
   then router, then agent). `--text` / `JARVIS_TEXT=1` reads typed commands and
   `--check` prints the readiness report; `handle()` catches agent/network errors.
@@ -1097,20 +1114,50 @@ Two front ends share the same brain:
 - `install_desktop.py` — app-menu launcher entry (`--autostart`, `--uninstall`,
   `--home`); writes only inside the user's own home directory.
 - `run.sh` — starts the GUI through the venv without needing `cd`.
-- `assets/jarvis-*.png` — the arc-reactor icon, rendered from `gui.make_icon()`.
-- `gui.py` — PyQt5 Arc Reactor widget (`QThread` worker); shares `main.handle()`
-  so confirmations work in the GUI too. Owns the wake listener's lifecycle
-  (start / pause / resume / stop) and exposes a checkable **Hey Jarvis** item in
-  both menus.
+- `assets/jarvis-reactor-source.svg` — the single source of truth for the Arc
+  Reactor artwork; `gen_icon.py` / `icon_art.py` render the PNG, ICO and ICNS
+  variants used by the window, tray and launchers.
+- `gui.py` — the PyQt5 front end: full-screen Iron Man **HUD**, floating card and
+  system tray, with a `QThread` voice worker that shares `main.handle()` so
+  confirmations work in the GUI too. Includes the state-driven **MiniOrb**, the
+  global **Ctrl+Shift+J** / **Ctrl+Alt+J** hotkeys, the tray menu, and the wake
+  listener's lifecycle (start / pause / resume / stop).
+- `hud.py` — the HUD's painted widgets: Arc Reactor mark, system/telemetry
+  panels, transcript and activity panels, command bar, GitHub probe and title
+  bar. Kept separate from `gui.py` so the HUD can be rendered and tested on its
+  own.
+- `semantic_cache.py` — paraphrase-tolerant answer cache: `all-MiniLM-L6-v2`
+  embeddings via `fastembed`, stored next to the history in SQLite, cosine
+  similarity ≥ 0.90, and a no-op fallback when the embedder is missing. Dynamic
+  questions (time, weather, actions, machine state) are never cached.
+- `mcp_client.py` — optional Model Context Protocol support. Servers declared in
+  `MCP_SERVERS` are started lazily and their tools exposed as
+  `mcp__<server>__<tool>`; every failure is logged and contained.
+- `resilience.py` — thread-safe circuit breaker (`CLOSED` / `OPEN` /
+  `HALF_OPEN`) so an unhealthy API fails fast instead of stalling every turn.
+- `logger.py` — rotating, categorized logs: API/network failures in
+  `~/.jarvis/logs/api_errors.log`, tool/desktop/audio failures in
+  `~/.jarvis/logs/command_errors.log`.
+- `instance.py` — single-instance guard and wake/quit signalling (POSIX lock +
+  Unix socket; Windows named mutex + loopback port), with separate dev and
+  frozen-build identities.
+- `startup.py` — per-user "Start on System Boot" via autostart `.desktop`,
+  LaunchAgent, or the `HKCU\...\Run` registry key.
+- `digest.py` — condenses large tool results (vision answers, fetched pages)
+  before they reach the main agent; uses a cheap model when available and a
+  deterministic local extractive summary otherwise.
+- `platform_adapters/` — the OS abstraction layer (`Audio`, `Window`, `System`)
+  with Linux, Windows and macOS implementations; a missing library degrades to a
+  clear message instead of crashing.
 - `wake.py` — optional offline **"Hey Jarvis"** wake word (`openWakeWord` ONNX).
   `Detector` re-frames raw mic bytes into the model's 80 ms frames and applies the
-  threshold; `Listener` streams `arecord` on a daemon thread, releases the mic
+  threshold; `Listener` streams the platform recorder on a daemon thread, releases the mic
   *before* a listen cycle and takes it back when Jarvis is idle, and stays silent
   while the mic is muted. Imports fine without openWakeWord installed.
-- `test_mic.py` — standalone mic diagnostic (arecord-based): lists capture
-  devices/PCMs with `arecord -l` / `-L`, records a WAV with the same
-  `arecord_command()` as `listen()`, reports RMS/peak, plays it back with `aplay`,
-  recognises it, and checks the gate in `voice.py`. No PyAudio.
+- `test_mic.py` — standalone mic diagnostic: lists capture devices/PCMs on Linux
+  with `arecord -l` / `-L`, records a WAV with the same platform recorder as
+  `listen()`, reports RMS/peak, plays it back, recognises it, and checks the gate
+  in `voice.py`. No PyAudio.
 - `test_routing.py`, `test_desktop.py`, `test_confirm.py`, `test_exit.py`,
   `test_memory.py`, `test_agent_cache.py`, `test_flow.py`, `test_voice_capture.py`,
   `test_wake.py`
@@ -1123,13 +1170,14 @@ Two front ends share the same brain:
 - Migrated off Gemini to Groq (`openai/gpt-oss-120b`,
   `https://api.groq.com/openai/v1`).
 - English-only throughout: English STT (`en-US`), an English TTS voice
-  (`en-US-AriaNeural`), an English-only system instruction, and a router with no
+  (`en-GB-RyanNeural`), an English-only system instruction, and a router with no
   non-English patterns.
 - Router/agent boundary: search commands defer to the agent; simple commands
   (`open youtube`, `open chrome`, …) are still handled locally.
 - Offline fast-path for common commands; API only used on a miss.
 - Local tools for app control, system stats, search, notes, and file reading.
-- Response cache to avoid repeat API calls for identical queries.
+- Exact-match and semantic response caches to avoid repeat API calls for
+  identical or paraphrased questions.
 - **Microphone capture fixed** (see below): the wrong input device (direct ALSA
   `hw:1,0`) plus a clipping 100 % capture gain made `listen()` always time out /
   return `""`; it now uses the system default input with a sane gain.
@@ -1138,10 +1186,12 @@ Two front ends share the same brain:
   the voice, so `listen()` now RMS-gates raw `arecord` 0.1 s chunks itself and the
   `pyaudio` dependency is gone.
 - Floating, transparent, always-on-top reactor widget with live state colours
-  (Idle / Listening / Thinking / Speaking).
-- pytest suite covering routing, `is_exit`, memory, the response cache, and the
-  real router→agent dispatch.
-- Published to GitHub with a README and an MIT LICENSE (`v1.0.0`).
+  (Idle / Listening / Thinking / Speaking), plus the full-screen HUD and the
+  state-driven MiniOrb.
+- pytest suite covering routing, `is_exit`, memory, both response caches, the
+  real router→agent dispatch, voice capture, wake word, GUI/HUD, MCP and the
+  platform adapters.
+- Published to GitHub with a README and an MIT LICENSE; latest tag **`v3.0.2`**.
 
 ### Microphone fix (2026-10-18)
 
@@ -1586,16 +1636,25 @@ by compiling `gui.py`; the PyQt GUI itself was not launched here.
 
 - `fn_read_file` reads any user-supplied path and `fn_save_note` writes to
   `~/jarvis_notes.md` — no sandboxing; review before exposing to untrusted input.
-- The response cache is in-memory only and keyed by lowercased query, so it is
-  lost on restart and ignores conversation context.
-- The agent path needs network access; the router fast-path works offline.
+- The exact-match response cache is in-memory and keyed by the lowercased query,
+  so it is lost on restart. The semantic cache is persisted in SQLite but ignores
+  conversation context and deliberately never caches dynamic questions.
+- `README.md` still says **Version 3.0.0**; the code, tag and installers are at
+  **3.0.2**.
+- The agent path needs network access; the router fast-path works offline. Local
+  faster-whisper STT is the fallback when Google STT is unreachable.
 - The voice-chat widget's **mic-level reaction while *listening*** is covered by
   unit tests (a synthetic tone drives the sink) but was not watched on a real mic;
   the *speaking* animation, the Stop button and the envelope were verified live.
-- Clicking the **tray** Mute/Talk items was not exercised on screen (the tray is
-  unavailable offscreen); the widget buttons, the `M`/`Space` keys and the shared
-  `voice` state they drive are all tested.
+- The tray menu is now deliberately minimal (show/hide, floating orb, quit);
+  its click/restore behaviour was unit-tested but not exercised on a real
+  Windows desktop in this pass. The main window owns mute, wake-word, chat and
+  auto-start toggles.
 - The mic mute is per-session (not persisted across restarts) by design.
+- The **"Hey Jarvis"** wake word is built and unit-tested but still needs a live
+  run on a real microphone to confirm the threshold and CPU cost.
+- The packaged Windows/macOS builds are produced and tested in CI; this Linux
+  machine has not smoke-tested the current installers end to end.
 - **Pause / next** were exercised live against real Brave playback (see the
   v1.0.3 section): `pause`, `resume` and `next` all work. `next`/`previous` need
   `xdotool` + X11 because they are delivered to the YouTube page (`shift+n`) —
@@ -1607,17 +1666,22 @@ by compiling `gui.py`; the PyQt GUI itself was not launched here.
   mouse). The routing, the whitelist and the risky-goal confirmation are tested.
 - `MAX_OUTPUT_TOKENS = 600` keeps the assistant brief while leaving reasoning
   headroom; raise it if long answers are ever cut off.
-- The arecord rewrite was verified against a *recorded* speech WAV and the local
-  device's ambient noise, not the real voice: run `main.py` once on the actual
-  machine to confirm the 76/6172 RMS separation at 40 % gain.
+- Capture thresholds were verified with a recorded speech WAV and the local
+  device's ambient noise; a live run on the real microphone is still the final
+  check.
 
 ## Next steps
 
-1. Consider persisting notes/history and adding a wake word.
-2. Decide on sandboxing for file/shell tools.
-3. Optionally add CI (run `pytest` on push).
-4. Optional hands-free "voice session": one Start button, then listen/reply in a
-   loop using the existing RMS voice-activity gate until the user mutes or stops.
+1. Verify the **"Hey Jarvis"** wake word live on a real microphone and tune the
+   threshold/CPU cost; it is the main remaining unverified feature.
+2. Smoke-test the v3.0.2 installers on clean Windows, macOS and Debian machines,
+   and update `README.md` from 3.0.0 to 3.0.2.
+3. Decide on sandboxing for file, shell and MCP tools before exposing JARVIS to
+   untrusted input.
+4. Exercise the tray, MiniOrb and global hotkeys on a real Windows high-DPI
+   desktop and after an Explorer restart.
+5. Keep the Wayland fallbacks honest: the YouTube autoplay tap and `vision.act`
+   still need X11, so document/verify the degraded path.
 
 ## How to run
 
@@ -1630,7 +1694,7 @@ echo "GROQ_API_KEY=your-key" > .env   # Groq key, starts with gsk_
 ./venv/bin/python main.py --text      # type commands instead of speaking
 ./venv/bin/python main.py --offline   # router only (no network, no agent)
 ./venv/bin/python main.py --screen "what is on my screen?"   # one screen answer
-./venv/bin/python main.py --gui       # floating widget + system tray
+./venv/bin/python main.py --gui       # HUD + floating card + system tray
 ./venv/bin/python main.py --check     # readiness report (tools, apps, config)
 ./venv/bin/python main.py --version   # print the version
 ./venv/bin/python doctor.py           # readiness report
@@ -1638,10 +1702,12 @@ echo "GROQ_API_KEY=your-key" > .env   # Groq key, starts with gsk_
 ./venv/bin/python -m pytest           # test suite
 ```
 
-The GUI is a small voice-chat console: click the orb to talk, the **Mic** button
-(or `M`) mutes/unmutes the microphone instantly, **Stop** (or `Space`) cuts a reply
-short or abandons a listen that is still waiting, the orb reacts to your voice while listening and moves with its own speech
-while talking, and only **Quit** in the tray menu exits.
+The GUI is a full-screen Iron Man HUD plus a floating card and a state-driven
+MiniOrb. Click the orb (or press **Ctrl+Shift+J** / **Ctrl+Alt+J**) to talk; the
+**Mic** button (or `M`) mutes/unmutes instantly, **Stop** (or `Space`) cuts a
+reply short or abandons a listen that is still waiting, and the orb reacts to
+your voice while listening and moves with its own speech while talking. Closing
+the window hides it to the tray; only **Quit** exits.
 
 Requires a working microphone and, for the agent path, network access plus a
 valid Groq `GROQ_API_KEY`. `.env`, `venv/`, caches, `TOKEN.txt` and audio

@@ -1,10 +1,24 @@
 ![CI](https://github.com/jakirhussainkhan/jarvis-ai-voice-assistant/actions/workflows/ci.yml/badge.svg)
 
-# Jarvis — Cross-Platform Voice Assistant
+# JARVIS — Cross-Platform Voice Assistant
 
-**Version 3.0.0**
+**Version 3.0.2**
 
-> 🎙️ **What can I say?** Open the complete **[Voice Commands Guide](docs/voice_commands/COMMANDS.md)** — every app, media, YouTube, memory, screen, terminal and Python command, with examples.
+> 🎙️ **What can I say?** Open the complete **[Voice Commands Guide](docs/voice_commands/COMMANDS.md)** — every app, media, YouTube, memory, screen, terminal, MCP and Python command, with examples.
+
+JARVIS is a voice-controlled desktop assistant for **Linux, Windows and macOS**.
+You speak a command; JARVIS either handles it **locally and offline** (a regex
+router — no API call) or hands it to a **Groq-backed agent** that can call 44
+native tools plus any configured **MCP** tools, then answers out loud in
+English. Speech recognition and replies are **English-only by design**.
+
+The desktop experience is a frameless **Iron Man-style HUD** with live
+telemetry, transcript and activity rails, a command bar and a system tray. An
+**80×80 MiniOrb** floats above the desktop, so JARVIS stays one click away when
+the HUD is hidden. Say **"Hey Jarvis"** once the optional offline wake word is
+installed, or use the global hotkey.
+
+---
 
 ## Download and run (no Python needed)
 
@@ -14,7 +28,7 @@ Prebuilt apps are attached to the
 | Platform | Download | First launch |
 | --- | --- | --- |
 | Windows 10/11 | `JARVIS.exe` | Double-click it. If SmartScreen appears, choose **More info → Run anyway**. |
-| Linux (Debian/Ubuntu) | `jarvis_3.0.0_amd64.deb` | Double-click it, or run `sudo apt install ./jarvis_3.0.0_amd64.deb`. |
+| Linux (Debian/Ubuntu) | `jarvis_3.0.2_amd64.deb` | Double-click it, or run `sudo apt install ./jarvis_3.0.2_amd64.deb`. |
 | macOS 12+ (Intel or Apple Silicon) | `JARVIS.dmg` | Open it, drag **JARVIS** to **Applications**, then right-click the app and choose **Open** the first time. |
 
 The macOS build is Intel; Apple Silicon runs it through Rosetta 2, which macOS
@@ -26,317 +40,160 @@ only in your own home folder (`~/.jarvis/.env`). Microphone permission is
 requested automatically; see the platform guides for screen/accessibility
 permissions.
 
-The packaged Windows build bundles `ffmpeg.exe`, so audio playback works without
-a separate install. The EXE does **not** include the optional offline wake word:
-press **Ctrl+Shift+J** (or **Ctrl+Alt+J**), or click the Arc Reactor, to talk.
-The first launch unpacks roughly 150 MB, so the window can take 10–20 seconds to
-appear — do not double-click it twice.
+The packaged Windows build bundles `ffmpeg.exe`, and the macOS DMG bundles a
+static ffmpeg, so audio playback works without a separate install. The frozen
+builds do **not** include the optional offline wake word: press
+**Ctrl+Shift+J** (or **Ctrl+Alt+J**), click the Arc Reactor, or click the
+MiniOrb to talk. The first launch unpacks roughly 150 MB, so the window can take
+10–20 seconds to appear — do not double-click it twice.
 
 > The macOS build is ad-hoc signed (without a paid Apple Developer ID), so
 > Gatekeeper asks for a one-time confirmation. The Windows EXE is unsigned, so
 > SmartScreen may do the same. These prompts are expected and safe to accept.
 
-A voice-controlled desktop assistant for **Linux, Windows and macOS** that can
-*see* your screen, use the internet, and operate the terminal. You speak a
-command; Jarvis either handles it **locally and offline** (regex router — no API
-call) or hands it to a **Groq-backed agent** that can call 44 tools, then answers
-out loud in English. Speech recognition and replies are **English-only by
-design**. A full-screen Iron Man-style HUD lives in the system tray and talks
-when you click the reactor — or when you just say **"Hey Jarvis"**, once the
-optional offline wake word is installed.
-
-Every OS-specific action lives behind a **platform adapter**
-(`platform_adapters/`): Linux uses `arecord`/`pactl`/`playerctl`/`wmctrl`/`xdotool`/
-`brightnessctl`, Windows uses `sounddevice`/`pycaw`/`pywinctl`, and macOS uses
-`sounddevice`/`osascript`/`pywinctl`. The core (router, agent, memory, TTS, GUI,
-vision) is identical on all three, and a missing library degrades to a clear
-message instead of crashing.
-
-Jarvis **never runs `sudo`** and never runs arbitrary shell from speech — except
-through a guarded terminal tool that refuses anything that could power the device
-off and asks before anything risky. Power actions and other sensitive steps are
-confirmation-gated everywhere. When a tool is missing it will *print* a
-copy-paste install command for you to run yourself, but it never executes one.
-
 ---
 
-## What's new in 3.0.0
+## What's new in 3.0.2
 
-- **Zero-dependency end-user builds.** The Windows `JARVIS.exe` bundles
-  `ffmpeg.exe`, the macOS `JARVIS.dmg` bundles a static ffmpeg, and the Linux
-  `.deb` declares the system packages it needs. End users install no Python and
-  no audio/desktop tooling by hand.
-- **The Iron Man HUD.** The GUI is a full-screen, frameless HUD with a live Arc
-  Reactor, system telemetry, transcript and activity panels, and a command bar.
-  It still lives in the tray, still supports **"Hey Jarvis"**, and still hides
-  instead of quitting when you close it.
-- **A safer YouTube confirmation flow.** "Play *song*" resolves the real video
-  title first and asks **"I found <title>. Do you want me to play this?"** before
-  it touches the browser. It reuses the YouTube tab you already have open and
-  verifies that playback actually started instead of claiming success.
-- **The Arc Reactor logo everywhere.** One canonical SVG
-  (`assets/jarvis-reactor-source.svg`) drives the window, tray, launcher and
-  Windows/macOS icons, so the artwork can never drift between platforms.
-- **A complete Voice Commands guide.** Every supported command is now documented
-  in [`docs/voice_commands/COMMANDS.md`](docs/voice_commands/COMMANDS.md),
-  grouped by app control, system telemetry, media and YouTube, memory, web and
-  vision, and terminal/Python automation.
+### Iron Man HUD and MiniOrb
 
-## Earlier UI: the ChatGPT-Voice-style card
+- **The Iron Man HUD.** `gui.py` and `hud.py` provide a frameless command
+  centre with the live Arc Reactor, CPU/RAM/disk telemetry, GitHub and inbox
+  panels, transcript and activity rails, a command bar and a tray icon. Custom
+  `QPainter` widgets draw the obsidian surfaces, cyan hairlines, reactor glow,
+  sparklines and instrument-style gauges, while `QPropertyAnimation` drives the
+  metric changes and the breathing states.
+- **The MiniOrb.** A frameless, always-on-top 80×80 floating orb (with a 50 px
+  reactor face) sits at the bottom-right of the desktop. Drag it anywhere;
+  left-click opens the HUD, right-click offers **Show** and **Quit**. It is
+  deliberately static while Idle and only breathes during Listening, Thinking
+  and Speaking, so a resting JARVIS uses no animation CPU. Toggle it with
+  **JARVIS_SHOW_MINI_ORB=0** or the tray/session menu.
+- **Hotkey without stealing focus.** **Ctrl+Shift+J** (or **Ctrl+Alt+J**)
+  toggles listening from any application without raising the HUD; only an
+  explicit tray or MiniOrb click brings the window forward.
 
-- **A ChatGPT-Voice-style window.** The old floating reactor is now a frameless,
-  rounded dark card (`#1E1E1E`), always on top, with minimise/close controls in
-  the top-right and one modern status line ("Listening...", "Thinking...",
-  "Jarvis is speaking...").
-- **A living orb and a live waveform.** The orb is a `QPainter` gradient that
-  breathes with a `QPropertyAnimation` when idle, reacts to your real mic level
-  while listening and to the TTS envelope while speaking. Thirteen bars below it
-  scroll in real time from the same `voice.set_level_sink()` data.
-- **Barge-in.** Start talking while Jarvis is speaking and it stops immediately
-  and returns to listening — no Stop button needed. Echo is rejected with a high,
-  sustained RMS threshold; `JARVIS_BARGE_THRESHOLD`, `JARVIS_BARGE_HOLD` and
-  `JARVIS_BARGE_IN=0` tune it, and push-to-talk (`JARVIS_PTT=1`) disables it.
-- **The Arc Reactor app icon.** The single source is `assets/jarvis-reactor-source.svg`.
-  Window and tray icons render it directly; launcher PNGs and the Windows ICO are
-  regenerated by `gen_icon.py`. Generated raster files are not tracked in Git.
+### Intelligence
 
-## What's new in 1.0.11
+- **MCP (Model Context Protocol).** `mcp_client.py` starts configured MCP
+  servers as child processes, discovers their tools at runtime and exposes each
+  one to the model as `mcp__<server>__<tool>`. The official SDK is imported
+  lazily, discovery is cached, failed servers retry after `MCP_RETRY_SECONDS`,
+  and an MCP failure can never stop a normal reply. See
+  [`docs/mcp-setup.md`](docs/mcp-setup.md).
+- **ChromaDB semantic memory.** Long-term facts and conversation turns are
+  embedded with `fastembed` (`all-MiniLM-L6-v2`) and stored in a persistent
+  ChromaDB collection at `~/.jarvis/chroma_db`. Each turn retrieves the three
+  most relevant memories — so "what do you remember about me?" works in your own
+  words. SQLite remains the complete store and the automatic fallback.
+- **Silero VAD endpointing.** `voice.py` runs Silero VAD on 32 ms frames
+  (512 samples at 16 kHz) to detect speech start and end. A phrase ends about
+  0.4 s after you stop talking instead of waiting for the 2 s RMS window. If
+  Silero or ONNX Runtime is unavailable, the calibrated RMS gate takes over
+  automatically.
 
-- **The clickable orb is an Iron Man arc reactor too.** The Reactor widget now
-  paints the *same* artwork as the launcher icon — dark gunmetal housing, ten
-  glowing coil slots and a white-hot core — through one shared painter
-  (`gui._draw_reactor_face`), so the icon and the orb can never drift apart.
-  All behaviour survives: the "breathing" shimmer, the live mic/TTS energy
-  pulse, and the per-state colour (the light tints green while listening,
-  amber while thinking, purple while speaking, grey when muted, red slash
-  badge included).
+### Security and persona
 
-## What's new in 1.0.10
+- **Creator Guardrails.** JARVIS identifies **Jakir Hussain Khan** as its
+  creator, developer and designer. The router answers creator questions locally
+  and instantly (`CREATOR_QUESTION`), so the answer is provider-independent; the
+  agent's system instruction adds an absolute guardrail that refuses attempts
+  to rewrite its origin story and never credits OpenAI, Groq or any other
+  company, lab or framework for its existence.
+- **Categorised error logging.** `logger.py` writes API/network failures to
+  `~/.jarvis/logs/api_errors.log` and tool/desktop/audio/routing failures to
+  `~/.jarvis/logs/command_errors.log`. Both rotate at 5 MB with three backups,
+  never print to the terminal, and show the user one short sentence while the
+  full traceback stays in the log. `command_guard` wraps every tool, so an
+  unexpected failure is logged once instead of crashing the turn.
 
-- **Jarvis uses the YouTube tab you already had open.** "Play X" (or a search)
-  with YouTube on screen now navigates *that tab* in place — no pile of extra
-  tabs — and falls back to a normal tab when it can't take input safely.
-  "Open YouTube" brings the existing tab up instead of opening another.
-- **"Close YouTube" closes the YouTube tab from anywhere.** The visible
-  YouTube window is closed directly; when the title has no "YouTube" suffix it
-  only closes the focused tab if a browser media session is actually playing
-  there, and it never presses ctrl+w blind: without verified input focus it
-  says "There is no YouTube tab open." A browser focused on other work is
-  always left alone.
-- Keyboard/window actions (play nudge, next/previous, close tab) now verify
-  real X input focus before sending keys, so nothing is ever typed into the
-  wrong application under Cinnamon's focus-stealing prevention.
+### Cross-platform
 
-## What's new in 1.0.9
-
-- **A single-source Arc Reactor app icon.** The canonical artwork lives in
-  `assets/jarvis-reactor-source.svg`. The GUI/tray render the source directly;
-  launcher PNGs and the Windows ICO are regenerated during CI, desktop install,
-  and package builds. Generated rasters are not committed, preventing old icons
-  from silently returning.
-
-## What's new in 1.0.8
-
-- **Continuous conversation.** Say one thing and Jarvis replies, then **opens the
-  microphone again** so you can keep talking — hands-free, like ChatGPT's voice
-  mode. It stops only when you: go quiet (**60 s**, `JARVIS_CHAT_TIMEOUT`), say an
-  **exit word** ("bye", "stop", "exit"), press **Stop**, or mute the mic.
-  `JARVIS_CHAT=0` brings back the old one-shot behaviour, and the checkable
-  **Continuous chat** menu item switches it at runtime.
-- **End a session by voice.** A spoken "bye"/"stop"/"exit" now closes the whole
-  exchange politely instead of expecting the terminal. And risky commands (power
-  off, risky terminal commands) keep their spoken **"Are you sure?"** — a "yes"
-  runs them, anything else cancels, so you never need to touch the keyboard.
-
-## What's new in 1.0.7
-
-- **A stronger, Iron-Man voice.** Jarvis now speaks with **`en-GB-RyanNeural`** —
-  a British male neural voice, the closest match to Iron Man's Jarvis — instead of
-  the female `en-US-AriaNeural`. Change it without touching code:
-  `JARVIS_TTS_VOICE=…` in `.env` (any edge-tts voice name).
-
-## What's new in 1.0.6
-
-- **Launch it like a real app.** `./run.sh` starts the GUI with the right
-  virtualenv, no typing and no `cd`. Prefer a click? `install_desktop.py` adds
-  Jarvis to your **application menu** (with the arc-reactor icon) and can
-  optionally start it at login:
-
-  ```bash
-  ./venv/bin/python install_desktop.py              # add to the app menu
-  ./venv/bin/python install_desktop.py --autostart  # ...and start at login
-  ./venv/bin/python install_desktop.py --uninstall   # undo, exactly
-  ```
-
-  It only writes inside your own home directory (`~/.local/share/applications`
-  and `~/.config/autostart`) — no root, no `sudo`, nothing else touched.
-- **A crisper orb icon.** The icon margin is now proportional, so the reactor is
-  no longer clipped when rendered large (it is shipped at 32-256 px in `assets/`).
-
-## What's new in 1.0.5
-
-- **"Hey Jarvis" — hands-free, fully offline.** The GUI no longer needs a click:
-  say the wake phrase and it starts listening, with a short chime to confirm it
-  heard you. It uses `openWakeWord`'s pretrained model, which runs entirely on
-  this machine (no network, no account, ~1-2% of one CPU core). Optional, so
-  nothing changes until you install it:
-  `./venv/bin/pip install openwakeword onnxruntime`. It is on by default once
-  installed — turn it off with `JARVIS_WAKE=0` or the **Hey Jarvis** menu item.
-- **The microphone is never fought over.** Only one thing records at a time: the
-  wake listener releases the mic *before* a listen cycle starts and takes it back
-  the moment Jarvis is idle again. Muting the mic stops the wake word too, so a
-  muted microphone really is silent.
-- **It explains itself.** `doctor.py` reports whether the wake word is available,
-  listening, or switched off, and prints the exact `pip install` line when it is
-  missing. Tune the sensitivity with `JARVIS_WAKE_THRESHOLD` if it fires too
-  eagerly (or misses you), and `JARVIS_WAKE_DING=0` silences the chime.
-
-## What's new in 1.0.4
-
-- **It no longer cuts you off mid-sentence.** A pause while you think (or between
-  "play …" and the song name) used to end the phrase after just **1.2 s**, and the
-  whole utterance was **capped at 6 s**. It now tolerates a **2 s** pause and fits
-  up to **15 s** of speech. Tune with `JARVIS_SILENCE_END` / `JARVIS_PHRASE_LIMIT`.
-- **Silent screen reading — no more flash.** `gnome-screenshot` plays a bright
-  shutter animation (and `vision.act` captures once per step), which is painful to
-  look at. Screenshots now use **`scrot`**, then ImageMagick **`import`**, and
-  `gnome-screenshot` only as a last resort.
-
-## What's new in 1.0.3
-
-- **Play a song by name** — "play kesariya" (or "play the song kesariya") searches
-  and plays it directly, and pause/resume/next work on it as usual.
-- **Point at the screen** — "play the second song", "play this song", "play that
-  one" and "play it" are read off your screen and acted on, so you can pick a
-  video out of the feed you are looking at.
-- **A 30-second listening window** — after you trigger Jarvis it now waits up to
-  **30 s** for you to start speaking (was 4 s), so you have time to think or say a
-  long name. Tune it with `JARVIS_LISTEN_TIMEOUT`.
-- **Stop cancels a wait too** — pressing Stop (or `Space`) now abandons a listen
-  that is still waiting for you, as well as cutting off a reply mid-sentence.
-- **Playback that actually starts, and honest feedback** — a freshly opened or
-  reused video usually sits paused (browsers block autoplay without a real
-  click), and a paused tab publishes no MPRIS session at all. After navigating,
-  Jarvis checks `playerctl status`; if it is not already **Playing** it focuses
-  the YouTube window and presses **Space** (`xdotool`), then verifies before
-  saying "Playing" — so it no longer claims success while the player is paused.
-  **`next`/`previous`
-  work on a YouTube tab** by driving the page's own shortcuts — Brave's MPRIS
-  reports `CanGoNext = false`, so `playerctl` alone can never skip tracks there.
-- **Copy-paste install hints** — a missing tool and the readiness report now print
-  the exact command (e.g. `sudo apt install playerctl`) for *you* to run. Jarvis
-  still never runs `sudo` or installs anything itself.
-
-## What's new in 1.0.2
-
-- **A live, voice-chat-style widget** — the reactor now *reacts*. While it listens
-  it grows and glows with your real microphone level, and while it speaks it moves
-  in time with its own words (the TTS loudness envelope).
-- **Mic mute / unmute** — a button (plus a tray item, an `M` key, and a checkable
-  tray action) mutes the microphone instantly, even mid-listen; the orb dims and
-  Jarvis stops listening until you turn it back on.
-- **Stop** — cut a reply off mid-sentence with the Stop button (or `Space`). A Stop
-  pressed while the reply is still being synthesised cancels it too.
-
-## What's new in 1.0.1
-
-- **Screen vision** — ask "what's on my screen?" and Jarvis screenshots the
-  display and answers with a multimodal model. Ask it to *operate* the UI
-  ("click the login button") and it runs a bounded perceive → act → verify loop.
-- **Live internet intelligence** — keyless web search, full-page reading, Wikipedia
-  summaries and weather, so answers use *fresh* information, not just training data.
-- **A guarded terminal** — Jarvis can run shell commands like an expert, behind a
-  three-layer guard (see [Terminal safety](#terminal-safety)).
-- **Offline-first** — everything that can work without a connection does: apps,
-  folders, windows, media, volume, brightness, clipboard, screenshots, notes,
-  timers and dictated commands. `main.py --offline` forces this mode.
-- **A real desktop app** — the reactor floats on top, clicks to talk, and hides to
-  the system tray instead of quitting.
+- **Zero-dependency builds.** The Windows `JARVIS.exe` bundles `ffmpeg.exe`,
+  the macOS `JARVIS.dmg` bundles a static ffmpeg, and the Linux `.deb` declares
+  its runtime packages, including `ffmpeg` and `tzdata`. End users install no
+  Python and no audio/desktop tooling by hand. Frozen builds collect
+  `onnxruntime` and `chromadb` where packaging allows; the multi-GB torch-based
+  Silero stack and other optional ML extras are excluded to stay under GitHub's
+  2 GB release-asset limit, with graceful fallbacks at runtime.
+- **Windows tray fixes.** The tray icon is created even when Qt reports no
+  system tray yet, with a 2-second retry timer that recovers when Explorer
+  starts late or restarts. Every helper subprocess is launched with
+  `hidden_process_kwargs`, so no black CMD windows flash while JARVIS runs a
+  command.
 
 ---
 
 ## Features
 
-- **Voice I/O** — speech-to-text via SpeechRecognition (Google STT, `en-US`) and
-  text-to-speech via `edge-tts` (`en-GB-RyanNeural` — a British male voice) played
-  through `sounddevice` (PortAudio), with the MP3 decoded by ffmpeg. The Windows
-  build bundles `ffmpeg.exe`, so no extra install is needed there.
-- **Local fast-path router** — offline handling for power, media (incl. seeking by
-  seconds and "what's playing"), volume, brightness, screenshot, lock, battery,
+- **Voice I/O** — speech-to-text via SpeechRecognition (Google STT, `en-US`)
+  with a local `faster-whisper` fallback when the network is unavailable, and
+  text-to-speech via `edge-tts` (`en-GB-RyanNeural`, a British male voice)
+  streamed through `sounddevice` (PortAudio) and decoded with ffmpeg.
+- **Silero VAD** — frame-level speech endpointing on CPU through ONNX Runtime,
+  with the tuned RMS gate as the fallback. Both paths respect microphone mute,
+  barge-in and push-to-talk.
+- **Local fast-path router** — offline handling for power, media (including
+  seeking and "what's playing"), volume, brightness, screenshot, lock, battery,
   system status, time, date, windows, clipboard, folders, YouTube (including
-  **playing a song by name**, and a plain "play <name>"), dictated terminal
-  commands, and opening/closing apps. The API is only used on a miss.
+  playing a song by name), dictated terminal commands, and opening/closing
+  apps. The API is only used on a miss.
+- **Groq agent with 44 native tools** — tool schemas are generated from Python
+  function signatures and docstrings, so there is no hand-written schema table
+  to drift. The agent supports an optional local Ollama backend, response and
+  semantic caching, token accounting, intent-based tool pruning, a bounded tool
+  loop, long-term fact injection and MCP tools.
+- **MCP integration** — any stdio MCP server can add tools at runtime. Servers
+  are declared in `MCP_SERVERS`; broken configuration or a missing SDK is
+  logged and simply contributes no tools.
+- **ChromaDB semantic memory** — SQLite stores the full history and
+  `user_facts` table; ChromaDB plus `fastembed` provides semantic retrieval.
+  `fn_remember_fact`, `fn_recall_facts` and `fn_forget_fact` manage durable
+  personal facts, and the agent receives relevant memories before each prompt.
 - **Real-time screen vision** — reads the screen ("what does this error say?",
-  "summarise this page") and operates it ("click Save", "type my name in the box",
-  or pick something you are pointing at: "play the second song", "play that one")
-  through whitelisted mouse/keyboard actions only. Screenshots are taken
-  **silently** (`scrot`, then `import`) — never with `gnome-screenshot`'s flash.
+  "summarise this page") and operates it ("click Save", "type my name in the
+  box", or pick something you are pointing at) through whitelisted
+  mouse/keyboard actions only. Screenshots are taken silently with `scrot` or
+  ImageMagick `import`.
 - **Internet intelligence** — `fn_web_lookup` (live search), `fn_fetch_page`,
-  `fn_wikipedia`, `fn_weather`. No API keys required for any of them.
-- **Guarded terminal** — `fn_run_command` (hidden, output returned) and
-  `fn_run_in_terminal` (visible). Denies privilege escalation and every
-  power/session command; confirms anything that mutates state.
+  `fn_wikipedia` and `fn_weather`. No API keys are required for any of them.
+- **Guarded terminal and CodeAct** — `fn_run_command` (hidden, output
+  returned), `fn_run_in_terminal` (visible) and `fn_execute_python` (a guarded
+  CodeAct subprocess with an AST allow/deny pass and a hard timeout). Privilege
+  escalation and every power/session command are refused in code; anything that
+  mutates state is confirmed first.
 - **Desktop control** — open any installed app (fuzzy match over `.desktop`
-  files), graceful close, list/focus/minimise/maximise windows, click/type/scroll,
-  YouTube play/search, media (`playerctl`, with a browser-tab fallback so
-  play/pause/next work on YouTube itself), volume (`pactl`), brightness
-  (`brightnessctl`), screenshots, clipboard, notifications, file search, notes,
-  timers and reminders.
+  files), graceful close, list/focus/minimise/maximise windows,
+  click/type/scroll, YouTube play/search, media, volume, brightness,
+  screenshots, clipboard, notifications, file search, notes, timers and
+  reminders.
 - **Safety everywhere** — protected-process list, "Did you mean <app>?" on weak
   matches, and an "Are you sure?" confirmation (15 s, "yes"-only) before
-  shutdown/restart/logout/suspend, before any risky terminal command, and before
-  destructive screen-automation goals (delete/buy/send/…). `close/quit/kill X`
-  can never become a YouTube search.
-- **Two front ends** — a terminal loop (`main.py`) and a floating, rounded,
-  always-on-top voice card with a system tray (`gui.py`). Both share
-  `main.handle()`, so confirmation and routing behave identically in each. The
-  card is a mini voice-chat console: a breathing orb, a live 13-bar waveform, a
-  mic mute button and a Stop button. One click starts a **continuous
-  conversation**: Jarvis replies, then keeps listening so you can just talk,
-  hands-free — and you can interrupt a reply by simply speaking.
-- **Optional offline wake word** — say **"Hey Jarvis"** instead of clicking. The
-  GUI listens through `openWakeWord`'s pretrained ONNX model: no network, no
-  account, no API key, ~1-2% of one CPU core, and English-only like everything
-  else. It is *optional*: install it with
-  `./venv/bin/pip install openwakeword onnxruntime` and it switches on by itself
-  (off with `JARVIS_WAKE=0`, or the checkable **Hey Jarvis** menu item). The wake
-  listener and `voice.listen` **never hold the microphone at the same time** — the
-  listener hands it over before recording starts — and muting the mic stops the
-  wake word too. A short chime confirms it heard you (`JARVIS_WAKE_DING=0` mutes
-  the chime), and `JARVIS_WAKE_THRESHOLD` tunes how easily it triggers.
+  shutdown/restart/logout/suspend, before risky terminal commands, and before
+  destructive screen-automation goals.
+- **Iron Man HUD and MiniOrb** — the command-centre window and the floating orb
+  share one voice pipeline and one state machine. The HUD has a live reactor,
+  telemetry, transcript/activity panels, a command bar, settings, mic mute,
+  Stop, barge-in, minimise/maximise/restore and silent close-to-tray.
+- **Optional offline wake word** — say **"Hey Jarvis"** instead of clicking.
+  The GUI uses `openWakeWord`'s pretrained ONNX model: no network, no account,
+  no API key, roughly 1–2% of one CPU core. The wake listener and `voice.listen`
+  never hold the microphone at the same time, and muting the mic stops the wake
+  word too.
 - **Usable without a microphone** — `JARVIS_TEXT=1 ./venv/bin/python main.py`
-  (or `main.py --text`) takes *typed* commands through the exact same
-  router/agent path.
-- **Long-term memory** — durable personal facts (name, preferences, birthdays)
-  are stored in the same local SQLite database under `user_facts`. The agent
-  saves them with `fn_remember_fact`, recalls them with `fn_recall_facts`, and
-  deletes or replaces them with `fn_forget_fact` (say "forget my name", or give
-  a new name and the old one is removed first). The agent receives the 15 most
-  recent facts as a `[SYSTEM MEMORY: ...]` message before each prompt. The static
-  system instruction stays unchanged for prefix caching.
+  (or `main.py --text`) takes typed commands through the same router/agent path.
 - **Readiness report** — `./venv/bin/python doctor.py` (or `main.py --check`)
   prints the session type, which tools are installed and what each missing one
-  costs, the model and vision model, the app count, how to try every command, and
-  a **copy-paste `sudo apt install …` line** for whatever is missing (for you to
-  run — Jarvis never runs it).
-- **Robust audio capture** — capture runs through `arecord -D default -f S16_LE
-  -r 16000 -c 1` (PyAudio/PortAudio never saw this machine's mic), read in 0.1 s
-  chunks and RMS-gated. The stream-open spike is discarded, the stop floor is
-  auto-calibrated from the room noise (`1.5 × median`, clamped to 150–300), a
-  ~0.3 s pre-roll keeps quiet onsets, and hysteresis ends the phrase after ~2 s
-  of silence. Phrases are capped at 15 s (`JARVIS_PHRASE_LIMIT`), and Jarvis waits
-  up to **30 s** (`JARVIS_LISTEN_TIMEOUT`) for you to start speaking — Stop
-  abandons a pending wait. Background media keeps playing while Jarvis listens,
-  so "pause music" / "next song" work; the RMS gate and barge-in threshold keep
-  the audio from registering as speech, and `JARVIS_PTT=1` switches to
-  push-to-talk for noisy rooms.
-- **Tests** — a `pytest` suite of **557 tests** (1 skipped) covering routing, app
-  matching, the protected list, the confirmation flow, the terminal guardrails,
-  screen routing, clipboard fallbacks, offline behaviour, the internet tools,
-  vision parsing, timers, the YouTube path (play-by-name and on-screen picks),
-  text mode, the doctor, the GUI (offscreen), the wake word (framing, threshold
-  and the mic hand-over), the desktop launcher, the live mic-level/TTS-envelope
-  hooks and the real router→agent dispatch path.
+  costs, the model and vision model, the app count, and a copy-paste install
+  line for whatever is missing (for you to run — JARVIS never runs it).
+- **Categorised logging** — separate rotating API and command error logs keep
+  unrelated failures apart without spraying tracebacks into the console.
+- **Tests** — **672 passed, 3 skipped** (675 collected) with `pytest`, covering
+  routing, app matching, the protected list, confirmation, terminal guardrails,
+  screen routing, clipboard fallbacks, offline behaviour, internet tools, vision
+  parsing, timers, YouTube, text mode, the doctor, the HUD and MiniOrb
+  (offscreen), the wake word, MCP, ChromaDB memory, Silero VAD, categorised
+  logging, the desktop launcher and the real router→agent dispatch path.
 
 ---
 
@@ -351,10 +208,10 @@ Audio capture and playback come from the platform adapter: **Linux** uses
 (installed from `requirements.txt`). Volume is `pactl` on Linux, `pycaw` on
 Windows and `osascript` on macOS.
 
-Optional desktop tools — Jarvis degrades gracefully when these are missing, but
-these features need them. On Linux install them with your system package manager
-(for example, `apt`); `./venv/bin/python doctor.py` prints the exact
-`sudo apt install …` line for whatever is missing (Jarvis never runs it):
+Optional desktop tools — JARVIS degrades gracefully when these are missing, but
+these features need them. On Linux install them with your system package
+manager; `doctor.py` prints the exact `sudo apt install …` line for whatever is
+missing (JARVIS never runs it):
 
 ```text
 playerctl  brightnessctl  wmctrl  xdotool  scrot  imagemagick  ffmpeg
@@ -370,7 +227,7 @@ notify-send  xdg-utils  yt-dlp  xclip (or xsel, optional — Qt is the fallback)
 | `yt-dlp` | playing the top YouTube result instead of opening search |
 | `playerctl` | pause / resume / next / previous / stop / seek |
 | `brightnessctl` | screen brightness |
-| `gnome-screenshot` / `scrot` / ImageMagick `import` | screenshots (`scrot`/`import` preferred — `gnome-screenshot` flashes the screen) |
+| `scrot` / ImageMagick `import` | screenshots (preferred — no screen flash) |
 | `convert` / `ffmpeg` | shrinking screenshots for the vision model |
 | `notify-send` | desktop notifications |
 | `xdg-open` | opening files, folders and URLs |
@@ -381,9 +238,21 @@ notify-send  xdg-utils  yt-dlp  xclip (or xsel, optional — Qt is the fallback)
 > window control report that plainly; app control falls back to process-based
 > closing and media to `playerctl`.
 
-**Optional: the "Hey Jarvis" wake word.** A second, separate install — it is not
-in `requirements.txt` because it is a few hundred MB of ONNX runtime and only the
-GUI uses it. Nothing else changes if you skip it:
+### Optional Python extras
+
+`requirements.txt` already includes the optional runtime integrations:
+`mcp`, `chromadb`, `fastembed`, `silero-vad`, `onnxruntime`, `faster-whisper`,
+`pynput`, `sounddevice` and `pywinctl`. Each is imported lazily:
+
+- missing `mcp` → no MCP tools;
+- missing `chromadb`/`fastembed` → SQLite fact retrieval;
+- missing `silero-vad`/`onnxruntime` → calibrated RMS endpointing;
+- missing `faster-whisper` → online STT only;
+- missing `pynput` → no global hotkey, but the app still starts.
+
+**Optional: the "Hey Jarvis" wake word.** It is deliberately not in
+`requirements.txt` because it is a few hundred MB of ONNX runtime and only the
+GUI uses it:
 
 ```bash
 ./venv/bin/pip install openwakeword onnxruntime   # ~1-2% CPU, fully offline
@@ -396,8 +265,8 @@ On Windows the same install is:
 ```
 
 The first run downloads the pretrained model (a one-time network fetch); after
-that it never touches the network. `doctor.py` prints this exact line for you when
-the wake word is missing, and Jarvis itself never installs anything.
+that it never touches the network. `doctor.py` prints this exact line for you
+when the wake word is missing, and JARVIS itself never installs anything.
 
 ---
 
@@ -407,8 +276,6 @@ The installers create `venv/`, install `requirements.txt`, and add the
 platform's audio and desktop helper tools. Expect about 3 minutes on broadband.
 
 ### 1. Clone the repository
-
-The one-liners below must run from inside the checkout:
 
 ```bash
 git clone https://github.com/jakirhussainkhan/jarvis-ai-voice-assistant.git
@@ -436,8 +303,8 @@ curl -fsSL https://raw.githubusercontent.com/jakirhussainkhan/jarvis-ai-voice-as
 ```
 
 Each installer is a small shell/PowerShell script in this repository, so you can
-[read `install.sh`](install.sh) or
-[read `install.ps1`](install.ps1) before running it.
+[read `install.sh`](install.sh) or [read `install.ps1`](install.ps1) before
+running it.
 
 ### 3. Add your Groq API key
 
@@ -472,7 +339,7 @@ Then follow [How to Run](#how-to-run) below.
 
 | Platform | Detailed guide | Prebuilt download |
 | --- | --- | --- |
-| **Linux** | [Linux Instructions](docs/install-linux.md) | `jarvis_3.0.0_amd64.deb` |
+| **Linux** | [Linux Instructions](docs/install-linux.md) | `jarvis_3.0.2_amd64.deb` |
 | **Native Windows** | [Windows Instructions](docs/install-windows.md) | `JARVIS.exe` |
 | **macOS** | [macOS Instructions](docs/install-macos.md) | `JARVIS.dmg` |
 | **All releases** | [Latest release](https://github.com/jakirhussainkhan/jarvis-ai-voice-assistant/releases/latest) | — |
@@ -480,19 +347,35 @@ Then follow [How to Run](#how-to-run) below.
 Platform-specific notes (WSL2 setup, native-Windows scheduled-task service,
 desktop prerequisites, manual install) are covered in the three guides above.
 
-### Configuration
+---
 
-All configuration lives in `config.py` and can be overridden from `.env`:
+## Configuration
+
+All configuration lives in `config.py` and can be overridden from `.env`. See
+[`.env.example`](.env.example) for a commented starting point.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `GROQ_API_KEY` | *(required)* | Groq API key, `gsk_…` |
 | `GROQ_BASE_URL` | `https://api.groq.com/openai/v1` | OpenAI-compatible endpoint |
 | `GROQ_MODEL` | `openai/gpt-oss-120b` | Main model ID (must support tools) |
-| `GROQ_VISION_MODEL` | `qwen/qwen3.8-27b` | Multimodal model for screen vision (verified live) |
-| `USE_LOCAL_LLM` | `False` | `True` sends agent requests to local Ollama instead of Groq |
+| `GROQ_FALLBACK_MODEL` | `llama3-8b-8192` | Fallback model when the main one is unavailable |
+| `GROQ_VISION_MODEL` | `qwen/qwen3.8-27b` | Multimodal model for screen vision |
+| `USE_LOCAL_LLM` | `False` | Send agent requests to local Ollama instead of Groq |
 | `OLLAMA_BASE_URL` | `http://localhost:11434/v1` | OpenAI-compatible Ollama endpoint |
-| `OLLAMA_MODEL` | `llama3` | Model pulled in Ollama (for example `llama3`) |
+| `OLLAMA_MODEL` | `llama3` | Model pulled in Ollama |
+| `MCP_SERVERS` | *(unset)* | JSON object of stdio MCP servers; see [MCP setup](docs/mcp-setup.md) |
+| `MCP_TIMEOUT` | `15` | Seconds allowed for MCP startup and each tool call |
+| `MCP_RETRY_SECONDS` | `30` | Delay before retrying a failed MCP server |
+| `JARVIS_SEMANTIC_MEMORY` | `1` | Enable ChromaDB semantic memory |
+| `JARVIS_CHROMA_DB` | `~/.jarvis/chroma_db` | Persistent ChromaDB directory |
+| `JARVIS_SILERO_VAD` | *(on if installed)* | `0` forces the calibrated RMS endpointing |
+| `JARVIS_VAD_THRESHOLD` | `0.5` | Silero speech-probability threshold |
+| `JARVIS_VAD_START_MS` | `64` | Consecutive speech needed to start a phrase |
+| `JARVIS_VAD_END_MS` | `400` | Consecutive silence needed to end a phrase |
+| `JARVIS_SHOW_MINI_ORB` | `1` | `0` hides the floating 80×80 MiniOrb |
+| `JARVIS_LOG_DIR` | `~/.jarvis/logs` | Directory for the categorised error logs |
+| `JARVIS_GITHUB_TOKEN` | *(unset)* | Optional token for the HUD GitHub panel |
 | `JARVIS_SCREEN_MAX_WIDTH` | `1280` | Downscale width for vision screenshots |
 | `JARVIS_SCREEN_STEPS` | `6` | Max perceive→act steps per screen goal |
 | `JARVIS_SHELL_TIMEOUT` | `20` | Seconds before a terminal command is killed |
@@ -500,30 +383,27 @@ All configuration lives in `config.py` and can be overridden from `.env`:
 | `JARVIS_OFFLINE` | *(unset)* | `1` disables the agent (router only) |
 | `JARVIS_MIC_DEVICE` | `default` | ALSA PCM name for `arecord -D` |
 | `JARVIS_LISTEN_TIMEOUT` | `30` | Seconds to wait for you to start speaking |
-| `JARVIS_SILENCE_END` | `2.0` | Seconds of a pause that ends the phrase |
+| `JARVIS_SILENCE_END` | `2.0` | RMS-mode pause that ends the phrase |
 | `JARVIS_PHRASE_LIMIT` | `15` | Max seconds of a single utterance |
 | `JARVIS_DEBUG` | *(unset)* | `1` prints per-chunk RMS / capture diagnostics |
 | `JARVIS_PTT` | *(unset)* | `1` for push-to-talk (Enter to start/stop) |
 | `JARVIS_TEXT` | *(unset)* | `1` to type commands instead of speaking |
 | `JARVIS_MUTE` | *(unset)* | `1` to skip text-to-speech (replies still print) |
-| `JARVIS_TTS_VOICE` | `en-GB-RyanNeural` | Spoken voice (any edge-tts name; restart Jarvis to apply) |
+| `JARVIS_TTS_VOICE` | `en-GB-RyanNeural` | Spoken voice (any edge-tts name) |
 | `JARVIS_CHAT` | *(on)* | `0` turns continuous voice conversation off |
 | `JARVIS_CHAT_TIMEOUT` | `60` | Seconds of silence that end a continuous session |
+| `JARVIS_BARGE_THRESHOLD` | `1200` | RMS level that counts as talking over a reply |
 | `JARVIS_WAKE` | *(on if installed)* | `0` disables the "Hey Jarvis" wake word |
-| `JARVIS_WAKE_MODEL` | `hey jarvis` | Wake phrase/model name (`alexa`, `hey_mycroft`, … or `off`) |
-| `JARVIS_WAKE_THRESHOLD` | `0.5` | Score (0-1) a frame needs to count — raise if it triggers too easily |
+| `JARVIS_WAKE_MODEL` | `hey jarvis` | Wake phrase/model name (`alexa`, `hey_mycroft`, …) |
+| `JARVIS_WAKE_THRESHOLD` | `0.5` | Score (0-1) a frame needs to count |
 | `JARVIS_WAKE_DING` | *(on)* | `0` silences the "I heard you" chime |
 | `JARVIS_WAKE_VAD` | *(off)* | Voice-activity threshold to ignore non-speech noise |
-| `JARVIS_WAKE_SPEEX` | *(off)* | `1` enables Speex noise suppression (needs the extra speexdsp wheel) |
 
-**Optional local LLM:** install and start
-[Ollama](https://ollama.com), pull a model (`ollama pull llama3`), then set
-`USE_LOCAL_LLM=True` in `.env` or pass `--local` for one session. Jarvis uses
-Ollama's OpenAI-compatible `/v1` endpoint, so no extra Python package is needed.
-With the flag unset, Ollama is never contacted during normal Groq operation.
-
-STT language (`en-US`), TTS voice (`en-GB-RyanNeural`), history window, output
-token cap and tool-round limit are constants in `config.py`.
+**Optional local LLM:** install and start [Ollama](https://ollama.com), pull a
+model (`ollama pull llama3`), then set `USE_LOCAL_LLM=True` in `.env` or pass
+`--local` for one session. JARVIS uses Ollama's OpenAI-compatible `/v1`
+endpoint, so no extra Python package is needed. With the flag unset, Ollama is
+never contacted during normal Groq operation.
 
 ---
 
@@ -539,10 +419,10 @@ After installation, start the graphical HUD (the normal way to use JARVIS):
 .\start.bat       # Windows (no console window)
 ```
 
-The HUD opens on screen and adds a tray icon. Click the Arc Reactor — or say
-**"Hey Jarvis"**, press **Ctrl+Shift+J** / **Ctrl+Alt+J**, or use the tray menu —
-to talk. Closing the HUD hides it to the tray; use **Quit** in the tray menu or
-`main.py --quit` to stop it.
+The HUD opens on screen and adds a tray icon plus the MiniOrb. Click the Arc
+Reactor or the MiniOrb — or say **"Hey Jarvis"**, press **Ctrl+Shift+J** /
+**Ctrl+Alt+J**, or use the tray menu — to talk. Closing the HUD hides it to the
+tray; use **Quit** in the tray menu or `main.py --quit` to stop it.
 
 You can also run the terminal voice loop or the individual tools:
 
@@ -556,10 +436,10 @@ You can also run the terminal voice loop or the individual tools:
 ./venv/bin/python main.py --version          # print the version
 ./venv/bin/python main.py --help             # every option, with a short description
 ./venv/bin/python main.py --screen "what is on my screen?"   # one screen answer
-./venv/bin/python main.py --gui              # floating widget + system tray
-./venv/bin/python main.py --wake             # wake the running Jarvis (or start it)
-./venv/bin/python main.py --quit             # stop the running Jarvis (e.g. hidden in the tray)
-./venv/bin/python install_desktop.py         # add Jarvis to the app menu
+./venv/bin/python main.py --gui              # HUD + MiniOrb + system tray
+./venv/bin/python main.py --wake             # wake the running JARVIS (or start it)
+./venv/bin/python main.py --quit             # stop the running JARVIS
+./venv/bin/python install_desktop.py         # add JARVIS to the app menu
 ./venv/bin/python doctor.py                  # readiness report
 ./venv/bin/python test_mic.py                # microphone diagnostic
 ./venv/bin/python -m pytest                  # run the test suite
@@ -585,48 +465,42 @@ end a session.
 is harmless (the second launch wakes the running instance). `stop.bat` asks the
 app to quit, then force-stops only this project's process if it is stuck.
 
-**GUI:** left-click the orb (or the tray icon) to talk — or just say **"Hey
-Jarvis"** once the wake word is installed, or press **Ctrl+Shift+J** (or
-**Ctrl+Alt+J**) from any application to wake Jarvis — it brings the card
-forward and unmutes the mic if it was muted — drag to move the card, drag an
-edge/corner or the corner grip to **resize** it, right-click
-for the menu, `Esc`, the **✕** button or the window close all hide it to the
-tray (they never quit), and only **Quit**
-in the tray menu really exits. Launching Jarvis twice is safe: the second launch
-wakes the running one and exits, so there is only ever one tray icon (a lock
-file at `~/.jarvis/jarvis.lock`). The orb **breathes** when idle, **reacts to your
-voice** while it listens and **moves while it speaks**, and the 13-bar waveform
-under it shows the live level. Start talking while Jarvis speaks to **interrupt
-it** (barge-in): the reply stops and Jarvis goes straight back to listening. The
-**Mic** button mutes/unmutes the microphone instantly (also `M` or the tray's
-*Mute mic* — and it silences the wake word too), and **Stop** (or `Space`) cuts a
-reply off mid-sentence — or abandons a listen that is still waiting for you — and
-in continuous chat it also ends the whole exchange.
-With **Continuous chat** on (the default, `JARVIS_CHAT=0` for the old one-shot
-behaviour), Jarvis **keeps the microphone open after each reply**: you answer, it
-replies, and you just keep talking until you go quiet (60 s,
-`JARVIS_CHAT_TIMEOUT`), say **"bye"/"stop"/"exit"**, press Stop, or mute. The
-**Hey Jarvis** and **Continuous chat** menu items (in both the widget and the
-tray menu) switch the wake word and the chat mode off and on while Jarvis runs.
+**HUD controls.** Left-click the Arc Reactor, the MiniOrb or the tray icon to
+talk. Press **Ctrl+Shift+J** or **Ctrl+Alt+J** from any application to toggle
+listening without raising the window (the second press stops the current turn).
+Drag the HUD to move it, drag an edge/corner or the grip to resize, double-click
+the title bar to maximise/restore, right-click for the menu. `Esc`, **✕** or the
+window close hide it to the tray; only **Quit** exits. The MiniOrb is a separate
+always-on-top window: drag it anywhere, left-click to open the HUD, right-click
+for **Show**/**Quit**. Launching JARVIS twice is safe: the second launch wakes
+the running one and exits, so there is only ever one tray icon (a lock file at
+`~/.jarvis/jarvis.lock`).
+
+**Barge-in.** Start talking while JARVIS speaks and it stops immediately and
+returns to listening. Echo is rejected with a high, sustained RMS threshold;
+`JARVIS_BARGE_THRESHOLD`, `JARVIS_BARGE_HOLD` and `JARVIS_BARGE_IN=0` tune it,
+and push-to-talk (`JARVIS_PTT=1`) disables it.
+
+**Continuous chat.** With **Continuous chat** on (the default; `JARVIS_CHAT=0`
+for one-shot behaviour), JARVIS keeps the microphone open after each reply.
+It stops when you go quiet (60 s, `JARVIS_CHAT_TIMEOUT`), say
+**"bye"/"stop"/"exit"**, press Stop, or mute. The **Hey Jarvis**, **MiniOrb**
+and **Continuous chat** menu items switch those features while JARVIS runs.
 
 **Desktop launcher.** `./run.sh` starts the GUI with the right virtualenv on
-Linux/macOS, and `./venv/bin/python install_desktop.py` adds Jarvis to your
+Linux/macOS, and `./venv/bin/python install_desktop.py` adds JARVIS to your
 application menu with the Arc Reactor icon (`--autostart` also starts it at
 login; `--uninstall` removes exactly what it wrote). On Windows use `start.bat`
-and `stop.bat`, or add Jarvis to the login items with
-`main.py --autostart-enable` (which launches it through `pythonw.exe`, so no
-console window appears). To keep it running after you close the terminal:
+and `stop.bat`, or add JARVIS to the login items with
+`main.py --autostart-enable`.
 
-```bash
-nohup ./run.sh >/tmp/jarvis.log 2>&1 &     # start in the background (Linux/macOS)
-pkill -f "main.py --gui"                   # stop it again
-```
+---
 
-### Voice commands
+## Voice commands
 
 📖 **[Open the complete Voice Commands Guide →](docs/voice_commands/COMMANDS.md)**
 It covers app control, system telemetry, media and YouTube, memory, web and
-vision, terminal dictation, CodeAct Python, timers and confirmations.
+vision, terminal dictation, CodeAct Python, timers, MCP and confirmations.
 
 A quick sample:
 
@@ -637,7 +511,7 @@ A quick sample:
 | "close telegram" / "quit files" / "kill calculator" | local router (graceful close) |
 | "what windows are open" / "list windows" | local router (`wmctrl`) |
 | "open youtube" | local router |
-| "play lo-fi on youtube" | local router (`yt-dlp`; only the song name is used) |
+| "play lo-fi on youtube" | local router (`yt-dlp`) |
 | "play kesariya" / "play the song kesariya" | local router (`yt-dlp`; resolves the title and asks before playing) |
 | "play the second song" / "play this video" / "play that one" / "play it" | local router → **vision** (finds it on your screen) |
 | "search cats on youtube" | Groq agent → YouTube search |
@@ -650,6 +524,7 @@ A quick sample:
 | "copy" / "cut" / "paste" / "read the clipboard" | local router (Clipboard) |
 | "help" / "what can you do offline" | local router (offline capability list) |
 | "terminal ls -la" / "run the command df -h" | local router → **guarded terminal** |
+| "run this Python script" | Groq agent → **guarded CodeAct** |
 | "shut down" / "restart" / "log out" / "suspend" | local router → **"Are you sure?"** |
 | "what's on my screen?" / "read the screen" / "describe the screen" | local router → **vision** |
 | "search for lo-fi music" / "look up the weather" / "latest python version" | Groq agent (live internet) |
@@ -657,7 +532,9 @@ A quick sample:
 | "open the first result" | local router → **vision** |
 | "run ls in the terminal and show me the output" | Groq agent → terminal tool |
 | "set a 5 minute timer" / "remind me to call mom in 10 minutes" | Groq agent → timers |
-| "remember my name is Jakir" / "what do you remember about me?" | Groq agent → long-term memory |
+| "remember my name is Jakir" / "what do you remember about me?" | Groq agent → semantic memory |
+| "who created you?" / "who is Jakir?" | local router → Creator Guardrails |
+| "use the filesystem MCP server to list my documents" | Groq agent → MCP tool |
 | "turn off the mic" / "turn on the mic" | local router (microphone mute) |
 
 `close youtube` closes the *focused tab* (Ctrl+W) when possible, and never
@@ -667,48 +544,53 @@ closes the whole browser unless you say "close the browser" / "close brave".
 
 ## Terminal safety
 
-Speech is unreliable, so a command must pass **three layers** in `shell.py` before
-it runs:
+Speech is unreliable, so a command must pass **three layers** in `shell.py`
+before it runs:
 
-1. **Refused outright.** Privilege escalation (`sudo`, `su`, `pkexec`, `doas`) and
-   anything that can take the machine down: `shutdown`/`reboot`/`poweroff`/`halt`/
-   `telinit`, `power off` in any spelling, `suspend`/`hibernate`, `systemctl`
-   power verbs, `loginctl` session termination, session-logout binaries
-   (`gnome-session-quit --power-off`, `xfce4-session-logout`, …), kernel `sysrq`/
-   `kexec`, writes to `/sys/power/` or `/proc/sysrq-trigger`, `kill`/`pkill` of
-   init/systemd, recursive force-deletes (`rm -rf` in every spelling), disk
-   partitioning/formatting, `dd of=/dev/…`, fork bombs, piping *or chaining* a
-   download into a shell, and account/credential changes. Quotes and backslashes
-   are stripped before matching, so `s\hutdown` and `sh'utdown'` are caught too.
-2. **Confirmed first.** Anything that mutates state — `rm`, `mv`, `chmod`, `kill`,
-   package managers, `systemctl`, `ssh`/`scp`/`rsync`, `docker`, `git push`, and
-   writing to a file with `>` — is read back to you and only runs after you say
-   **"yes"** (a 15 s pending confirmation).
-3. **Runs.** Everything else (`ls`, `cat`, `grep`, `df`, `git status`, …) runs with
-   a timeout (`JARVIS_SHELL_TIMEOUT`) and a capped output size.
+1. **Refused outright.** Privilege escalation (`sudo`, `su`, `pkexec`, `doas`)
+   and anything that can take the machine down: `shutdown`/`reboot`/`poweroff`/
+   `halt`/`telinit`, `power off` in any spelling, `suspend`/`hibernate`,
+   `systemctl` power verbs, `loginctl` session termination, session-logout
+   binaries (`gnome-session-quit --power-off`, `xfce4-session-logout`, …),
+   kernel `sysrq`/`kexec`, writes to `/sys/power/` or
+   `/proc/sysrq-trigger`, `kill`/`pkill` of init/systemd, recursive
+   force-deletes (`rm -rf` in every spelling), disk partitioning/formatting,
+   `dd of=/dev/…`, fork bombs, piping *or chaining* a download into a shell,
+   and account/credential changes. Quotes and backslashes are stripped before
+   matching, so `s\hutdown` and `sh'utdown'` are caught too.
+2. **Confirmed first.** Anything that mutates state — `rm`, `mv`, `chmod`,
+   `kill`, package managers, `systemctl`, `ssh`/`scp`/`rsync`, `docker`,
+   `git push`, and writing to a file with `>` — is read back to you and only
+   runs after you say **"yes"** (a 15 s pending confirmation).
+3. **Runs.** Everything else (`ls`, `cat`, `grep`, `df`, `git status`, …) runs
+   with a timeout (`JARVIS_SHELL_TIMEOUT`) and a capped output size.
 
-**The terminal can never shut down, restart or power off the device.** These rules
-are enforced in code, not in the prompt.
+**The terminal can never shut down, restart or power off the device.** These
+rules are enforced in code, not in the prompt.
 
 ---
 
 ## Safety
 
-- **Protected, never touched:** Jarvis itself and its entire ancestor chain (so
+- **Protected, never touched:** JARVIS itself and its entire ancestor chain (so
   the terminal running it), the display server (`Xorg`/`Xwayland`), the session
   manager, `systemd`/`dbus`, and the desktop shell (`cinnamon`, `gnome-shell`,
   `plasmashell`, …).
 - **Confirmation-gated:** shutdown, restart, logout and suspend; risky terminal
-  commands; and destructive/financial screen-automation goals (delete, uninstall,
-  format, buy, pay, send, …). Only a clear "yes" runs them; anything else cancels,
-  and an unanswered request expires after ~15 s.
-- **Weak matches:** if an app name is only a weak match, Jarvis asks
+  commands; and destructive/financial screen-automation goals (delete,
+  uninstall, format, buy, pay, send, …). Only a clear "yes" runs them; anything
+  else cancels, and an unanswered request expires after ~15 s.
+- **Weak matches:** if an app name is only a weak match, JARVIS asks
   "Did you mean <app>?" before acting.
-- **Whitelist only:** the agent's tools and the router both call fixed functions in
-  `desktop.py`, which delegates to fixed adapter methods in `platform_adapters/`
-  (the `xdotool`/`wmctrl`/`pactl`/… wrappers). Screen actions are limited to
-  move/click/type/key/scroll/wait. The only way to reach a shell is the guarded
-  terminal above.
+- **Whitelist only:** the agent's tools and the router both call fixed functions
+  in `desktop.py`, which delegates to fixed adapter methods in
+  `platform_adapters/`. Screen actions are limited to move/click/type/key/scroll.
+  The only way to reach a shell is the guarded terminal above.
+- **Creator Guardrails:** creator questions are answered by a local regex
+  before any model call, and the agent prompt forbids crediting another
+  company, lab or framework for JARVIS's existence.
+- **MCP servers are separate processes** with the same permissions as your
+  user. Only configure servers you trust.
 
 ---
 
@@ -717,14 +599,22 @@ are enforced in code, not in the prompt.
 ```
 listen() ─► confirm.resolve() ─► try_local() ─hit─► speak()
  (voice.py)    (confirm.py)       (router.py)         (voice.py)
+    │                                 │
+    │ Silero VAD / RMS                miss
+    ▼                                 ▼
+ microphone                    run_agent() ─► Groq / Ollama (agent.py)
                                       │
-                                     miss
-                                      ▼
-                               run_agent() ─► Groq (agent.py) ─► tools.py ─┬─► desktop.py  (apps, windows, media, screen)
-                                      │                                     ├─► vision.py   (see / operate the screen)
-                                      ▼                                     ├─► net.py      (search / wiki / weather)
-                               memory.add() (memory.py)                     ├─► shell.py    (guarded terminal)
-                                                                            └─► timers.py   (timers / reminders)
+                                      ├─► tools.py ─┬─► desktop.py  (apps, windows, media, screen)
+                                      │             ├─► vision.py   (see / operate the screen)
+                                      │             ├─► net.py      (search / wiki / weather)
+                                      │             ├─► shell.py    (guarded terminal)
+                                      │             └─► timers.py   (timers / reminders)
+                                      ├─► mcp_client.py (external MCP tools)
+                                      └─► memory.py    (SQLite + ChromaDB semantic memory)
+
+ gui.py + hud.py ─► JarvisWorker (QThread) ─► main.handle() ─► the same router/agent path
+        │
+        └─► MiniOrbWidget, system tray, global hotkey, wake listener, settings
 ```
 
 `main.handle()` is the single dispatch path: it resolves any pending
@@ -734,33 +624,30 @@ confirmation first, then tries the router, and only sends a miss to the agent.
 
 | File | Role |
 | --- | --- |
-| `config.py` | Loads `.env`; holds `__version__`, models, and the screen/shell/history limits. |
-| `voice.py` | `listen()` (arecord + SpeechRecognition, `en-US`) and `speak()` (edge-tts + ffmpeg decode + sounddevice playback). Also the runtime mic mute (`set_mic_muted`), the live level sink the GUI animates from, the TTS loudness envelope, and `stop_speaking()` / `stop_listening()` (the 30 s wait for speech is `JARVIS_LISTEN_TIMEOUT`). |
-| `router.py` | `try_local()` — the offline fast path: power, media, volume, brightness, screenshot, lock, windows, clipboard, battery/status/time/date, screen reading, folders, YouTube, dictated commands and app open/close. Search verbs return `None` for the agent. Also holds the spoken `CAPABILITIES` list. |
-| `desktop.py` | The **OS-agnostic facade**: fuzzy app matching, YouTube/media decisions and the protected-process rules, delegating every platform-specific operation to `platform_adapters`. Media control falls back to the browser tab's own keys when a page's MPRIS cannot skip tracks. |
-| `platform_adapters/` | The Platform Adapter Pattern. `base.py` defines the `AudioController`/`WindowController`/`SystemController` interfaces; `common.py` holds the shared runner/process helpers; `linux/`, `windows/` and `macos/` implement them (`arecord`/`pactl`/`playerctl`/`wmctrl`/`xdotool`/`brightnessctl` on Linux, `sounddevice`/`pycaw`/`pywinctl` on Windows, `sounddevice`/`osascript`/`pywinctl` on macOS). `__init__.py` detects the OS and exports `Audio`, `Window` and `System`. |
-| `install.sh` / `install.ps1` | One-line installers: create the venv, install `requirements.txt`, then the platform's helper tools. |
-| `vision.py` | Screen capture, `look()` (ask about the screen) and `act()` (bounded perceive→act loop). |
-| `net.py` | Keyless internet: DuckDuckGo search, page fetch, Wikipedia, weather. |
-| `shell.py` | The guarded terminal (`run`, `explain_refusal`, `_is_risky`). |
-| `timers.py` | In-process timers and reminders. |
-| `confirm.py` | Pending "Are you sure?" state: yes runs, anything else cancels, 15 s expiry. |
-| `agent.py` | Groq orchestration with an optional Ollama backend: response cache, token accounting, tool schemas from function signatures, English-only system instruction, bounded tool loop, long-term fact injection, 44 tools. |
-| `tools.py` | The tool functions (see the list below). |
-| `memory.py` | SQLite conversation history plus the persistent `user_facts` table for long-term personal memory. |
+| `config.py` | Loads `.env`; holds `__version__` (`3.0.2`), models, feature flags and limits. |
+| `voice.py` | `listen()` (arecord/sounddevice + SpeechRecognition, `en-US`, with a local `faster-whisper` fallback) and `speak()` (edge-tts streamed through sounddevice). Contains the Silero VAD endpointing, the calibrated RMS fallback, runtime mic mute, the live level sink and the TTS loudness envelope. |
+| `router.py` | `try_local()` — the offline fast path for power, media, volume, brightness, screenshot, lock, windows, clipboard, battery/status/time/date, screen reading, folders, YouTube, dictated commands, app open/close and Creator Guardrail answers. Search verbs return `None` for the agent. |
+| `desktop.py` | The OS-agnostic facade: fuzzy app matching, YouTube/media decisions and protected-process rules, delegating every platform-specific operation to `platform_adapters`. |
+| `platform_adapters/` | The Platform Adapter Pattern. `base.py` defines the `AudioController`/`WindowController`/`SystemController` interfaces; `common.py` holds the shared runner and `hidden_process_kwargs` helpers; `linux/`, `windows/` and `macos/` implement them. |
+| `hud.py` | Presentation-only HUD widgets: obsidian panels, Arc Reactor mark, system telemetry, GitHub/inbox panels, transcript/activity rails, command bar and title bar, all painted with `QPainter`. Never imported by backend modules. |
+| `gui.py` | The PyQt5 window and application shell: `JarvisWidget`, `JarvisWorker` (`QThread`), `MiniOrbWidget`, `JarvisTray`, `SettingsDialog` and the global hotkey. Owns the voice pipeline, wake listener, continuous chat, barge-in, mic mute, Stop and close-to-tray. |
+| `agent.py` | Groq orchestration with an optional Ollama backend: response cache, semantic cache, token accounting, tool schemas from function signatures, English-only system instruction with Creator Guardrails, bounded tool loop, MCP tools and long-term fact injection. |
+| `tools.py` | The 44 native tool functions, guarded by `logger.command_guard`. |
+| `mcp_client.py` | Optional MCP client: parses `MCP_SERVERS`, starts stdio servers, discovers and exposes `mcp__<server>__<tool>`, caches discovery and retries failed servers. |
+| `memory.py` | SQLite conversation history and persistent `user_facts`, plus lazy ChromaDB semantic indexing/retrieval with SQLite fallback. |
+| `semantic_cache.py` | Semantic answer cache using `fastembed` (`all-MiniLM-L6-v2`) with an exact-match fallback. |
+| `logger.py` | Categorised rotating logs: `api_errors.log` and `command_errors.log` under `~/.jarvis/logs`, plus `command_guard` for tools. |
 | `main.py` | Entry point and `handle()` dispatch (`--text`, `--offline`, `--local`, `--screen`, `--gui`, `--wake`, `--quit`, `--check`, `--version`). Enforces a single instance via `instance.py`. |
-| `gui.py` | PyQt5 ChatGPT-Voice-style card + system tray; the listen/think/speak cycle runs on a `QThread` — and with continuous chat on, that thread loops turn after turn until you go quiet, say an exit word, press Stop or mute. The breathing `Orb` and 13-bar `Waveform` are driven by live mic levels / the TTS loudness envelope; the worker arms a `voice.BargeInMonitor` while speaking, so talking over a reply cuts it short and returns to listening. Frameless, **resizable** rounded card (corner `QSizeGrip` + edge dragging) whose ✕/close **hides to the tray** instead of quitting. Owns the wake listener's lifecycle (start/pause/resume/stop) and registers the optional global **Ctrl+Shift+J** / **Ctrl+Alt+J** wake hotkey (`pynput`). |
-| `instance.py` | Single-instance lock (`~/.jarvis/jarvis.lock`) and wake socket (`~/.jarvis/jarvis.sock`). A second launch (or `main.py --wake`) signals the running GUI to wake and then exits, so there is only ever one Jarvis; `main.py --quit` closes it. POSIX uses `flock` + a Unix socket, Windows a named mutex + a loopback port, and both are released by the OS if the process is killed. |
-| `icon_art.py` | Renders the canonical `assets/jarvis-reactor-source.svg` for the GUI and tray; no legacy-logo fallback is present. |
-| `gen_icon.py` | Regenerates launcher PNGs and the Windows ICO from the canonical Arc Reactor SVG. |
-| `wake.py` | Optional offline **"Hey Jarvis"** wake word (openWakeWord ONNX). `Detector` re-frames audio into 80 ms frames and applies the threshold; `Listener` streams the mic on a daemon thread, hands the device over before any listen cycle, and stays silent while the mic is muted. Importable without openWakeWord. |
-| `doctor.py` | Readiness self-check. Prints a copy-paste install line for missing tools (never runs it), and the wake-word status. |
-| `install_desktop.py` | Adds/removes the application-menu entry (and optionally autostart), pointing at this checkout and the regenerated icon. Writes only inside your own home directory; `--uninstall` is exact. |
-| `run.sh` | Starts the GUI through the project's virtualenv without needing `cd`. |
-| `assets/jarvis-reactor-source.svg` | The sole tracked app-icon artwork; generated PNG/ICO variants are ignored and recreated by builds. |
+| `instance.py` | Single-instance lock (`~/.jarvis/jarvis.lock`) and wake socket, so there is only ever one JARVIS. |
+| `icon_art.py` / `gen_icon.py` | Render the canonical Arc Reactor SVG and regenerate launcher PNGs/Windows ICO from it. |
+| `wake.py` | Optional offline "Hey Jarvis" wake word (openWakeWord ONNX) with mic hand-over and mute awareness. |
+| `doctor.py` | Readiness self-check and copy-paste install hints. |
+| `install_desktop.py` | Application-menu entry and optional autostart; writes only inside your home directory. |
+| `build_deb.sh` / `build_exe.ps1` / `build_mac.sh` / `jarvis.spec` | Zero-dependency packaging for Linux, Windows and macOS. |
+| `assets/jarvis-reactor-source.svg` | The sole tracked app-icon artwork; generated PNG/ICO variants are recreated by builds. |
 | `test_mic.py` | Standalone mic diagnostic. |
 
-### Tools (44)
+### Tools (44 native, plus MCP)
 
 Apps & windows: `fn_open_app`, `fn_close_app`, `fn_list_running`, `fn_list_windows`,
 `fn_focus_window`, `fn_minimize_window`, `fn_maximize_window`.
@@ -768,11 +655,14 @@ Media: `fn_youtube`, `fn_media`, `fn_media_seek`, `fn_now_playing`, `fn_volume`,
 `fn_brightness`. Screen: `fn_screenshot`, `fn_see_screen`, `fn_screen_do`,
 `fn_click`, `fn_move_mouse`, `fn_type_text`, `fn_press_keys`, `fn_scroll`.
 Internet: `fn_web_search`, `fn_web_lookup`, `fn_fetch_page`, `fn_wikipedia`,
-`fn_weather`. Terminal: `fn_run_command`, `fn_run_in_terminal`.
+`fn_weather`. Terminal & CodeAct: `fn_run_command`, `fn_run_in_terminal`,
+`fn_execute_python`.
 System & files: `fn_open_path`, `fn_find_files`, `fn_clipboard`, `fn_notify`,
 `fn_lock_screen`, `fn_system_status`, `fn_system_info`, `fn_kill_process`.
 Notes & timers: `fn_save_note`, `fn_read_file`, `fn_set_timer`, `fn_set_reminder`.
 Long-term memory: `fn_remember_fact`, `fn_recall_facts`, `fn_forget_fact`.
+
+MCP tools are added at runtime and named `mcp__<server>__<tool>`.
 
 ---
 
@@ -787,79 +677,99 @@ Long-term memory: `fn_remember_fact`, `fn_recall_facts`, `fn_forget_fact`.
 
   and print a readiness report first with `./venv/bin/python doctor.py`.
 - **No internet.** Everything offline still works. Force it with
-  `./venv/bin/python main.py --offline`; say "what can you do offline" for the list.
+  `./venv/bin/python main.py --offline`; say "what can you do offline" for the
+  list.
 - **`Listening…` repeats and nothing is recognised.** Run with diagnostics on:
 
   ```bash
   JARVIS_DEBUG=1 ./venv/bin/python main.py
   ```
 
-  This prints the device, the RMS gate, the per-0.1 s chunk RMS (with state and
+  This prints the device, the RMS gate, the per-chunk RMS (with state and
   calibrated `floor=`), the captured length/peak, and whether the outcome was a
   timeout, an unrecognised capture, or a network (`RequestError`) failure.
 - **Input is clipping** (debug prints `peak at full scale (32768)`): lower the
   microphone gain in your system mixer.
-- **Jarvis answers before you finish your sentence.** It thought you had stopped:
-  a pause ended the phrase. Give yourself more room:
+- **JARVIS answers before you finish your sentence.** It thought you had
+  stopped. Give yourself more room:
 
   ```bash
   JARVIS_SILENCE_END=3 JARVIS_PHRASE_LIMIT=30 ./venv/bin/python main.py
   ```
 
-  and run with `JARVIS_DEBUG=1` to see the exact `state=ended reason=…`
-  (`silence` = it thought you finished; `max_time`/`max_length` = the cap).
-- **The screen flashes when Jarvis looks at it.** It shouldn't — capture uses
-  `scrot`/`import`, never `gnome-screenshot`. If `scrot` and ImageMagick's
-  `import` are both missing, install one of them.
+  With Silero VAD installed, tune `JARVIS_VAD_END_MS` instead (default 400 ms).
+- **Silero VAD is not being used.** Check `command_errors.log`; if the model
+  could not load, install `silero-vad` and `onnxruntime` (or keep the RMS
+  fallback with `JARVIS_SILERO_VAD=0`).
+- **The screen flashes when JARVIS looks at it.** It shouldn't — capture uses
+  `scrot`/`import`, never `gnome-screenshot`. If both are missing, install one.
 - **Phrases never end / music keeps the gate open:** move the mic away from the
   speakers, or set `JARVIS_PTT=1` and end phrases by hand with Enter.
-- **"playerctl/brightnessctl is not installed"**: the message (and
-  `doctor.py`) prints the exact install command for you to copy-paste; Jarvis
-  never runs it.
+- **"playerctl/brightnessctl is not installed"**: the message and `doctor.py`
+  print the exact install command for you to copy-paste; JARVIS never runs it.
 - **Screen control says it needs X11 / "not supported":** you are on Wayland.
 - **"play …" opens YouTube but nothing starts, or "pause" says nothing is
   playing.** Browsers block autoplay until you interact with the site, and a
-  paused tab publishes no media session at all. Jarvis checks `playerctl status`,
-  taps play on the YouTube window itself and verifies (needs `xdotool` + X11);
-  if it is still paused it says so instead of claiming it is playing. If you
-  opened the tab by hand, click the video
-  once and pause/next will work from then on. A browser's MPRIS cannot skip
-  tracks (`CanGoNext = false` in Chromium/Brave), so `next`/`previous` are sent
-  to the YouTube page as its own keyboard shortcuts instead.
-- **A command was refused:** that is the terminal guard. It refuses `sudo`, every
-  power/session command, and destructive operations by design; risky ones only run
-  after you answer "yes".
+  paused tab publishes no media session at all. JARVIS checks `playerctl
+  status`, taps play on the YouTube window itself and verifies (needs `xdotool`
+  + X11); if it is still paused it says so instead of claiming it is playing.
+  A browser's MPRIS cannot skip tracks (`CanGoNext = false` in
+  Chromium/Brave), so `next`/`previous` are sent to the YouTube page as its own
+  keyboard shortcuts instead.
+- **A command was refused:** that is the terminal guard. It refuses `sudo`,
+  every power/session command, and destructive operations by design; risky ones
+  only run after you answer "yes".
 - **Agent replies are cut off:** raise `MAX_OUTPUT_TOKENS` in `config.py`.
-- **`RequestError` from STT:** speech-to-text needs network access; the local
-  router fast-path still works offline.
+- **`RequestError` from STT:** speech-to-text needs network access unless
+  `faster-whisper` is installed; the local router fast-path still works offline.
 - **"Hey Jarvis" does nothing.** Check `./venv/bin/python doctor.py`: it says
   whether the wake word is installed, listening or switched off, and prints the
-  exact `pip install` line when it is missing. If it is installed but Jarvis never
-  reacts, say the phrase a little closer to the mic, or lower the bar:
+  exact `pip install` line when it is missing. If it is installed but JARVIS
+  never reacts, say the phrase a little closer to the mic, or lower the bar:
   `JARVIS_WAKE_THRESHOLD=0.35 ./venv/bin/python main.py --gui`. Run with
   `JARVIS_DEBUG=1` to see each detection and its score.
-- **It wakes up when it shouldn't** (e.g. the TV says something similar): raise it,
-  `JARVIS_WAKE_THRESHOLD=0.7`, add voice-activity gating with `JARVIS_WAKE_VAD=0.5`,
-  or switch the wake word off entirely with `JARVIS_WAKE=0`.
+- **It wakes up when it shouldn't** (e.g. the TV says something similar): raise
+  it, `JARVIS_WAKE_THRESHOLD=0.7`, add voice-activity gating with
+  `JARVIS_WAKE_VAD=0.5`, or switch the wake word off with `JARVIS_WAKE=0`.
 - **The chime is annoying:** `JARVIS_WAKE_DING=0`.
+- **The MiniOrb is distracting:** set `JARVIS_SHOW_MINI_ORB=0` or uncheck it in
+  the tray/session menu.
+- **The Windows tray icon is missing after an Explorer restart.** v3.0.2
+  recreates the tray and retries for 30 seconds; if it still does not appear,
+  quit and relaunch JARVIS.
+- **No MCP tools appear.** Validate that `MCP_SERVERS` is a JSON object in
+  `.env`, install the official `mcp` SDK in the same virtualenv, and check
+  `command_errors.log` for `MCP server '…' failed to start`. The first `npx`
+  run may need extra time; increase `MCP_TIMEOUT`. See
+  [`docs/mcp-setup.md`](docs/mcp-setup.md).
+- **Memory recall is keyword-only.** ChromaDB or `fastembed` failed to load;
+  the full traceback is in `command_errors.log`, and SQLite retrieval keeps
+  working.
+- **Where are the logs?** `~/.jarvis/logs/api_errors.log` and
+  `~/.jarvis/logs/command_errors.log` (override with `JARVIS_LOG_DIR`). Each
+  rotates at 5 MB and keeps three backups.
 
 ---
 
 ## Security notes
 
 - The router and agent only call fixed functions in `desktop.py`, `vision.py`,
-  `net.py`, `shell.py` and `timers.py`. Jarvis **never runs `sudo`** (it may only
-  *print* an install command for you to run yourself), and the only shell access
-  is the guarded terminal described above.
+  `net.py`, `shell.py` and `timers.py`. JARVIS **never runs `sudo`** (it may
+  only *print* an install command for you to run yourself), and the only shell
+  access is the guarded terminal described above.
 - `fn_read_file` reads any user-supplied path and `fn_save_note` writes to
-  `~/jarvis_notes.md` — there is no sandboxing. Review before exposing Jarvis to
-  untrusted input.
+  `~/jarvis_notes.md` — there is no sandboxing. Review before exposing JARVIS
+  to untrusted input.
 - Screen actions are an explicit, whitelisted set (move/click/type/key/scroll);
   there is no path from a screenshot to arbitrary code execution.
-- The optional wake word runs entirely on this machine (`openWakeWord`, ONNX): the
-  microphone is only opened while Jarvis is idle, nothing is sent anywhere, and
-  muting the mic stops it listening. It is your choice to install it, and
-  `JARVIS_WAKE=0` (or the menu item) turns it off.
+- `fn_execute_python` is the deliberate exception: it runs an agent-authored
+  script in a subprocess behind an AST allow/deny pass and a hard timeout.
+- MCP servers run as separate processes with your user's permissions. Only
+  configure servers you trust, and pass secrets through their `env` object.
+- The optional wake word runs entirely on this machine (`openWakeWord`, ONNX):
+  the microphone is only opened while JARVIS is idle, nothing is sent anywhere,
+  and muting the mic stops it listening.
+- Error logs can contain paths and command text. Review them before sharing.
 - Never commit `.env`, API keys or `TOKEN.txt`. `.gitignore` covers `.env`,
   `venv/`, caches, audio artifacts and token files.
 
@@ -869,5 +779,5 @@ MIT © 2026 Jakir Hussain Khan. See [LICENSE](LICENSE).
 
 The optional wake word uses [`openWakeWord`](https://github.com/dscripka/openWakeWord)
 (Apache-2.0) with its pretrained models, which are licensed **CC-BY-NC-SA 4.0**
-(non-commercial use only) by their authors. They are fetched by `pip`/at first run,
-never bundled in this repository.
+(non-commercial use only) by their authors. They are fetched by `pip`/at first
+run, never bundled in this repository.
